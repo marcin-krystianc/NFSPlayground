@@ -1,0 +1,6 @@
+[submodule "xfstests"]
+	path = xfstests
+	url = https://git.kernel.org/pub/scm/fs/xfs/xfstests-dev.git
+[submodule "nfs-utils"]
+	path = nfs-utils
+	url = https://github.com/linux-nfs/nfs-utils.git
