@@ -4,6 +4,3 @@
 [submodule "nfs-utils"]
 	path = nfs-utils
 	url = https://github.com/linux-nfs/nfs-utils.git
-[submodule "linux"]
-	path = linux
-	url = https://github.com/torvalds/linux.git
