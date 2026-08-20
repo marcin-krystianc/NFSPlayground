@@ -2,7 +2,8 @@
 # Fetch the third-party sources this test framework builds against:
 # the VAST NFS source tarball, and the upstream Linux subtrees it forks.
 #
-# Everything lands in $SRC_DIR (default: external/) which is gitignored.
+# Everything lands in $SRC_DIR (default: the repository root) and is
+# gitignored: ./linux and ./vastnfs-<version>.
 # Idempotent: re-running only fetches what is missing or at the wrong revision.
 #
 # Usage: scripts/fetch-sources.sh [linux|vastnfs]...
@@ -11,7 +12,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-SRC_DIR="${SRC_DIR:-${REPO_ROOT}/external}"
+SRC_DIR="${SRC_DIR:-${REPO_ROOT}}"
 
 # --- pins ---------------------------------------------------------------
 # Bump these deliberately; both are verified after fetching.
@@ -73,16 +74,14 @@ fetch_vastnfs() {
     local dest="${SRC_DIR}/${tarball}"
     local repo_copy="${REPO_ROOT}/vastnfs/${tarball}"
 
-    if [ ! -e "$dest" ]; then
-        if [ -e "$repo_copy" ]; then
-            log "using in-repo ${tarball}"
-            cp "$repo_copy" "$dest"
-        else
-            log "downloading ${tarball}"
-            curl --proto '=https' --tlsv1.2 -sSf \
-                "${VASTNFS_BASE_URL}/version/${VASTNFS_VERSION}/source/${tarball}" \
-                -o "$dest"
-        fi
+    if [ -e "$repo_copy" ]; then
+        log "using in-repo ${tarball}"
+        dest="$repo_copy"
+    elif [ ! -e "$dest" ]; then
+        log "downloading ${tarball}"
+        curl --proto '=https' --tlsv1.2 -sSf \
+            "${VASTNFS_BASE_URL}/version/${VASTNFS_VERSION}/source/${tarball}" \
+            -o "$dest"
     fi
 
     echo "${VASTNFS_SHA256}  ${dest}" | sha256sum -c - >/dev/null ||

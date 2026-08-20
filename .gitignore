@@ -1,1 +1,3 @@
-external/
+/linux/
+/vastnfs-*/
+/vastnfs-*.tar.xz
