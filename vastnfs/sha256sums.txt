@@ -1,1 +1,0 @@
-a4abaf2d6034d2b9d8d42086c30c355b2baf680ee3fb8e53a63af969f32d3b52  vastnfs-4.5.8.tar.xz
