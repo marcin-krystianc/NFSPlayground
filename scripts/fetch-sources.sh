@@ -26,7 +26,9 @@ LINUX_SHA="8a243ecde1f6447b8e237f2c1c67c0bb67d16d67"
 # Only the subtrees VAST replaces. A full mainline clone is ~8 GB; this is
 # ~270 MB of git data and a ~24 MB working tree.
 LINUX_PATHS=(fs/nfs fs/nfsd fs/lockd fs/nfs_common
-             net/sunrpc include/linux/nfs include/linux/sunrpc)
+             net/sunrpc include/linux/nfs include/linux/sunrpc
+             tools/testing/kunit tools/testing/selftests/net
+             tools/testing/selftests/filelock)
 
 VASTNFS_VERSION="4.5.8"
 VASTNFS_BASE_URL="https://vast-nfs.s3.amazonaws.com"
