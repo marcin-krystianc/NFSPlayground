@@ -24,11 +24,29 @@ See also:
 - A Linux VM with a kernel in the range listed in
   `vastnfs-4.5.8/docs/src/build/kernels.md` (e.g. Ubuntu 24.04 LTS, GA
   kernel 6.8, already in range with no HWE install needed).
-- Docker installed on that VM.
+- Docker installed on that VM, and your user in the `docker` group
+  (`sudo usermod -aG docker $USER`, then re-login — group changes don't
+  apply to an already-open session).
+- Passwordless sudo for the account running these scripts (`03-run-xfstests.sh`
+  calls `sudo ./check`, and `04-build-install-vastnfs.sh` calls `sudo dpkg -i`).
+  A drop-in is enough: `echo "$USER ALL=(ALL) NOPASSWD:ALL" | sudo tee
+  /etc/sudoers.d/$USER-nopasswd && sudo visudo -c`. Without it, `sudo` blocks
+  on a TTY password prompt these scripts don't provide.
+- Build tooling for step 4: `build-essential dkms autoconf automake libtool
+  pkg-config debhelper dh-dkms` at minimum — `dh-dkms`/`debhelper` aren't
+  pulled in by `build-essential` and `./build.sh bin` fails on
+  `Unmet build dependencies: debhelper` without them.
+- Dependencies for building xfstests itself: `libaio-dev libattr1-dev
+  libacl1-dev uuid-dev xfslibs-dev libgdbm-dev libtool-bin e2fsprogs
+  libblkid-dev libssl-dev libdevmapper-dev git bc fio dbench attr xfsprogs
+  nfs-common quota nfs4-acl-tools rpm`.
 - `xfstests` built (`cd xfstests && make`) — see `xfstests/README`.
 - `vastnfs-4.5.8/` and `linux/` checked out —
   `scripts/fetch-sources.sh` if not already done.
-- Root/sudo access on the VM (module install, mount, docker --privileged).
+- The host kernel's `nfs`/`nfsd` modules loaded before step 1
+  (`sudo modprobe nfs && sudo modprobe nfsd`) — the `erichough/nfs-server`
+  image's entrypoint checks the *host's* loaded modules (containers share the
+  host kernel) and refuses to start otherwise.
 
 All scripts live in `scripts/nfs-test-env/` and read shared config from
 `scripts/nfs-test-env/env.sh`. Override via environment variables rather
@@ -45,11 +63,19 @@ NFS_SERVER_COUNT=4 ./scripts/nfs-test-env/01-setup-servers.sh
 ```
 
 Creates a docker bridge network (`172.28.0.0/24` by default) and one
-privileged container per server (`erichough/nfs-server` by default — not
-verified elsewhere in this repo, swap it via `NFS_SERVER_IMAGE` if it
-doesn't suit your host), each with a static IP and its own export directory
-under `/srv/nfs-test-env/<n>`. Idempotent — re-run after changing
-`NFS_SERVER_COUNT` and it only adds what's missing.
+privileged container per server (`erichough/nfs-server`), each with a static
+IP and its own export directory under `$HOME/nfs-test-env-exports/<n>` (no
+sudo needed — pick somewhere else with `NFS_EXPORT_BASE` if you want).
+Idempotent — re-run after changing `NFS_SERVER_COUNT` and it only adds
+what's missing.
+
+Verified working end-to-end on Ubuntu 24.04/kernel 6.8.0-138-generic. One
+thing to know if you restart the containers later (e.g. after a
+`vastnfs-ctl reload`, see step 4a): if `nfsd` gets unloaded while a container
+still holds it open, `docker stop` the containers first, reload, then
+`sudo modprobe nfs` before `docker start`-ing them again — otherwise the
+container's own healthcheck fails with "kernel module nfs is missing"
+because it's checking the *host's* loaded modules.
 
 ## Step 2 — point xfstests at them
 
@@ -78,10 +104,46 @@ what you diff against once VAST modules are in.
 ./scripts/nfs-test-env/04-build-install-vastnfs.sh
 ```
 
-Runs `vastnfs-4.5.8/build.sh bin`, then installs the resulting `.deb`/`.rpm`.
+Runs `vastnfs-4.5.8/build.sh bin`, then installs the resulting `.deb`/`.rpm`
+(on Ubuntu: `dist/vastnfs-modules_4.5.8-vastdata.kver.<uname -r>_amd64.deb`).
 This is a host-wide kernel module replacement (see
-`vastnfs-vs-linux.md`'s "Replacement, not coexistence") — **reboot after
-this step**; the script stops short of doing that for you.
+`vastnfs-vs-linux.md`'s "Replacement, not coexistence").
+
+### Step 4a — load the new modules: reboot, or reload live
+
+The install alone doesn't load the new modules — the old ones stay resident
+until something reloads them. Two ways to do that:
+
+**Reboot** (what the script's final message suggests, and what
+`vastnfs-4.5.8/docs/src/INSTALL.md` documents):
+
+```sh
+sudo reboot
+```
+
+**Or reload live, no reboot**, using the `vastnfs-ctl reload` command
+documented in `vastnfs-4.5.8/docs/src/usage/vastnfs-ctl.md` — verified
+working on the test VM:
+
+```sh
+# stop anything holding nfsd open first (e.g. the docker NFS servers,
+# which use the host's shared nfsd module) -- otherwise reload fails with
+# "rmmod: ERROR: Module nfsd is in use"
+docker stop nfs-test-env-1 nfs-test-env-2 nfs-test-env-3
+
+sudo vastnfs-ctl reload
+
+# the reload only reloads modules that were in use; if nothing had `nfs`
+# (the client module) mounted, it stays unloaded -- pull it back in so the
+# next mount, and the docker servers' healthcheck, pick up the VAST build:
+sudo modprobe nfs
+
+docker start nfs-test-env-1 nfs-test-env-2 nfs-test-env-3
+```
+
+Confirm which one loaded with `modinfo nfs | grep filename` — VAST modules
+live under `.../updates/bundle/...`, inbox ones under the normal kernel
+module tree.
 
 ## Step 5 — verify the swap actually took
 
@@ -135,9 +197,6 @@ modules — that's a separate, host-wide step, see
 
 ## Known gaps / things to check as you iterate
 
-- `01-setup-servers.sh`'s choice of `erichough/nfs-server` is a reasonable
-  default, not a verified one — if `nfsd` inside a privileged container
-  doesn't behave the way you need on your host/kernel, swap it.
 - `04-build-install-vastnfs.sh` does not verify your kernel is in
   `vastnfs-4.5.8/docs/src/build/kernels.md`'s supported range before
   building — `build.sh` itself will refuse if it isn't, but you'll want to
@@ -146,3 +205,12 @@ modules — that's a separate, host-wide step, see
   multipath check — it's a manual script, not a `tests/nfs/9xx`-style
   automated test. Worth writing one if this becomes a repeated check rather
   than an occasional one.
+- `nfs/001` in the `-g quick` group needs `TEST_DEV` mounted as NFSv4 and is
+  skipped by default, since `02-configure-xfstests.sh` doesn't pin a
+  version. Add `vers=4` to a manual mount, or extend the config, if you want
+  it included.
+- Verified end to end on the test VM: 644/644 `-g quick` tests passed with
+  the inbox client (0 failures, rest correctly `[not run]` for NFS
+  limitations — reflink/dedupe/quotas/dax/encryption/block-device-only
+  checks). Re-run in progress against the VAST modules at time of writing;
+  update this note with the comparison once it's done.

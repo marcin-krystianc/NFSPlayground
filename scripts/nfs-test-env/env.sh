@@ -11,7 +11,7 @@ NFS_SUBNET="${NFS_SUBNET:-172.28.0.0/24}"
 NFS_IP_PREFIX="${NFS_IP_PREFIX:-172.28.0.1}"   # server $i gets ${NFS_IP_PREFIX}$i
 NFS_SERVER_COUNT="${NFS_SERVER_COUNT:-3}"      # >=2: index 1 is TEST_DEV, 2 is SCRATCH_DEV
 NFS_SERVER_IMAGE="${NFS_SERVER_IMAGE:-erichough/nfs-server}"
-NFS_EXPORT_BASE="${NFS_EXPORT_BASE:-/srv/nfs-test-env}"
+NFS_EXPORT_BASE="${NFS_EXPORT_BASE:-${HOME}/nfs-test-env-exports}"
 
 TEST_MNT="${TEST_MNT:-/mnt/nfs-test-env/test}"
 SCRATCH_MNT="${SCRATCH_MNT:-/mnt/nfs-test-env/scratch}"

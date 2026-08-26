@@ -7,6 +7,10 @@
 # choice, not something pinned or tested elsewhere in this tree. Swap
 # NFS_SERVER_IMAGE if it doesn't suit your host.
 #
+# NFS_EXPORT_BASE must already be writable by the caller (defaults under
+# /srv, which usually isn't -- point it under $HOME if you don't want to
+# involve sudo).
+#
 # Usage: scripts/nfs-test-env/01-setup-servers.sh
 
 set -euo pipefail
@@ -32,13 +36,13 @@ for i in $(seq 1 "$NFS_SERVER_COUNT"); do
         continue
     fi
 
-    sudo mkdir -p "$export_dir"
-    sudo chmod 777 "$export_dir"
+    mkdir -p "$export_dir"
+    chmod 777 "$export_dir"
 
     log "starting $name at $ip, exporting $export_dir"
     docker run -d --name "$name" --privileged --network "$NFS_NET" --ip "$ip" \
         -v "${export_dir}:/export" \
-        -e SHARED_DIRECTORY=/export \
+        -e NFS_EXPORT_0='/export *(rw,fsid=0,no_subtree_check,insecure,no_root_squash)' \
         "$NFS_SERVER_IMAGE" >/dev/null
 done
 
