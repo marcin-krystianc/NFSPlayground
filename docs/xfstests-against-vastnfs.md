@@ -12,6 +12,10 @@ active."
 
 See also:
 
+- [vastnfs-multipath-failover.md](vastnfs-multipath-failover.md) — measured
+  behaviour when a node goes offline under `remoteports=` (short version:
+  it does not fail over), and why the servers are set up as a shared-backing
+  "cluster" rather than independent exports.
 - [xfstests-vs-pynfs.md](xfstests-vs-pynfs.md) — what xfstests actually
   covers vs. protocol-level testing.
 - [testing-vast-features-without-hardware.md](testing-vast-features-without-hardware.md)
@@ -64,10 +68,22 @@ NFS_SERVER_COUNT=4 ./scripts/nfs-test-env/01-setup-servers.sh
 
 Creates a docker bridge network (`172.28.0.0/24` by default) and one
 privileged container per server (`erichough/nfs-server`), each with a static
-IP and its own export directory under `$HOME/nfs-test-env-exports/<n>` (no
-sudo needed — pick somewhere else with `NFS_EXPORT_BASE` if you want).
-Idempotent — re-run after changing `NFS_SERVER_COUNT` and it only adds
+IP. Idempotent — re-run after changing `NFS_SERVER_COUNT` and it only adds
 what's missing.
+
+All servers export the **same** host directory (`$HOME/nfs-test-env-exports/root`
+by default, no sudo needed — move it with `NFS_EXPORT_BASE`) with identical
+`fsid=` values, which makes them behave as one crude cluster: a filehandle
+issued by any node is valid on every other node, so `remoteports=` can
+actually spread one mount's traffic across all of them. With independent
+per-server directories — how this script used to work — spread I/O fails
+with `ESTALE`. The evidence for that, and what this still doesn't simulate
+(shared lock state, cache coherence), is in
+[vastnfs-multipath-failover.md](vastnfs-multipath-failover.md).
+
+Layout: `/export` (`fsid=0`, the NFSv4 pseudo-root), `/export/test`
+(`fsid=1`), `/export/scratch` (`fsid=2`). Mind the path asymmetry — NFSv3
+mounts `server:/export/scratch`, NFSv4 mounts `server:/scratch`.
 
 Verified working end-to-end on Ubuntu 24.04/kernel 6.8.0-138-generic. One
 thing to know if you restart the containers later (e.g. after a
@@ -168,21 +184,36 @@ results against step 3's.
 
 ## Step 7 — exercise VAST-specific multipath
 
-No xfstests case covers `nconnect=`/`remoteports=`/`pconnect=` — confirmed
-by grepping `xfstests/tests` and `xfstests/common` for those strings, no
-hits. `06-mount-multipath.sh` is the manual substitute:
+`xfstests/tests/nfs/002` is an automated case for this (added after we
+first confirmed no test covered `nconnect=`/`remoteports=`/`pconnect=` by
+grepping `xfstests/tests` and `xfstests/common` for those strings). It
+mounts scratch with `remoteports=<first-server-ip>-<last-server-ip>` across
+all the docker servers from step 1, then counts the distinct `dstaddr=`
+values reported by `vastnfs-ctl rpc-transports` — more than one is the
+signal traffic is actually spread across multiple destination IPs (the VAST
+addition) rather than opening N connections to a single address (the
+upstream-only `nconnect` behavior). It `_notrun`s automatically on a
+non-VAST client (via `/sys/module/sunrpc/parameters/nfs_bundle_version`) or
+without a `NFS_MULTIPATH_REMOTEPORTS` range in `local.config` (written by
+`02-configure-xfstests.sh`).
+
+It proves spread only. It does **not** prove the mount survives losing a
+node — measurements showing it does not are in
+[vastnfs-multipath-failover.md](vastnfs-multipath-failover.md).
+
+```sh
+./scripts/nfs-test-env/03-run-xfstests.sh nfs/002
+# or as part of a broader run: ./scripts/nfs-test-env/03-run-xfstests.sh -g vastnfs
+```
+
+`06-mount-multipath.sh` still exists for interactive/manual debugging
+(mount by hand, eyeball `vastnfs-ctl` output) — `nfs/002` is what should
+run in CI or a regression pass.
 
 ```sh
 ./scripts/nfs-test-env/06-mount-multipath.sh        # nconnect defaults to NFS_SERVER_COUNT
 ./scripts/nfs-test-env/06-mount-multipath.sh 8       # or pick an explicit nconnect
 ```
-
-Mounts with `remoteports=<first-server-ip>-<last-server-ip>` across all the
-docker servers from step 1, then runs `vastnfs-ctl rpc-clients` and prints
-what to look for: more than one distinct `remote_port_idx` across the
-`xprt:` lines, which is the signal traffic is actually spread across
-multiple destination IPs (the VAST addition) rather than opening N
-connections to a single address (the upstream-only `nconnect` behavior).
 
 ## Teardown
 
@@ -201,10 +232,11 @@ modules — that's a separate, host-wide step, see
   `vastnfs-4.5.8/docs/src/build/kernels.md`'s supported range before
   building — `build.sh` itself will refuse if it isn't, but you'll want to
   check that doc before spending time on the build.
-- Nothing here builds a corresponding xfstests test case for step 7's
-  multipath check — it's a manual script, not a `tests/nfs/9xx`-style
-  automated test. Worth writing one if this becomes a repeated check rather
-  than an occasional one.
+- `nfs/002` only proves `remoteports=` spreads across destination
+  addresses — it doesn't check `localports=`/`pconnect=` specifically, or
+  compare against plain `nconnect=` staying on one address (a "contrast"
+  test would strengthen the signal; see the plan this was built from,
+  `nfs/003` is the natural next one if wanted).
 - `nfs/001` in the `-g quick` group needs `TEST_DEV` mounted as NFSv4 and is
   skipped by default, since `02-configure-xfstests.sh` doesn't pin a
   version. Add `vers=4` to a manual mount, or extend the config, if you want

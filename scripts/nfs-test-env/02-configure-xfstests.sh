@@ -14,10 +14,14 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 
 [ "$NFS_SERVER_COUNT" -ge 2 ] || die "need NFS_SERVER_COUNT >= 2 (TEST_DEV + SCRATCH_DEV)"
 
-test_dev="$(server_ip 1):/export"
-scratch_dev="$(server_ip 2):/export"
+# Every node serves both exports (see 01-setup-servers.sh), so which node
+# each dev names only decides where traffic goes absent remoteports=.
+test_dev="$(server_ip 1):/export/test"
+scratch_dev="$(server_ip 2):/export/scratch"
 
 sudo mkdir -p "$TEST_MNT" "$SCRATCH_MNT"
+
+multipath_remoteports="$(server_ip 1)-$(server_ip "$NFS_SERVER_COUNT")"
 
 config="${XFSTESTS_DIR}/local.config"
 log "writing $config"
@@ -28,6 +32,9 @@ export TEST_DEV=${test_dev}
 export TEST_DIR=${TEST_MNT}
 export SCRATCH_DEV=${scratch_dev}
 export SCRATCH_MNT=${SCRATCH_MNT}
+# VAST multipath range for xfstests/tests/nfs/002 -- all NFS_SERVER_COUNT
+# docker servers from 01-setup-servers.sh, not just TEST_DEV/SCRATCH_DEV.
+export NFS_MULTIPATH_REMOTEPORTS=${multipath_remoteports}
 EOF
 
 cat "$config"

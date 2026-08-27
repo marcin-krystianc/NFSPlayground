@@ -13,6 +13,13 @@ NFS_SERVER_COUNT="${NFS_SERVER_COUNT:-3}"      # >=2: index 1 is TEST_DEV, 2 is 
 NFS_SERVER_IMAGE="${NFS_SERVER_IMAGE:-erichough/nfs-server}"
 NFS_EXPORT_BASE="${NFS_EXPORT_BASE:-${HOME}/nfs-test-env-exports}"
 
+# Every server exports both directories with these fsids. The fsid must be
+# identical across servers for a filehandle from one node to be valid on
+# another (see 01-setup-servers.sh), and distinct between test and scratch
+# so xfstests still sees two separate filesystems.
+NFS_TEST_FSID="${NFS_TEST_FSID:-1}"
+NFS_SCRATCH_FSID="${NFS_SCRATCH_FSID:-2}"
+
 TEST_MNT="${TEST_MNT:-/mnt/nfs-test-env/test}"
 SCRATCH_MNT="${SCRATCH_MNT:-/mnt/nfs-test-env/scratch}"
 
