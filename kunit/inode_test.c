@@ -37,6 +37,7 @@
 #include <linux/nfs_fs_sb.h>
 #include <linux/sched/signal.h>
 #include <linux/wait_bit.h>
+#include <linux/pagemap.h>
 
 #include "nfs4_fs.h"
 #include "internal.h"
@@ -3167,6 +3168,15 @@ static void wait_bit_returns_eintr_while_task_is_exiting(struct kunit *test)
  * up the xarray, the i_mmap root and the locks.
  */
 
+/*
+ * Every real filesystem gives its mappings an address_space_operations.
+ * The page cache dereferences it unconditionally in places -- notably
+ * filemap_free_folio(), which reads a_ops->free_folio before testing it
+ * -- so a mapping with a NULL a_ops is not a simplified filesystem, it is
+ * an impossible one. The kernel already provides the honest minimum:
+ * empty_aops, the all-NULL table inode_init_always() installs on an
+ * inode that has no filesystem behind it yet.
+ */
 static struct nfs_inode_fixture *pagecache_fixture(struct kunit *test)
 {
 	struct nfs_inode_fixture *f = update_fixture(test);
@@ -3174,6 +3184,8 @@ static struct nfs_inode_fixture *pagecache_fixture(struct kunit *test)
 
 	address_space_init_once(&f->mapping);
 	f->mapping.host = inode;
+	f->mapping.a_ops = &empty_aops;
+	mapping_set_gfp_mask(&f->mapping, GFP_KERNEL);
 	inode->i_mapping = &f->mapping;
 
 	/* inode_newsize_ok() rejects everything if the limit is left zero. */
@@ -3336,6 +3348,130 @@ static void vmtruncate_leaves_mtime_alone_without_delegation(struct kunit *test)
 	KUNIT_ASSERT_EQ(test, call_vmtruncate(f, 4096), 0);
 
 	KUNIT_EXPECT_EQ(test, inode_get_mtime_sec(inode), 1000LL);
+}
+
+/*
+ * Real page-cache truncation
+ *
+ * The earlier attempt to reach this by setting nrpages by hand paniced,
+ * and deserved to: it described pages that did not exist. The honest way
+ * is to put an actual folio in the page cache, which makes nrpages
+ * non-zero as a consequence rather than as a claim.
+ *
+ * A plain folio carries no private data, so folio_needs_release() is
+ * false and truncate_cleanup_folio() never reaches
+ * mapping->a_ops->invalidate_folio -- which is why this works without a
+ * filesystem's address_space_operations behind it.
+ */
+
+/* Put one folio at @index into the mapping, leaving the cache holding it. */
+static struct folio *add_cached_folio(struct kunit *test,
+				      struct address_space *mapping,
+				      pgoff_t index)
+{
+	struct folio *folio;
+
+	folio = folio_alloc(GFP_KERNEL, 0);
+	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, folio);
+
+	KUNIT_ASSERT_EQ(test,
+			filemap_add_folio(mapping, folio, index, GFP_KERNEL),
+			0);
+	/* filemap_add_folio() returns it locked and holds its own ref. */
+	folio_unlock(folio);
+	folio_put(folio);
+
+	return folio;
+}
+
+static bool folio_is_cached(struct address_space *mapping, pgoff_t index)
+{
+	struct folio *folio = filemap_get_folio(mapping, index);
+
+	if (IS_ERR(folio))
+		return false;
+	folio_put(folio);
+	return true;
+}
+
+/*
+ * The point of the function: a page wholly beyond the new size is
+ * dropped from the cache.
+ */
+static void vmtruncate_drops_page_beyond_new_size(struct kunit *test)
+{
+	struct nfs_inode_fixture *f = pagecache_fixture(test);
+	struct inode *inode = fixture_inode(f);
+
+	add_cached_folio(test, &f->mapping, 1);	/* covers 4096..8191 */
+
+	KUNIT_ASSERT_EQ(test, f->mapping.nrpages, 1UL);
+	KUNIT_ASSERT_TRUE(test, folio_is_cached(&f->mapping, 1));
+
+	i_size_write(inode, 8192);
+	KUNIT_ASSERT_EQ(test, call_vmtruncate(f, 4096), 0);
+
+	KUNIT_EXPECT_EQ_MSG(test, f->mapping.nrpages, 0UL,
+			    "a page beyond the new size survived truncation");
+	KUNIT_EXPECT_FALSE(test, folio_is_cached(&f->mapping, 1));
+}
+
+/* A page wholly within the new size is kept. */
+static void vmtruncate_keeps_page_within_new_size(struct kunit *test)
+{
+	struct nfs_inode_fixture *f = pagecache_fixture(test);
+	struct inode *inode = fixture_inode(f);
+
+	add_cached_folio(test, &f->mapping, 0);	/* covers 0..4095 */
+
+	i_size_write(inode, 8192);
+	KUNIT_ASSERT_EQ(test, call_vmtruncate(f, 4096), 0);
+
+	KUNIT_EXPECT_EQ_MSG(test, f->mapping.nrpages, 1UL,
+			    "a page inside the new size was discarded");
+	KUNIT_EXPECT_TRUE(test, folio_is_cached(&f->mapping, 0));
+
+	truncate_inode_pages(&f->mapping, 0);
+}
+
+/* Truncating to zero clears the cache entirely. */
+static void vmtruncate_to_zero_drops_every_page(struct kunit *test)
+{
+	struct nfs_inode_fixture *f = pagecache_fixture(test);
+	struct inode *inode = fixture_inode(f);
+
+	add_cached_folio(test, &f->mapping, 0);
+	add_cached_folio(test, &f->mapping, 1);
+	add_cached_folio(test, &f->mapping, 2);
+
+	KUNIT_ASSERT_EQ(test, f->mapping.nrpages, 3UL);
+
+	i_size_write(inode, 12288);
+	KUNIT_ASSERT_EQ(test, call_vmtruncate(f, 0), 0);
+
+	KUNIT_EXPECT_EQ(test, f->mapping.nrpages, 0UL);
+}
+
+/*
+ * With real pages present, nfs_invalidate_mapping() reaches
+ * invalidate_inode_pages2() for real and drops them.
+ */
+static void invalidate_mapping_discards_cached_pages(struct kunit *test)
+{
+	struct nfs_inode_fixture *f = pagecache_fixture(test);
+
+	add_cached_folio(test, &f->mapping, 0);
+	add_cached_folio(test, &f->mapping, 1);
+	KUNIT_ASSERT_EQ(test, f->mapping.nrpages, 2UL);
+
+	/* A directory skips the writeback step and goes straight to invalidate. */
+	fixture_inode(f)->i_mode = S_IFDIR | 0755;
+
+	KUNIT_EXPECT_EQ(test,
+			nfs_invalidate_mapping(fixture_inode(f), &f->mapping),
+			0);
+	KUNIT_EXPECT_EQ_MSG(test, f->mapping.nrpages, 0UL,
+			    "invalidation left pages in the cache");
 }
 
 /*
@@ -3745,6 +3881,10 @@ static struct kunit_case nfs_pagecache_cases[] = {
 	KUNIT_CASE(vmtruncate_rejects_negative_size),
 	KUNIT_CASE(vmtruncate_updates_mtime_under_delegation),
 	KUNIT_CASE(vmtruncate_leaves_mtime_alone_without_delegation),
+	KUNIT_CASE(vmtruncate_drops_page_beyond_new_size),
+	KUNIT_CASE(vmtruncate_keeps_page_within_new_size),
+	KUNIT_CASE(vmtruncate_to_zero_drops_every_page),
+	KUNIT_CASE(invalidate_mapping_discards_cached_pages),
 	KUNIT_CASE(invalidate_mapping_succeeds_with_no_pages),
 	{}
 };

@@ -54,7 +54,7 @@ implement the wire format every NFS operation travels over. XDR's defining
 rule is that objects are padded out to a 4-byte boundary and the padding is
 zero-filled (RFC 4506), which is where its classic bugs live.
 
-Forty-seven suites, 432 cases, across seven files.
+Forty-seven suites, 438 cases, across seven files.
 
 `kunit/addr_test.c` covers `net/sunrpc/addr.c`:
 
@@ -135,22 +135,41 @@ delegated-mtime update is exercised, but `truncate_pagecache()` is only
 ever called on an empty mapping, so no page is ever actually dropped.
 The function's own logic is tested; the truncation it performs is not.
 
-### Where the page cache really stops being testable
+### Testing the page cache for real
 
-`truncate_pagecache()` and `invalidate_inode_pages2()` both have an
-empty-mapping fast path (`mapping_empty()`, `RB_EMPTY_ROOT()`), so with an
-`address_space` initialised by the exported `address_space_init_once()`
-they run to completion without touching a page. That makes the
-surrounding NFS logic reachable.
+These tests put actual folios in the page cache and check that truncation
+and invalidation remove them, rather than only exercising the
+empty-mapping fast paths. Three pieces make that possible:
 
-What is *not* reachable is anything past that guard, and the attempt is
-worth recording. Setting `nrpages` to a non-zero value on an otherwise
-empty mapping makes `nfs_invalidate_mapping()` believe there is data to
-flush; it reaches `filemap_write_and_wait_range()` and dereferences
-`mapping->a_ops`, which a fixture cannot populate meaningfully. The
-kernel panics, correctly -- the fixture had fabricated a state the kernel
-cannot produce. A fixture may leave things out, but it must not lie about
-them.
+- `address_space_init_once()` is exported, and sets up the xarray, the
+  `i_mmap` root and the locks.
+- `filemap_add_folio()` inserts a real folio, so `nrpages` becomes
+  non-zero as a *consequence* rather than as a claim.
+- `mapping->a_ops` must point somewhere. The page cache dereferences it
+  unconditionally in places -- `filemap_free_folio()` reads
+  `a_ops->free_folio` before testing it -- so the kernel's own
+  `empty_aops`, the all-NULL table `inode_init_always()` installs, is
+  used.
+
+A plain folio carries no private data, so `folio_needs_release()` is
+false and `truncate_cleanup_folio()` never reaches
+`a_ops->invalidate_folio`. That is why no filesystem-specific operations
+are needed.
+
+Two earlier attempts panicked, and both were the fixture's fault rather
+than a limitation:
+
+1. Setting `nrpages` by hand on an empty mapping. The code believed there
+   was data to flush, reached `filemap_write_and_wait_range()` and
+   dereferenced a NULL `a_ops`.
+2. Adding real folios but leaving `a_ops` NULL, which crashed in
+   `filemap_free_folio()` during truncation.
+
+The rule both illustrate: **a fixture may leave things out, but it must
+not describe a state the kernel cannot produce.** A zeroed pointer the
+code tests for is fine; a count that contradicts the structure it
+describes, or an absent vtable the code dereferences unconditionally, is
+not.
 
 `nfs_wait_bit_killable()` looked untestable because it calls
 `schedule()`. It is not: `schedule()` only blocks when the task state is
