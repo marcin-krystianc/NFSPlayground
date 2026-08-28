@@ -56,6 +56,10 @@ warn_if_case_insensitive_fs() {
 }
 
 # Blobless + shallow + sparse: only the NFS subtrees, at one tag.
+#
+# Set LINUX_FULL=1 to check out the whole tree instead. Needed to build a
+# kernel, which the sparse checkout cannot do -- see scripts/kunit/. It
+# fetches the remaining blobs for the pinned tag, adding roughly 1-1.5 GB.
 fetch_linux() {
     local dir="${SRC_DIR}/linux"
 
@@ -64,10 +68,22 @@ fetch_linux() {
         git clone --quiet --filter=blob:none --sparse \
             --depth 1 --branch "$LINUX_REF" "$LINUX_URL" "$dir"
     fi
-    git -C "$dir" sparse-checkout set "${LINUX_PATHS[@]}"
+
+    if [ "${LINUX_FULL:-0}" = "1" ]; then
+        log "expanding linux to the full tree (fetches remaining blobs)"
+        git -C "$dir" sparse-checkout disable
+    else
+        git -C "$dir" sparse-checkout set "${LINUX_PATHS[@]}"
+    fi
+
     [ "$(git -C "$dir" rev-parse HEAD)" = "$LINUX_SHA" ] ||
         die "linux: HEAD is not ${LINUX_SHA}"
-    log "linux: ${LINUX_REF} ${LINUX_SHA:0:12} ok, $(git -C "$dir" sparse-checkout list | wc -l) paths"
+
+    if [ "${LINUX_FULL:-0}" = "1" ]; then
+        log "linux: ${LINUX_REF} ${LINUX_SHA:0:12} ok, full tree"
+    else
+        log "linux: ${LINUX_REF} ${LINUX_SHA:0:12} ok, $(git -C "$dir" sparse-checkout list | wc -l) paths"
+    fi
 }
 
 # Source tarball only; VAST publishes no public git repository.
