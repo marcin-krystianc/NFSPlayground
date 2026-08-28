@@ -74,6 +74,8 @@ UNSTATIC=(
     "fs/nfs/inode.c:bool:nfs_file_has_buffered_writers"
     "fs/nfs/inode.c:void:nfs_fattr_fixup_delegated"
     "fs/nfs/inode.c:void:nfs_init_lock_context"
+    "fs/nfs/inode.c:int:nfs_vmtruncate"
+    "fs/nfs/inode.c:int:nfs_invalidate_mapping"
     "fs/nfs/inode.c:void:nfs_set_timestamps_to_ts"
     "fs/nfs/inode.c:void:nfs_ooo_record"
     "fs/nfs/inode.c:int:nfs_inode_finish_partial_attr_update"

@@ -54,7 +54,7 @@ implement the wire format every NFS operation travels over. XDR's defining
 rule is that objects are padded out to a 4-byte boundary and the padding is
 zero-filled (RFC 4506), which is where its classic bugs live.
 
-Forty-six suites, 423 cases, across seven files.
+Forty-seven suites, 432 cases, across seven files.
 
 `kunit/addr_test.c` covers `net/sunrpc/addr.c`:
 
@@ -127,6 +127,30 @@ is in the stock `.kunitconfig`; the runner adds both.
 | `nfs-inode-open-context` | `get_nfs_open_context()` refusing a context whose count has reached zero, `nfs_inode_attach_open_context()` linking to the inode and invalidating data only when out-of-order gaps are outstanding, and `nfs_find_open_context()` matching on credential, exact access mode and open state |
 | `nfs-inode-ooo-state` | `nfs_ooo_test()` distinguishing a deferred invalidation and recorded gaps from an allocated-but-empty gap table, and `nfs_clear_inode()` dropping ACL validity |
 | `nfs-inode-wait-bit` | `nfs_wait_bit_killable()` signal semantics per wait mode: interruptible aborts on any signal, uninterruptible ignores signals entirely, killable ignores a non-fatal one, and an exiting task returns `-EINTR` before scheduling at all |
+| `nfs-inode-pagecache` | `nfs_vmtruncate()` shrinking, clearing size invalidity, dropping data invalidity and out-of-order gaps only when truncating to zero, refreshing mtime under a delegation but not without one, and rejecting negative or over-limit sizes; `nfs_invalidate_mapping()` with nothing cached |
+
+`nfs_vmtruncate()` is covered for its bookkeeping but **not** for its
+namesake. Every branch of the size check, the validity flags and the
+delegated-mtime update is exercised, but `truncate_pagecache()` is only
+ever called on an empty mapping, so no page is ever actually dropped.
+The function's own logic is tested; the truncation it performs is not.
+
+### Where the page cache really stops being testable
+
+`truncate_pagecache()` and `invalidate_inode_pages2()` both have an
+empty-mapping fast path (`mapping_empty()`, `RB_EMPTY_ROOT()`), so with an
+`address_space` initialised by the exported `address_space_init_once()`
+they run to completion without touching a page. That makes the
+surrounding NFS logic reachable.
+
+What is *not* reachable is anything past that guard, and the attempt is
+worth recording. Setting `nrpages` to a non-zero value on an otherwise
+empty mapping makes `nfs_invalidate_mapping()` believe there is data to
+flush; it reaches `filemap_write_and_wait_range()` and dereferences
+`mapping->a_ops`, which a fixture cannot populate meaningfully. The
+kernel panics, correctly -- the fixture had fabricated a state the kernel
+cannot produce. A fixture may leave things out, but it must not lie about
+them.
 
 `nfs_wait_bit_killable()` looked untestable because it calls
 `schedule()`. It is not: `schedule()` only blocks when the task state is

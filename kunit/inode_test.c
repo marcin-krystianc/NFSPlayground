@@ -67,6 +67,8 @@ int __nfs_revalidate_inode(struct nfs_server *server, struct inode *inode);
 void nfs_inode_init_regular(struct nfs_inode *nfsi);
 void nfs_inode_init_dir(struct nfs_inode *nfsi);
 void nfs_init_lock_context(struct nfs_lock_context *l_ctx);
+int nfs_vmtruncate(struct inode *inode, loff_t offset);
+int nfs_invalidate_mapping(struct inode *inode, struct address_space *mapping);
 struct nfs_lock_context *__nfs_find_lock_context(struct nfs_open_context *ctx);
 void nfs_fattr_fixup_delegated(struct inode *inode, struct nfs_fattr *fattr);
 bool nfs_file_has_buffered_writers(struct nfs_inode *nfsi);
@@ -3146,6 +3148,206 @@ static void wait_bit_returns_eintr_while_task_is_exiting(struct kunit *test)
 			    "an exiting task was allowed to wait");
 }
 
+/*
+ * Page-cache paths
+ *
+ * These reach into the VM: truncate_pagecache() and
+ * invalidate_inode_pages2(). Both turn out to have an empty-mapping fast
+ * path -- mapping_empty() and RB_EMPTY_ROOT() respectively -- so with a
+ * properly initialised but empty address_space they run to completion
+ * without touching a single page.
+ *
+ * That makes the surrounding NFS logic testable: the size check, the
+ * cache-validity bookkeeping, and the nrpages guard. What is still out of
+ * reach is any behaviour that depends on pages actually being there,
+ * because a fixture cannot manufacture folios, dirty state or writeback.
+ * These tests cover the empty case only, and say so.
+ *
+ * address_space_init_once() is exported and does the whole job: it sets
+ * up the xarray, the i_mmap root and the locks.
+ */
+
+static struct nfs_inode_fixture *pagecache_fixture(struct kunit *test)
+{
+	struct nfs_inode_fixture *f = update_fixture(test);
+	struct inode *inode = fixture_inode(f);
+
+	address_space_init_once(&f->mapping);
+	f->mapping.host = inode;
+	inode->i_mapping = &f->mapping;
+
+	/* inode_newsize_ok() rejects everything if the limit is left zero. */
+	f->sb.s_maxbytes = MAX_LFS_FILESIZE;
+
+	inode->i_mode = S_IFREG | 0644;
+	i_size_write(inode, 8192);
+
+	return f;
+}
+
+static int call_vmtruncate(struct nfs_inode_fixture *f, loff_t offset)
+{
+	struct inode *inode = fixture_inode(f);
+	int ret;
+
+	/* nfs_vmtruncate() is called with i_lock held and drops it itself. */
+	spin_lock(&inode->i_lock);
+	ret = nfs_vmtruncate(inode, offset);
+	spin_unlock(&inode->i_lock);
+	return ret;
+}
+
+static void vmtruncate_shrinks_the_inode_size(struct kunit *test)
+{
+	struct nfs_inode_fixture *f = pagecache_fixture(test);
+
+	KUNIT_ASSERT_EQ(test, call_vmtruncate(f, 4096), 0);
+	KUNIT_EXPECT_EQ(test, i_size_read(fixture_inode(f)), 4096LL);
+}
+
+/* Truncation resolves the size, so the size-invalid flag is cleared. */
+static void vmtruncate_clears_size_invalidity(struct kunit *test)
+{
+	struct nfs_inode_fixture *f = pagecache_fixture(test);
+
+	f->nfsi.cache_validity = NFS_INO_INVALID_SIZE |
+				 NFS_INO_INVALID_ACCESS;
+
+	KUNIT_ASSERT_EQ(test, call_vmtruncate(f, 4096), 0);
+
+	KUNIT_EXPECT_EQ(test, f->nfsi.cache_validity & NFS_INO_INVALID_SIZE,
+			0UL);
+	KUNIT_EXPECT_EQ_MSG(test,
+			    f->nfsi.cache_validity & NFS_INO_INVALID_ACCESS,
+			    (unsigned long)NFS_INO_INVALID_ACCESS,
+			    "truncation cleared an unrelated validity bit");
+}
+
+/*
+ * Truncating to zero is special-cased: there is provably no cached data
+ * left, so the data-invalid flag and any out-of-order gaps are dropped
+ * outright rather than left for a later revalidation.
+ */
+static void vmtruncate_to_zero_drops_data_invalidity_and_gaps(struct kunit *test)
+{
+	struct nfs_inode_fixture *f = pagecache_fixture(test);
+
+	f->nfsi.cache_validity = NFS_INO_INVALID_DATA;
+	nfs_ooo_merge(&f->nfsi, 10, 20);
+	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, f->nfsi.ooo);
+
+	KUNIT_ASSERT_EQ(test, call_vmtruncate(f, 0), 0);
+
+	KUNIT_EXPECT_EQ(test, i_size_read(fixture_inode(f)), 0LL);
+	KUNIT_EXPECT_EQ(test, f->nfsi.cache_validity & NFS_INO_INVALID_DATA,
+			0UL);
+	KUNIT_EXPECT_PTR_EQ_MSG(test, f->nfsi.ooo, NULL,
+				"truncate to zero left stale out-of-order gaps");
+}
+
+/* A non-zero truncation keeps the data-invalid flag, since data remains. */
+static void vmtruncate_nonzero_keeps_data_invalidity(struct kunit *test)
+{
+	struct nfs_inode_fixture *f = pagecache_fixture(test);
+
+	f->nfsi.cache_validity = NFS_INO_INVALID_DATA;
+
+	KUNIT_ASSERT_EQ(test, call_vmtruncate(f, 4096), 0);
+
+	KUNIT_EXPECT_EQ(test, f->nfsi.cache_validity & NFS_INO_INVALID_DATA,
+			(unsigned long)NFS_INO_INVALID_DATA);
+}
+
+/*
+ * Growing beyond the filesystem limit is refused and changes nothing.
+ * Note inode_newsize_ok() only consults s_maxbytes when the size is
+ * increasing; shrinking is never limited by it.
+ */
+static void vmtruncate_rejects_growth_beyond_limit(struct kunit *test)
+{
+	struct nfs_inode_fixture *f = pagecache_fixture(test);
+
+	i_size_write(fixture_inode(f), 0);
+	f->sb.s_maxbytes = 4096;
+
+	KUNIT_EXPECT_EQ(test, call_vmtruncate(f, 8192), -EFBIG);
+	KUNIT_EXPECT_EQ_MSG(test, i_size_read(fixture_inode(f)), 0LL,
+			    "a rejected truncation still changed the size");
+}
+
+/* A negative size is rejected outright. */
+static void vmtruncate_rejects_negative_size(struct kunit *test)
+{
+	struct nfs_inode_fixture *f = pagecache_fixture(test);
+
+	KUNIT_EXPECT_EQ(test, call_vmtruncate(f, -1), -EINVAL);
+}
+
+/*
+ * nfs_invalidate_mapping() with nothing cached: invalidate_inode_pages2()
+ * is never reached because of the nrpages guard, and the function
+ * succeeds.
+ */
+static void invalidate_mapping_succeeds_with_no_pages(struct kunit *test)
+{
+	struct nfs_inode_fixture *f = pagecache_fixture(test);
+
+	fixture_set_nrpages(f, 0);
+
+	KUNIT_EXPECT_EQ(test,
+			nfs_invalidate_mapping(fixture_inode(f), &f->mapping),
+			0);
+}
+
+/*
+ * Truncation counts as modifying the file, so a client holding a
+ * delegation on the times updates mtime itself rather than waiting for
+ * the server to report it. This is the one branch of nfs_vmtruncate()
+ * that only runs under a delegation.
+ */
+static void vmtruncate_updates_mtime_under_delegation(struct kunit *test)
+{
+	struct nfs_inode_fixture *f = pagecache_fixture(test);
+	struct inode *inode = fixture_inode(f);
+	struct timespec64 old = { .tv_sec = 1000, .tv_nsec = 0 };
+
+	inode_set_mtime_to_ts(inode, old);
+	f->nfsi.cache_validity = NFS_INO_INVALID_MTIME;
+	f->rpc_ops.have_delegation = stub_has_delegation;
+
+	KUNIT_ASSERT_EQ(test, call_vmtruncate(f, 4096), 0);
+
+	KUNIT_EXPECT_NE_MSG(test, inode_get_mtime_sec(inode), 1000LL,
+			    "a delegated truncation did not refresh mtime");
+	KUNIT_EXPECT_EQ_MSG(test,
+			    f->nfsi.cache_validity & NFS_INO_INVALID_MTIME, 0UL,
+			    "mtime was refreshed but left marked invalid");
+}
+
+/* Without a delegation the client leaves the timestamps to the server. */
+static void vmtruncate_leaves_mtime_alone_without_delegation(struct kunit *test)
+{
+	struct nfs_inode_fixture *f = pagecache_fixture(test);
+	struct inode *inode = fixture_inode(f);
+	struct timespec64 old = { .tv_sec = 1000, .tv_nsec = 0 };
+
+	inode_set_mtime_to_ts(inode, old);
+
+	KUNIT_ASSERT_EQ(test, call_vmtruncate(f, 4096), 0);
+
+	KUNIT_EXPECT_EQ(test, inode_get_mtime_sec(inode), 1000LL);
+}
+
+/*
+ * There is deliberately no test here for nrpages > 0. Setting the count
+ * without real folios behind it is a state the kernel cannot produce:
+ * nfs_invalidate_mapping() then believes there is data to flush, reaches
+ * filemap_write_and_wait_range() and dereferences mapping->a_ops, which a
+ * fixture has no way to populate meaningfully. It panics, and rightly so.
+ * Testing past this point needs genuine page-cache state, which is the
+ * real boundary for this file.
+ */
+
 static struct kunit_case nfs_attr_cmp_cases[] = {
 	KUNIT_CASE(monotonic_larger_change_attr_is_newer),
 	KUNIT_CASE(monotonic_equal_change_attr_is_unchanged),
@@ -3534,6 +3736,24 @@ static struct kunit_suite nfs_wait_bit_suite = {
 	.test_cases	= nfs_wait_bit_cases,
 };
 
+static struct kunit_case nfs_pagecache_cases[] = {
+	KUNIT_CASE(vmtruncate_shrinks_the_inode_size),
+	KUNIT_CASE(vmtruncate_clears_size_invalidity),
+	KUNIT_CASE(vmtruncate_to_zero_drops_data_invalidity_and_gaps),
+	KUNIT_CASE(vmtruncate_nonzero_keeps_data_invalidity),
+	KUNIT_CASE(vmtruncate_rejects_growth_beyond_limit),
+	KUNIT_CASE(vmtruncate_rejects_negative_size),
+	KUNIT_CASE(vmtruncate_updates_mtime_under_delegation),
+	KUNIT_CASE(vmtruncate_leaves_mtime_alone_without_delegation),
+	KUNIT_CASE(invalidate_mapping_succeeds_with_no_pages),
+	{}
+};
+
+static struct kunit_suite nfs_pagecache_suite = {
+	.name		= "nfs-inode-pagecache",
+	.test_cases	= nfs_pagecache_cases,
+};
+
 kunit_test_suites(&nfs_attr_cmp_suite,
 		  &nfs_cache_invalid_suite,
 		  &nfs_cache_expiry_suite,
@@ -3559,7 +3779,8 @@ kunit_test_suites(&nfs_attr_cmp_suite,
 		  &nfs_lock_ctx_suite,
 		  &nfs_open_ctx_suite,
 		  &nfs_ooo_test_suite,
-		  &nfs_wait_bit_suite);
+		  &nfs_wait_bit_suite,
+		  &nfs_pagecache_suite);
 
 MODULE_DESCRIPTION("Test NFS inode attribute freshness comparison");
 MODULE_LICENSE("GPL");
