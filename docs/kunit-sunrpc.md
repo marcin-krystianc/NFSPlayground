@@ -54,7 +54,7 @@ implement the wire format every NFS operation travels over. XDR's defining
 rule is that objects are padded out to a 4-byte boundary and the padding is
 zero-filled (RFC 4506), which is where its classic bugs live.
 
-Forty-three suites, 403 cases, across seven files.
+Forty-five suites, 418 cases, across seven files.
 
 `kunit/addr_test.c` covers `net/sunrpc/addr.c`:
 
@@ -124,6 +124,14 @@ is in the stock `.kunitconfig`; the runner adds both.
 | `nfs-inode-sync` | `nfs_sync_inode()` and `nfs_commit_inode()` on a clean inode, commit-counter balance across repeated calls, and `nfs_sync_mapping()` short-circuiting with no cached pages |
 | `nfs-inode-lifetime` | `nfs_drop_inode()` dropping a stale inode even when the generic rules would keep it, `nfs_fattr_fixup_delegated()` stripping server timestamps under a delegation but keeping ones the client has already marked invalid, and `nfs_file_has_buffered_writers()` excluding O_DIRECT files |
 | `nfs-inode-lock-context` | `nfs_init_lock_context()` starting referenced and idle, and `__nfs_find_lock_context()` matching on the current task's file table while skipping contexts owned by another |
+| `nfs-inode-open-context` | `get_nfs_open_context()` refusing a context whose count has reached zero, `nfs_inode_attach_open_context()` linking to the inode and invalidating data only when out-of-order gaps are outstanding, and `nfs_find_open_context()` matching on credential, exact access mode and open state |
+| `nfs-inode-ooo-state` | `nfs_ooo_test()` distinguishing a deferred invalidation and recorded gaps from an allocated-but-empty gap table, and `nfs_clear_inode()` dropping ACL validity |
+
+`get_nfs_open_context()` is guarded by `refcount_inc_not_zero()`, so a
+context already being torn down is refused rather than resurrected;
+getting that wrong would hand out a freed context. The open-context tests
+need a dentry, but only for its `d_inode` and `d_sb` pointers, so a
+zeroed struct with those two fields set is enough.
 
 `nfs_fattr_fixup_delegated()` has the subtler rule of the three: a
 delegation makes the client's timestamps authoritative, so server values

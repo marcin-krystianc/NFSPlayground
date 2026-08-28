@@ -2794,6 +2794,263 @@ static void find_lock_context_skips_other_owner(struct kunit *test)
 	list_del_rcu(&l_ctx->list);
 }
 
+/*
+ * Open contexts
+ *
+ * An open context records who opened a file and how. It is reference
+ * counted through its embedded lock context, hangs off the inode's
+ * open_files list, and is looked up by credential and access mode.
+ *
+ * These need a dentry, but only for its d_inode and d_sb pointers, so a
+ * zeroed struct with those two fields set is enough.
+ */
+
+struct open_ctx_fixture {
+	struct nfs_inode_fixture	*f;
+	struct dentry			dentry;
+	struct nfs_open_context		ctx;
+};
+
+static struct open_ctx_fixture *open_ctx_fixture(struct kunit *test,
+						 fmode_t mode)
+{
+	struct open_ctx_fixture *o;
+
+	o = kunit_kzalloc(test, sizeof(*o), GFP_KERNEL);
+	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, o);
+
+	o->f = update_fixture(test);
+	o->dentry.d_inode = fixture_inode(o->f);
+	o->dentry.d_sb = &o->f->sb;
+
+	o->ctx.dentry = &o->dentry;
+	o->ctx.cred = current_cred();
+	o->ctx.mode = mode;
+	o->ctx.flags = 0;
+	nfs_init_lock_context(&o->ctx.lock_context);
+	o->ctx.lock_context.open_context = &o->ctx;
+	INIT_LIST_HEAD(&o->ctx.list);
+
+	return o;
+}
+
+/* Taking a reference on a live context returns it and bumps the count. */
+static void get_open_context_takes_a_reference(struct kunit *test)
+{
+	struct open_ctx_fixture *o = open_ctx_fixture(test, FMODE_READ);
+
+	KUNIT_EXPECT_PTR_EQ(test, get_nfs_open_context(&o->ctx), &o->ctx);
+	KUNIT_EXPECT_EQ(test, refcount_read(&o->ctx.lock_context.count), 2);
+}
+
+static void get_open_context_tolerates_null(struct kunit *test)
+{
+	KUNIT_EXPECT_PTR_EQ(test, get_nfs_open_context(NULL), NULL);
+}
+
+/*
+ * A context whose count has already reached zero is being torn down and
+ * must not be resurrected. refcount_inc_not_zero() is what enforces
+ * that, and getting it wrong would hand out a freed context.
+ */
+static void get_open_context_refuses_dead_context(struct kunit *test)
+{
+	struct open_ctx_fixture *o = open_ctx_fixture(test, FMODE_READ);
+
+	refcount_set(&o->ctx.lock_context.count, 0);
+
+	KUNIT_EXPECT_PTR_EQ_MSG(test, get_nfs_open_context(&o->ctx), NULL,
+				"a context being torn down was handed out");
+
+	refcount_set(&o->ctx.lock_context.count, 1);
+}
+
+/* Attaching a context puts it on the inode's open file list. */
+static void attach_open_context_links_it_to_the_inode(struct kunit *test)
+{
+	struct open_ctx_fixture *o = open_ctx_fixture(test, FMODE_READ);
+
+	KUNIT_ASSERT_TRUE(test, list_empty(&o->f->nfsi.open_files));
+
+	nfs_inode_attach_open_context(&o->ctx);
+
+	KUNIT_EXPECT_FALSE(test, list_empty(&o->f->nfsi.open_files));
+	list_del_rcu(&o->ctx.list);
+}
+
+/*
+ * Opening a file that has unmerged out-of-order gaps means the data
+ * cache cannot be trusted, so the first attach invalidates it. Without
+ * outstanding gaps there is nothing to invalidate.
+ */
+static void attach_open_context_invalidates_data_after_reordering(struct kunit *test)
+{
+	struct open_ctx_fixture *o = open_ctx_fixture(test, FMODE_READ);
+
+	o->f->nfsi.cache_validity = NFS_INO_DATA_INVAL_DEFER;
+	fixture_set_nrpages(o->f, 1);
+
+	nfs_inode_attach_open_context(&o->ctx);
+
+	KUNIT_EXPECT_EQ(test,
+			o->f->nfsi.cache_validity & NFS_INO_INVALID_DATA,
+			(unsigned long)NFS_INO_INVALID_DATA);
+	list_del_rcu(&o->ctx.list);
+}
+
+static void attach_open_context_leaves_clean_cache_alone(struct kunit *test)
+{
+	struct open_ctx_fixture *o = open_ctx_fixture(test, FMODE_READ);
+
+	o->f->nfsi.cache_validity = 0;
+	o->f->nfsi.ooo = NULL;
+	fixture_set_nrpages(o->f, 1);
+
+	nfs_inode_attach_open_context(&o->ctx);
+
+	KUNIT_EXPECT_EQ_MSG(test,
+			    o->f->nfsi.cache_validity & NFS_INO_INVALID_DATA,
+			    0UL,
+			    "attaching to a clean inode invalidated its data");
+	list_del_rcu(&o->ctx.list);
+}
+
+/*
+ * nfs_find_open_context() matches on credential, exact access mode, and
+ * the context still being open. Each is a separate reason to skip a
+ * candidate.
+ */
+static void find_open_context_matches_mode_and_cred(struct kunit *test)
+{
+	struct open_ctx_fixture *o = open_ctx_fixture(test, FMODE_READ);
+	struct nfs_open_context *found;
+
+	set_bit(NFS_CONTEXT_FILE_OPEN, &o->ctx.flags);
+	nfs_inode_attach_open_context(&o->ctx);
+
+	found = nfs_find_open_context(fixture_inode(o->f), o->ctx.cred,
+				      FMODE_READ);
+	KUNIT_EXPECT_PTR_EQ(test, found, &o->ctx);
+
+	list_del_rcu(&o->ctx.list);
+}
+
+/* A read context is not a match for a caller wanting write access. */
+static void find_open_context_requires_exact_mode(struct kunit *test)
+{
+	struct open_ctx_fixture *o = open_ctx_fixture(test, FMODE_READ);
+
+	set_bit(NFS_CONTEXT_FILE_OPEN, &o->ctx.flags);
+	nfs_inode_attach_open_context(&o->ctx);
+
+	KUNIT_EXPECT_PTR_EQ_MSG(test,
+				nfs_find_open_context(fixture_inode(o->f),
+						      o->ctx.cred, FMODE_WRITE),
+				NULL,
+				"a read-only context satisfied a write request");
+
+	list_del_rcu(&o->ctx.list);
+}
+
+/* A context whose file has been closed is skipped. */
+static void find_open_context_skips_closed_context(struct kunit *test)
+{
+	struct open_ctx_fixture *o = open_ctx_fixture(test, FMODE_READ);
+
+	clear_bit(NFS_CONTEXT_FILE_OPEN, &o->ctx.flags);
+	nfs_inode_attach_open_context(&o->ctx);
+
+	KUNIT_EXPECT_PTR_EQ_MSG(test,
+				nfs_find_open_context(fixture_inode(o->f),
+						      o->ctx.cred, FMODE_READ),
+				NULL,
+				"a closed context was returned as open");
+
+	list_del_rcu(&o->ctx.list);
+}
+
+/* A NULL credential means "any", so only mode and open state matter. */
+static void find_open_context_null_cred_matches_any(struct kunit *test)
+{
+	struct open_ctx_fixture *o = open_ctx_fixture(test, FMODE_READ);
+
+	set_bit(NFS_CONTEXT_FILE_OPEN, &o->ctx.flags);
+	nfs_inode_attach_open_context(&o->ctx);
+
+	KUNIT_EXPECT_PTR_EQ(test,
+			    nfs_find_open_context(fixture_inode(o->f), NULL,
+						  FMODE_READ),
+			    &o->ctx);
+
+	list_del_rcu(&o->ctx.list);
+}
+
+/*
+ * nfs_ooo_test(): are there unmerged out-of-order gaps?
+ */
+static void ooo_test_false_when_nothing_outstanding(struct kunit *test)
+{
+	struct nfs_inode_fixture *f = update_fixture(test);
+
+	f->nfsi.cache_validity = 0;
+	f->nfsi.ooo = NULL;
+
+	KUNIT_EXPECT_FALSE(test, nfs_ooo_test(&f->nfsi));
+}
+
+static void ooo_test_true_when_deferred(struct kunit *test)
+{
+	struct nfs_inode_fixture *f = update_fixture(test);
+
+	f->nfsi.cache_validity = NFS_INO_DATA_INVAL_DEFER;
+	f->nfsi.ooo = NULL;
+
+	KUNIT_EXPECT_TRUE(test, nfs_ooo_test(&f->nfsi));
+}
+
+static void ooo_test_true_when_gaps_recorded(struct kunit *test)
+{
+	struct nfs_inode_fixture *f = update_fixture(test);
+
+	f->nfsi.cache_validity = 0;
+	nfs_ooo_merge(&f->nfsi, 10, 20);
+
+	KUNIT_EXPECT_TRUE(test, nfs_ooo_test(&f->nfsi));
+	kfree(f->nfsi.ooo);
+	f->nfsi.ooo = NULL;
+}
+
+/* An allocated but empty gap table is not an outstanding reordering. */
+static void ooo_test_false_when_table_is_empty(struct kunit *test)
+{
+	struct nfs_inode_fixture *f = update_fixture(test);
+
+	f->nfsi.cache_validity = 0;
+	nfs_ooo_merge(&f->nfsi, 42, 42);	/* empty range: allocates, records nothing */
+
+	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, f->nfsi.ooo);
+	KUNIT_EXPECT_FALSE(test, nfs_ooo_test(&f->nfsi));
+	kfree(f->nfsi.ooo);
+	f->nfsi.ooo = NULL;
+}
+
+/* nfs_clear_inode() drops the ACL validity bit on the way out. */
+static void clear_inode_drops_acl_validity(struct kunit *test)
+{
+	struct nfs_inode_fixture *f = update_fixture(test);
+
+	f->rpc_ops.clear_acl_cache = NULL;
+	f->nfsi.cache_validity = NFS_INO_INVALID_ACL |
+				 NFS_INO_INVALID_ACCESS;
+
+	nfs_clear_inode(fixture_inode(f));
+
+	KUNIT_EXPECT_EQ(test, f->nfsi.cache_validity & NFS_INO_INVALID_ACL,
+			0UL);
+	KUNIT_EXPECT_EQ(test, f->nfsi.cache_validity & NFS_INO_INVALID_ACCESS,
+			(unsigned long)NFS_INO_INVALID_ACCESS);
+}
+
 static struct kunit_case nfs_attr_cmp_cases[] = {
 	KUNIT_CASE(monotonic_larger_change_attr_is_newer),
 	KUNIT_CASE(monotonic_equal_change_attr_is_unchanged),
@@ -3135,6 +3392,39 @@ static struct kunit_suite nfs_lock_ctx_suite = {
 	.test_cases	= nfs_lock_ctx_cases,
 };
 
+static struct kunit_case nfs_open_ctx_cases[] = {
+	KUNIT_CASE(get_open_context_takes_a_reference),
+	KUNIT_CASE(get_open_context_tolerates_null),
+	KUNIT_CASE(get_open_context_refuses_dead_context),
+	KUNIT_CASE(attach_open_context_links_it_to_the_inode),
+	KUNIT_CASE(attach_open_context_invalidates_data_after_reordering),
+	KUNIT_CASE(attach_open_context_leaves_clean_cache_alone),
+	KUNIT_CASE(find_open_context_matches_mode_and_cred),
+	KUNIT_CASE(find_open_context_requires_exact_mode),
+	KUNIT_CASE(find_open_context_skips_closed_context),
+	KUNIT_CASE(find_open_context_null_cred_matches_any),
+	{}
+};
+
+static struct kunit_suite nfs_open_ctx_suite = {
+	.name		= "nfs-inode-open-context",
+	.test_cases	= nfs_open_ctx_cases,
+};
+
+static struct kunit_case nfs_ooo_test_cases[] = {
+	KUNIT_CASE(ooo_test_false_when_nothing_outstanding),
+	KUNIT_CASE(ooo_test_true_when_deferred),
+	KUNIT_CASE(ooo_test_true_when_gaps_recorded),
+	KUNIT_CASE(ooo_test_false_when_table_is_empty),
+	KUNIT_CASE(clear_inode_drops_acl_validity),
+	{}
+};
+
+static struct kunit_suite nfs_ooo_test_suite = {
+	.name		= "nfs-inode-ooo-state",
+	.test_cases	= nfs_ooo_test_cases,
+};
+
 kunit_test_suites(&nfs_attr_cmp_suite,
 		  &nfs_cache_invalid_suite,
 		  &nfs_cache_expiry_suite,
@@ -3157,7 +3447,9 @@ kunit_test_suites(&nfs_attr_cmp_suite,
 		  &nfs_revalidate_gate_suite,
 		  &nfs_sync_suite,
 		  &nfs_lifetime_suite,
-		  &nfs_lock_ctx_suite);
+		  &nfs_lock_ctx_suite,
+		  &nfs_open_ctx_suite,
+		  &nfs_ooo_test_suite);
 
 MODULE_DESCRIPTION("Test NFS inode attribute freshness comparison");
 MODULE_LICENSE("GPL");
