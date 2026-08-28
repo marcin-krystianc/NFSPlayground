@@ -35,6 +35,8 @@
 #include <linux/nfs4.h>
 #include <linux/nfs_fs.h>
 #include <linux/nfs_fs_sb.h>
+#include <linux/sched/signal.h>
+#include <linux/wait_bit.h>
 
 #include "nfs4_fs.h"
 #include "internal.h"
@@ -3051,6 +3053,99 @@ static void clear_inode_drops_acl_validity(struct kunit *test)
 			(unsigned long)NFS_INO_INVALID_ACCESS);
 }
 
+/*
+ * nfs_wait_bit_killable()
+ *
+ * This is the action function the wait_bit machinery calls while a task
+ * waits on an NFS bit. It looked untestable because it calls schedule(),
+ * but schedule() only blocks when the task state is something other than
+ * TASK_RUNNING -- the wait_bit machinery sets that state before invoking
+ * the action. Called directly from a test the state is still
+ * TASK_RUNNING, so schedule() simply yields and returns.
+ *
+ * That leaves the interesting half reachable: how the function reports a
+ * pending signal, which depends entirely on the wait mode it was given.
+ * The signal flag is set and cleared around each call so nothing leaks
+ * into the rest of the run.
+ */
+
+/* Nothing pending: the wait completes normally. A hang here would be the
+ * regression this case exists to catch.
+ */
+static void wait_bit_returns_zero_when_nothing_is_pending(struct kunit *test)
+{
+	struct wait_bit_key key = {};
+
+	KUNIT_EXPECT_EQ(test, nfs_wait_bit_killable(&key, TASK_KILLABLE), 0);
+}
+
+/* An interruptible wait is aborted by any pending signal. */
+static void wait_bit_interruptible_aborts_on_signal(struct kunit *test)
+{
+	struct wait_bit_key key = {};
+	int ret;
+
+	set_thread_flag(TIF_SIGPENDING);
+	ret = nfs_wait_bit_killable(&key, TASK_INTERRUPTIBLE);
+	clear_thread_flag(TIF_SIGPENDING);
+
+	KUNIT_EXPECT_EQ(test, ret, -ERESTARTSYS);
+}
+
+/*
+ * An uninterruptible wait ignores signals entirely -- that is what
+ * distinguishes it, and it is checked before signal_pending() is even
+ * consulted.
+ */
+static void wait_bit_uninterruptible_ignores_signal(struct kunit *test)
+{
+	struct wait_bit_key key = {};
+	int ret;
+
+	set_thread_flag(TIF_SIGPENDING);
+	ret = nfs_wait_bit_killable(&key, TASK_UNINTERRUPTIBLE);
+	clear_thread_flag(TIF_SIGPENDING);
+
+	KUNIT_EXPECT_EQ_MSG(test, ret, 0,
+			    "an uninterruptible wait was aborted by a signal");
+}
+
+/*
+ * A killable wait is the interesting middle case: it responds to a fatal
+ * signal but not to an ordinary one. With TIF_SIGPENDING set but no
+ * SIGKILL queued, __fatal_signal_pending() is false and the wait
+ * continues.
+ */
+static void wait_bit_killable_ignores_non_fatal_signal(struct kunit *test)
+{
+	struct wait_bit_key key = {};
+	int ret;
+
+	set_thread_flag(TIF_SIGPENDING);
+	ret = nfs_wait_bit_killable(&key, TASK_KILLABLE);
+	clear_thread_flag(TIF_SIGPENDING);
+
+	KUNIT_EXPECT_EQ_MSG(test, ret, 0,
+			    "a killable wait aborted on a non-fatal signal");
+}
+
+/*
+ * A task already exiting bails out before scheduling at all, so a
+ * teardown path cannot be left waiting on a bit that will never clear.
+ */
+static void wait_bit_returns_eintr_while_task_is_exiting(struct kunit *test)
+{
+	struct wait_bit_key key = {};
+	int ret;
+
+	current->flags |= PF_EXITING;
+	ret = nfs_wait_bit_killable(&key, TASK_KILLABLE);
+	current->flags &= ~PF_EXITING;
+
+	KUNIT_EXPECT_EQ_MSG(test, ret, -EINTR,
+			    "an exiting task was allowed to wait");
+}
+
 static struct kunit_case nfs_attr_cmp_cases[] = {
 	KUNIT_CASE(monotonic_larger_change_attr_is_newer),
 	KUNIT_CASE(monotonic_equal_change_attr_is_unchanged),
@@ -3425,6 +3520,20 @@ static struct kunit_suite nfs_ooo_test_suite = {
 	.test_cases	= nfs_ooo_test_cases,
 };
 
+static struct kunit_case nfs_wait_bit_cases[] = {
+	KUNIT_CASE(wait_bit_returns_zero_when_nothing_is_pending),
+	KUNIT_CASE(wait_bit_interruptible_aborts_on_signal),
+	KUNIT_CASE(wait_bit_uninterruptible_ignores_signal),
+	KUNIT_CASE(wait_bit_killable_ignores_non_fatal_signal),
+	KUNIT_CASE(wait_bit_returns_eintr_while_task_is_exiting),
+	{}
+};
+
+static struct kunit_suite nfs_wait_bit_suite = {
+	.name		= "nfs-inode-wait-bit",
+	.test_cases	= nfs_wait_bit_cases,
+};
+
 kunit_test_suites(&nfs_attr_cmp_suite,
 		  &nfs_cache_invalid_suite,
 		  &nfs_cache_expiry_suite,
@@ -3449,7 +3558,8 @@ kunit_test_suites(&nfs_attr_cmp_suite,
 		  &nfs_lifetime_suite,
 		  &nfs_lock_ctx_suite,
 		  &nfs_open_ctx_suite,
-		  &nfs_ooo_test_suite);
+		  &nfs_ooo_test_suite,
+		  &nfs_wait_bit_suite);
 
 MODULE_DESCRIPTION("Test NFS inode attribute freshness comparison");
 MODULE_LICENSE("GPL");

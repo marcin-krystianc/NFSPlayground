@@ -54,7 +54,7 @@ implement the wire format every NFS operation travels over. XDR's defining
 rule is that objects are padded out to a 4-byte boundary and the padding is
 zero-filled (RFC 4506), which is where its classic bugs live.
 
-Forty-five suites, 418 cases, across seven files.
+Forty-six suites, 423 cases, across seven files.
 
 `kunit/addr_test.c` covers `net/sunrpc/addr.c`:
 
@@ -126,6 +126,16 @@ is in the stock `.kunitconfig`; the runner adds both.
 | `nfs-inode-lock-context` | `nfs_init_lock_context()` starting referenced and idle, and `__nfs_find_lock_context()` matching on the current task's file table while skipping contexts owned by another |
 | `nfs-inode-open-context` | `get_nfs_open_context()` refusing a context whose count has reached zero, `nfs_inode_attach_open_context()` linking to the inode and invalidating data only when out-of-order gaps are outstanding, and `nfs_find_open_context()` matching on credential, exact access mode and open state |
 | `nfs-inode-ooo-state` | `nfs_ooo_test()` distinguishing a deferred invalidation and recorded gaps from an allocated-but-empty gap table, and `nfs_clear_inode()` dropping ACL validity |
+| `nfs-inode-wait-bit` | `nfs_wait_bit_killable()` signal semantics per wait mode: interruptible aborts on any signal, uninterruptible ignores signals entirely, killable ignores a non-fatal one, and an exiting task returns `-EINTR` before scheduling at all |
+
+`nfs_wait_bit_killable()` looked untestable because it calls
+`schedule()`. It is not: `schedule()` only blocks when the task state is
+something other than `TASK_RUNNING`, and the wait_bit machinery sets that
+state *before* invoking the action function. Called directly from a test
+the state is still `TASK_RUNNING`, so `schedule()` yields and returns.
+That leaves the signal handling reachable, which is the half worth
+testing. `TIF_SIGPENDING` is set and cleared around each call so nothing
+leaks into the rest of the run.
 
 `get_nfs_open_context()` is guarded by `refcount_inc_not_zero()`, so a
 context already being torn down is refused rather than resurrected;
