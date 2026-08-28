@@ -70,6 +70,10 @@ UNSTATIC=(
     "fs/nfs/inode.c:int:__nfs_revalidate_inode"
     "fs/nfs/inode.c:void:nfs_inode_init_regular"
     "fs/nfs/inode.c:void:nfs_inode_init_dir"
+    "fs/nfs/inode.c:struct nfs_lock_context *:__nfs_find_lock_context"
+    "fs/nfs/inode.c:bool:nfs_file_has_buffered_writers"
+    "fs/nfs/inode.c:void:nfs_fattr_fixup_delegated"
+    "fs/nfs/inode.c:void:nfs_init_lock_context"
     "fs/nfs/inode.c:void:nfs_set_timestamps_to_ts"
     "fs/nfs/inode.c:void:nfs_ooo_record"
     "fs/nfs/inode.c:int:nfs_inode_finish_partial_attr_update"
@@ -88,13 +92,15 @@ for entry in "${UNSTATIC[@]}"; do
         sed -i "0,/^#include/s|^#include|#include <kunit/visibility.h>\n#include|" "$src"
 
     # Drop the `static` on the definition only, not on forward decls.
-    # Two layouts occur in this code: "static int foo(" on one line, and
-    # "static int" with "foo(" on the next.
-    perl -0pi -e "s/^static \Q${rettype}\E \Q${func}\E\(/VISIBLE_IF_KUNIT ${rettype} ${func}(/m" "$src"
-    perl -0pi -e "s/^static \Q${rettype}\E\n\Q${func}\E\(/VISIBLE_IF_KUNIT ${rettype}\n${func}(/m" "$src"
+    # Three layouts occur in this code: "static int foo(" on one line,
+    # "static int" with "foo(" on the next, and "static struct x *foo("
+    # where the pointer star abuts the name. \s* covers all three, since
+    # \s matches the newline too.
+    perl -0pi -e "s/^static \Q${rettype}\E\s*\Q${func}\E\(/VISIBLE_IF_KUNIT ${rettype} ${func}(/mg" "$src"
 
-    grep -q "^VISIBLE_IF_KUNIT ${rettype}" "$src" ||
-        die "could not un-static ${rettype} ${func}() in ${relpath}"
+    # Verify by absence: the definition must no longer be static.
+    grep -qE "^static .*\b${func}\(" "$src" &&
+        die "could not un-static ${func}() in ${relpath}"
 
     printf '\nEXPORT_SYMBOL_IF_KUNIT(%s);\n' "$func" >> "$src"
 done

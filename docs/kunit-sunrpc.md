@@ -54,7 +54,7 @@ implement the wire format every NFS operation travels over. XDR's defining
 rule is that objects are padded out to a 4-byte boundary and the padding is
 zero-filled (RFC 4506), which is where its classic bugs live.
 
-Forty-one suites, 392 cases, across seven files.
+Forty-three suites, 403 cases, across seven files.
 
 `kunit/addr_test.c` covers `net/sunrpc/addr.c`:
 
@@ -122,6 +122,15 @@ is in the stock `.kunitconfig`; the runner adds both.
 | `nfs-inode-revalidate` | `__nfs_revalidate_inode()` error handling with a stubbed `getattr`: `-ESTALE` marking a regular file stale but only zapping a directory's caches, `-ETIMEDOUT` absorbed under `NFS_MOUNT_SOFTREVAL` and propagated without it, other errors passed through, and a known-stale inode short-circuited without a round trip |
 | `nfs-inode-revalidate-gate` | `nfs_revalidate_inode()` skipping the round trip when the cache is valid, issuing one when the requested flag is invalid, reporting `-ESTALE` without querying, and `nfs_mapping_need_revalidate_inode()` |
 | `nfs-inode-sync` | `nfs_sync_inode()` and `nfs_commit_inode()` on a clean inode, commit-counter balance across repeated calls, and `nfs_sync_mapping()` short-circuiting with no cached pages |
+| `nfs-inode-lifetime` | `nfs_drop_inode()` dropping a stale inode even when the generic rules would keep it, `nfs_fattr_fixup_delegated()` stripping server timestamps under a delegation but keeping ones the client has already marked invalid, and `nfs_file_has_buffered_writers()` excluding O_DIRECT files |
+| `nfs-inode-lock-context` | `nfs_init_lock_context()` starting referenced and idle, and `__nfs_find_lock_context()` matching on the current task's file table while skipping contexts owned by another |
+
+`nfs_fattr_fixup_delegated()` has the subtler rule of the three: a
+delegation makes the client's timestamps authoritative, so server values
+are discarded -- but only for times whose caches are still believed
+valid. A timestamp the client has already marked invalid survives,
+because the delegation is not a substitute for knowledge the client has
+admitted it lost.
 
 `nfs-inode-sync` is deliberately shallow and worth flagging as such. Each
 step of `nfs_sync_inode()` has a cheap exit when nothing is outstanding:

@@ -64,6 +64,10 @@ bool nfs_getattr_readdirplus_enable(const struct inode *inode);
 int __nfs_revalidate_inode(struct nfs_server *server, struct inode *inode);
 void nfs_inode_init_regular(struct nfs_inode *nfsi);
 void nfs_inode_init_dir(struct nfs_inode *nfsi);
+void nfs_init_lock_context(struct nfs_lock_context *l_ctx);
+struct nfs_lock_context *__nfs_find_lock_context(struct nfs_open_context *ctx);
+void nfs_fattr_fixup_delegated(struct inode *inode, struct nfs_fattr *fattr);
+bool nfs_file_has_buffered_writers(struct nfs_inode *nfsi);
 
 /*
  * Mirrors the file-local definition in fs/nfs/inode.c. It is two pointers
@@ -2573,6 +2577,223 @@ static void sync_mapping_without_pages_is_a_noop(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, nfs_sync_mapping(&f->mapping), 0);
 }
 
+/*
+ * Inode lifetime
+ */
+
+/*
+ * A stale inode is dropped on last reference rather than kept in the
+ * cache, since nothing about it can be trusted any more. This holds even
+ * when the generic rules would have retained it.
+ */
+static void drop_inode_drops_stale_inode(struct kunit *test)
+{
+	struct nfs_inode_fixture *f = update_fixture(test);
+	struct inode *inode = fixture_inode(f);
+
+	set_nlink(inode, 1);
+	/* Pretend the inode is hashed, so generic_drop_inode() would keep it. */
+	inode->i_hash.pprev = &inode->i_hash.next;
+
+	KUNIT_ASSERT_EQ_MSG(test, nfs_drop_inode(inode), 0,
+			    "a healthy hashed inode was dropped");
+
+	set_bit(NFS_INO_STALE, &f->nfsi.flags);
+	KUNIT_EXPECT_NE_MSG(test, nfs_drop_inode(inode), 0,
+			    "a stale inode was retained in the cache");
+}
+
+/* An unlinked inode is dropped by the generic rule. */
+static void drop_inode_drops_unlinked_inode(struct kunit *test)
+{
+	struct nfs_inode_fixture *f = update_fixture(test);
+	struct inode *inode = fixture_inode(f);
+
+	inode->i_hash.pprev = &inode->i_hash.next;
+	clear_nlink(inode);
+
+	KUNIT_EXPECT_NE(test, nfs_drop_inode(inode), 0);
+}
+
+/*
+ * Delegated timestamps
+ *
+ * Holding a delegation on the times means the client's copies are
+ * authoritative. Server-supplied timestamps are therefore stripped from
+ * the reply before it is applied -- but only for the times whose caches
+ * are still believed valid. A time already marked invalid must survive,
+ * because the client has admitted it does not know the answer.
+ */
+
+static void fixup_delegated_strips_times_under_mtime_delegation(struct kunit *test)
+{
+	struct nfs_inode_fixture *f = update_fixture(test);
+	struct nfs_fattr fattr;
+
+	f->rpc_ops.have_delegation = stub_has_delegation;
+	f->nfsi.cache_validity = 0;
+
+	memset(&fattr, 0, sizeof(fattr));
+	fattr.valid = NFS_ATTR_FATTR_MTIME | NFS_ATTR_FATTR_CTIME |
+		      NFS_ATTR_FATTR_ATIME | NFS_ATTR_FATTR_SIZE;
+
+	nfs_fattr_fixup_delegated(fixture_inode(f), &fattr);
+
+	KUNIT_EXPECT_EQ(test, fattr.valid & NFS_ATTR_FATTR_MTIME, 0U);
+	KUNIT_EXPECT_EQ(test, fattr.valid & NFS_ATTR_FATTR_CTIME, 0U);
+	KUNIT_EXPECT_EQ(test, fattr.valid & NFS_ATTR_FATTR_ATIME, 0U);
+	KUNIT_EXPECT_EQ_MSG(test, fattr.valid & NFS_ATTR_FATTR_SIZE,
+			    (unsigned int)NFS_ATTR_FATTR_SIZE,
+			    "a delegation stripped a non-timestamp attribute");
+}
+
+/*
+ * A timestamp the client has already marked invalid is kept, since the
+ * delegation is not a substitute for knowledge the client has discarded.
+ */
+static void fixup_delegated_keeps_times_it_admits_are_invalid(struct kunit *test)
+{
+	struct nfs_inode_fixture *f = update_fixture(test);
+	struct nfs_fattr fattr;
+
+	f->rpc_ops.have_delegation = stub_has_delegation;
+	f->nfsi.cache_validity = NFS_INO_INVALID_MTIME;
+
+	memset(&fattr, 0, sizeof(fattr));
+	fattr.valid = NFS_ATTR_FATTR_MTIME | NFS_ATTR_FATTR_CTIME;
+
+	nfs_fattr_fixup_delegated(fixture_inode(f), &fattr);
+
+	KUNIT_EXPECT_EQ_MSG(test, fattr.valid & NFS_ATTR_FATTR_MTIME,
+			    (unsigned int)NFS_ATTR_FATTR_MTIME,
+			    "an mtime the client knew was stale got stripped");
+	KUNIT_EXPECT_EQ(test, fattr.valid & NFS_ATTR_FATTR_CTIME, 0U);
+}
+
+/* Without a delegation nothing is stripped at all. */
+static void fixup_delegated_is_a_noop_without_delegation(struct kunit *test)
+{
+	struct nfs_inode_fixture *f = update_fixture(test);
+	struct nfs_fattr fattr;
+	unsigned int before;
+
+	f->nfsi.cache_validity = 0;
+
+	memset(&fattr, 0, sizeof(fattr));
+	fattr.valid = NFS_ATTR_FATTR_MTIME | NFS_ATTR_FATTR_CTIME |
+		      NFS_ATTR_FATTR_ATIME;
+	before = fattr.valid;
+
+	nfs_fattr_fixup_delegated(fixture_inode(f), &fattr);
+
+	KUNIT_EXPECT_EQ(test, fattr.valid, before);
+}
+
+/*
+ * Buffered writers
+ *
+ * nfs_file_has_buffered_writers() is nfs_file_has_writers() qualified by
+ * the file not being in O_DIRECT mode, since direct I/O bypasses the
+ * page cache and so cannot hold back a size update.
+ */
+static void buffered_writers_false_when_file_is_odirect(struct kunit *test)
+{
+	struct nfs_inode_fixture *f = update_fixture(test);
+
+	set_bit(NFS_INO_ODIRECT, &f->nfsi.flags);
+
+	KUNIT_EXPECT_FALSE(test, nfs_file_has_buffered_writers(&f->nfsi));
+}
+
+static void buffered_writers_false_without_open_files(struct kunit *test)
+{
+	struct nfs_inode_fixture *f = update_fixture(test);
+
+	clear_bit(NFS_INO_ODIRECT, &f->nfsi.flags);
+
+	KUNIT_EXPECT_FALSE(test, nfs_file_has_buffered_writers(&f->nfsi));
+}
+
+/*
+ * Lock contexts
+ *
+ * A lock context is keyed on the opening task's file table, so that
+ * locks taken by unrelated processes through the same open file are kept
+ * apart.
+ */
+
+static void init_lock_context_starts_referenced_and_idle(struct kunit *test)
+{
+	struct nfs_lock_context *l_ctx;
+
+	l_ctx = kunit_kzalloc(test, sizeof(*l_ctx), GFP_KERNEL);
+	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, l_ctx);
+
+	nfs_init_lock_context(l_ctx);
+
+	KUNIT_EXPECT_EQ(test, refcount_read(&l_ctx->count), 1);
+	KUNIT_EXPECT_EQ(test, atomic_read(&l_ctx->io_count), 0);
+	KUNIT_EXPECT_TRUE(test, list_empty(&l_ctx->list));
+	KUNIT_EXPECT_PTR_EQ(test, l_ctx->lockowner, (void *)current->files);
+}
+
+static void find_lock_context_returns_null_when_empty(struct kunit *test)
+{
+	struct nfs_open_context *ctx;
+
+	ctx = kunit_kzalloc(test, sizeof(*ctx), GFP_KERNEL);
+	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, ctx);
+	nfs_init_lock_context(&ctx->lock_context);
+
+	KUNIT_EXPECT_PTR_EQ(test, __nfs_find_lock_context(ctx), NULL);
+}
+
+/* A context belonging to this task is found, and takes a reference. */
+static void find_lock_context_matches_current_owner(struct kunit *test)
+{
+	struct nfs_open_context *ctx;
+	struct nfs_lock_context *l_ctx, *found;
+
+	ctx = kunit_kzalloc(test, sizeof(*ctx), GFP_KERNEL);
+	l_ctx = kunit_kzalloc(test, sizeof(*l_ctx), GFP_KERNEL);
+	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, ctx);
+	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, l_ctx);
+
+	nfs_init_lock_context(&ctx->lock_context);
+	nfs_init_lock_context(l_ctx);
+	list_add_tail_rcu(&l_ctx->list, &ctx->lock_context.list);
+
+	found = __nfs_find_lock_context(ctx);
+	KUNIT_EXPECT_PTR_EQ(test, found, l_ctx);
+	KUNIT_EXPECT_EQ_MSG(test, refcount_read(&l_ctx->count), 2,
+			    "finding a lock context did not take a reference");
+
+	list_del_rcu(&l_ctx->list);
+}
+
+/* A context owned by a different file table is not a match. */
+static void find_lock_context_skips_other_owner(struct kunit *test)
+{
+	struct nfs_open_context *ctx;
+	struct nfs_lock_context *l_ctx;
+	unsigned long other_owner;
+
+	ctx = kunit_kzalloc(test, sizeof(*ctx), GFP_KERNEL);
+	l_ctx = kunit_kzalloc(test, sizeof(*l_ctx), GFP_KERNEL);
+	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, ctx);
+	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, l_ctx);
+
+	nfs_init_lock_context(&ctx->lock_context);
+	nfs_init_lock_context(l_ctx);
+	l_ctx->lockowner = (fl_owner_t)&other_owner;
+	list_add_tail_rcu(&l_ctx->list, &ctx->lock_context.list);
+
+	KUNIT_EXPECT_PTR_EQ_MSG(test, __nfs_find_lock_context(ctx), NULL,
+				"a lock context from another owner was returned");
+
+	list_del_rcu(&l_ctx->list);
+}
+
 static struct kunit_case nfs_attr_cmp_cases[] = {
 	KUNIT_CASE(monotonic_larger_change_attr_is_newer),
 	KUNIT_CASE(monotonic_equal_change_attr_is_unchanged),
@@ -2885,6 +3106,35 @@ static struct kunit_suite nfs_sync_suite = {
 	.test_cases	= nfs_sync_cases,
 };
 
+static struct kunit_case nfs_lifetime_cases[] = {
+	KUNIT_CASE(drop_inode_drops_stale_inode),
+	KUNIT_CASE(drop_inode_drops_unlinked_inode),
+	KUNIT_CASE(fixup_delegated_strips_times_under_mtime_delegation),
+	KUNIT_CASE(fixup_delegated_keeps_times_it_admits_are_invalid),
+	KUNIT_CASE(fixup_delegated_is_a_noop_without_delegation),
+	KUNIT_CASE(buffered_writers_false_when_file_is_odirect),
+	KUNIT_CASE(buffered_writers_false_without_open_files),
+	{}
+};
+
+static struct kunit_suite nfs_lifetime_suite = {
+	.name		= "nfs-inode-lifetime",
+	.test_cases	= nfs_lifetime_cases,
+};
+
+static struct kunit_case nfs_lock_ctx_cases[] = {
+	KUNIT_CASE(init_lock_context_starts_referenced_and_idle),
+	KUNIT_CASE(find_lock_context_returns_null_when_empty),
+	KUNIT_CASE(find_lock_context_matches_current_owner),
+	KUNIT_CASE(find_lock_context_skips_other_owner),
+	{}
+};
+
+static struct kunit_suite nfs_lock_ctx_suite = {
+	.name		= "nfs-inode-lock-context",
+	.test_cases	= nfs_lock_ctx_cases,
+};
+
 kunit_test_suites(&nfs_attr_cmp_suite,
 		  &nfs_cache_invalid_suite,
 		  &nfs_cache_expiry_suite,
@@ -2905,7 +3155,9 @@ kunit_test_suites(&nfs_attr_cmp_suite,
 		  &nfs_readdirplus_suite,
 		  &nfs_revalidate_suite,
 		  &nfs_revalidate_gate_suite,
-		  &nfs_sync_suite);
+		  &nfs_sync_suite,
+		  &nfs_lifetime_suite,
+		  &nfs_lock_ctx_suite);
 
 MODULE_DESCRIPTION("Test NFS inode attribute freshness comparison");
 MODULE_LICENSE("GPL");
