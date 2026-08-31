@@ -39,37 +39,12 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential bc bison flex libelf-dev libssl-dev
 
-      # Read the pin from fetch-sources.sh rather than repeating it here, so
-      # bumping LINUX_REF/LINUX_SHA there invalidates the cache by itself.
-      - name: Read the pinned kernel revision
-        id: pin
-        run: |
-          sha=$(grep -oP '^LINUX_SHA="\K[0-9a-f]+' scripts/fetch-sources.sh)
-          [ -n "$sha" ] || { echo "could not read LINUX_SHA"; exit 1; }
-          echo "sha=$sha" >> "$GITHUB_OUTPUT"
-
-      - name: Restore the kernel tree
-        id: linux-cache
-        uses: actions/cache/restore@v4
-        with:
-          path: linux
-          key: linux-full-${{ steps.pin.outputs.sha }}
-
-      # kunit.py needs a complete tree, so LINUX_FULL=1. A cache hit makes
-      # this close to a no-op: the clone is skipped and only the pinned SHA
-      # is re-verified.
+      # LINUX_FULL=1 is required, not an optimisation: kunit.py runs kbuild,
+      # and the default sparse checkout (fs/nfs, net/sunrpc and friends) has
+      # no scripts/, arch/um, init/, kernel/, mm/ or lib/. Roughly 1.7 GB,
+      # re-fetched on every run since the tree is not cached.
       - name: Fetch the kernel tree
         run: LINUX_FULL=1 bash scripts/fetch-sources.sh linux
-
-      # Saved here, before the runner script edits the tree. That script
-      # copies test sources in and drops `static` off the functions under
-      # test, so saving after the run would cache a modified kernel.
-      - name: Save the kernel tree
-        if: steps.linux-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: linux
-          key: linux-full-${{ steps.pin.outputs.sha }}
 
       # CONFIG_UBSAN=n is deliberate. With UBSAN on, this kernel reports two
       # misaligned accesses in kernel/exit.c:774, which are pre-existing in
