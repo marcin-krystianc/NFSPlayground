@@ -24,7 +24,6 @@ concurrency:
 jobs:
   kunit:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
 
     steps:
       - uses: actions/checkout@v4
@@ -46,13 +45,6 @@ jobs:
       - name: Fetch the kernel tree
         run: LINUX_FULL=1 bash scripts/fetch-sources.sh linux
 
-      # CONFIG_UBSAN=n is deliberate. With UBSAN on, this kernel reports two
-      # misaligned accesses in kernel/exit.c:774, which are pre-existing in
-      # v6.12.57 under UML and unrelated to anything in kunit/. kunit.py
-      # attributes them to whichever test happened to be running, so they
-      # surface as two failures that move around between runs. The kernel is
-      # pinned, so this only needs revisiting when the pin is bumped.
-      #
       # --json needs the `=` form: its value is optional (nargs='?'), so
       # `--json path` leaves --json empty and path is taken as the positional
       # filter_glob instead, which silently runs zero tests.
@@ -63,7 +55,6 @@ jobs:
         run: |
           set -o pipefail
           bash scripts/kunit/run-sunrpc-kunit.sh \
-            --kconfig_add CONFIG_UBSAN=n \
             --json="${GITHUB_WORKSPACE}/kunit-results.json" \
             $EXTRA_ARGS 2>&1 | tee kunit.log
 
