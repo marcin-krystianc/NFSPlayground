@@ -1,4 +1,4 @@
-name: KUnit
+name: NFS KUnit
 
 # Runs the NFS/SunRPC KUnit suites in kunit/ under User Mode Linux, via
 # scripts/kunit/run-sunrpc-kunit.sh. No VM and no kernel install: kunit.py
