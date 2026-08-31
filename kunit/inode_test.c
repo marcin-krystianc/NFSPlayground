@@ -70,6 +70,7 @@ void nfs_inode_init_dir(struct nfs_inode *nfsi);
 void nfs_init_lock_context(struct nfs_lock_context *l_ctx);
 int nfs_vmtruncate(struct inode *inode, loff_t offset);
 int nfs_invalidate_mapping(struct inode *inode, struct address_space *mapping);
+void init_once(void *foo);
 struct nfs_lock_context *__nfs_find_lock_context(struct nfs_open_context *ctx);
 void nfs_fattr_fixup_delegated(struct inode *inode, struct nfs_fattr *fattr);
 bool nfs_file_has_buffered_writers(struct nfs_inode *nfsi);
@@ -3484,6 +3485,175 @@ static void invalidate_mapping_discards_cached_pages(struct kunit *test)
  * real boundary for this file.
  */
 
+/*
+ * Inode allocation
+ *
+ * nfs_alloc_inode() draws from nfs_inode_cachep, the slab cache built at
+ * NFS module init. Its constructor, init_once(), runs once per slab
+ * object rather than per allocation, so the list heads and locks it sets
+ * up must survive being freed and handed out again -- that is the whole
+ * reason for splitting initialisation between a constructor and the
+ * allocator.
+ *
+ * The tests below allocate from the real cache. CONFIG_MEMCG is off in
+ * this configuration, so the superblock LRU that alloc_inode_sb() passes
+ * along is ignored and a fixture superblock is sufficient.
+ */
+
+/* The constructor sets up the list heads and leaves the v4 state empty. */
+static void init_once_prepares_a_reusable_object(struct kunit *test)
+{
+	struct nfs_inode *nfsi;
+
+	nfsi = kunit_kzalloc(test, sizeof(*nfsi), GFP_KERNEL);
+	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, nfsi);
+
+	init_once(nfsi);
+
+	KUNIT_EXPECT_TRUE(test, list_empty(&nfsi->open_files));
+	KUNIT_EXPECT_TRUE(test, list_empty(&nfsi->access_cache_entry_lru));
+	KUNIT_EXPECT_TRUE(test, list_empty(&nfsi->access_cache_inode_lru));
+#if IS_ENABLED(CONFIG_NFS_V4)
+	/* nfs4_init_once() is inlined into init_once(). */
+	KUNIT_EXPECT_TRUE(test, list_empty(&nfsi->open_states));
+	KUNIT_EXPECT_PTR_EQ(test, nfsi->delegation, NULL);
+	KUNIT_EXPECT_PTR_EQ(test, nfsi->layout, NULL);
+#endif
+}
+
+/*
+ * A freshly allocated inode has the per-allocation state cleared. These
+ * are the fields the constructor deliberately does not touch, because
+ * they must be reset every time rather than once per slab object.
+ *
+ * The object is deliberately dirtied and freed first. A never-used slab
+ * object comes back zeroed by the page allocator, so allocating straight
+ * into the assertions passes whether or not nfs_alloc_inode() clears
+ * anything -- verified by deleting the clearing and watching that version
+ * of the test still pass. Forcing a recycle is what gives the assertions
+ * teeth.
+ */
+static void alloc_inode_clears_per_allocation_state(struct kunit *test)
+{
+	struct nfs_inode_fixture *f = update_fixture(test);
+	struct inode *inode;
+	struct nfs_inode *nfsi;
+
+	inode = nfs_alloc_inode(&f->sb);
+	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, inode);
+
+	/*
+	 * Allocate the gap table before dirtying cache_validity:
+	 * nfs_ooo_merge() returns early once NFS_INO_DATA_INVAL_DEFER is
+	 * set, so dirtying first would leave ooo NULL and test nothing.
+	 * Freeing then releases it, leaving a dangling pointer behind.
+	 */
+	nfs_ooo_merge(NFS_I(inode), 10, 20);
+	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, NFS_I(inode)->ooo);
+	NFS_I(inode)->flags = ~0UL;
+	NFS_I(inode)->cache_validity = ~0UL;
+
+	nfs_free_inode(inode);
+
+	/* SLUB's freelist is LIFO, so this is the object just released. */
+	inode = nfs_alloc_inode(&f->sb);
+	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, inode);
+	nfsi = NFS_I(inode);
+
+	KUNIT_EXPECT_EQ_MSG(test, nfsi->flags, 0UL,
+			    "a recycled inode kept its old flags");
+	KUNIT_EXPECT_EQ_MSG(test, nfsi->cache_validity, 0UL,
+			    "a recycled inode kept its old cache validity");
+	KUNIT_EXPECT_PTR_EQ_MSG(test, nfsi->ooo, NULL,
+				"a recycled inode kept a freed gap table");
+
+	/*
+	 * The expectation above is the real check. Clear the field before
+	 * freeing so that a failing run reports that expectation rather
+	 * than dying in a double free on the stale pointer.
+	 */
+	nfsi->ooo = NULL;
+	nfs_free_inode(inode);
+}
+
+/*
+ * The constructor's work must be visible on an allocation, since it runs
+ * per slab object rather than per allocation.
+ */
+static void alloc_inode_arrives_constructed(struct kunit *test)
+{
+	struct nfs_inode_fixture *f = update_fixture(test);
+	struct inode *inode;
+
+	inode = nfs_alloc_inode(&f->sb);
+	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, inode);
+
+	KUNIT_EXPECT_TRUE_MSG(test, list_empty(&NFS_I(inode)->open_files),
+			      "a fresh inode arrived without its lists set up");
+
+	nfs_free_inode(inode);
+}
+
+/*
+ * Repeated allocate/free cycles stay consistent.
+ *
+ * Note what this does NOT check: nfs_free_inode() kfree()s the gap table,
+ * but with KASAN off a leak or double free is not observable from here,
+ * so the release itself is not verified -- only that the slab keeps
+ * handing back usable objects with no stale gap table attached.
+ */
+static void alloc_free_cycles_stay_consistent(struct kunit *test)
+{
+	struct nfs_inode_fixture *f = update_fixture(test);
+	struct inode *inode;
+	int i;
+
+	inode = nfs_alloc_inode(&f->sb);
+	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, inode);
+
+	nfs_ooo_merge(NFS_I(inode), 10, 20);
+	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, NFS_I(inode)->ooo);
+
+	nfs_free_inode(inode);
+
+	for (i = 0; i < 8; i++) {
+		inode = nfs_alloc_inode(&f->sb);
+		KUNIT_ASSERT_NOT_ERR_OR_NULL(test, inode);
+		KUNIT_EXPECT_PTR_EQ_MSG(test, NFS_I(inode)->ooo, NULL,
+					"a recycled inode carried a stale gap table");
+		nfs_free_inode(inode);
+	}
+}
+
+/*
+ * An inode that has been used and recycled must come back with its lists
+ * intact, since the constructor does not run again.
+ */
+static void recycled_inode_keeps_its_lists(struct kunit *test)
+{
+	struct nfs_inode_fixture *f = update_fixture(test);
+	struct nfs_open_context ctx = {};
+	struct inode *first, *second;
+
+	first = nfs_alloc_inode(&f->sb);
+	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, first);
+
+	/* Use the list, then remove the entry again before freeing. */
+	INIT_LIST_HEAD(&ctx.list);
+	list_add_tail_rcu(&ctx.list, &NFS_I(first)->open_files);
+	list_del_rcu(&ctx.list);
+	KUNIT_ASSERT_TRUE(test, list_empty(&NFS_I(first)->open_files));
+
+	nfs_free_inode(first);
+
+	second = nfs_alloc_inode(&f->sb);
+	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, second);
+	KUNIT_EXPECT_TRUE_MSG(test, list_empty(&NFS_I(second)->open_files),
+			      "a recycled inode came back with a broken list");
+
+	nfs_free_inode(second);
+}
+
 static struct kunit_case nfs_attr_cmp_cases[] = {
 	KUNIT_CASE(monotonic_larger_change_attr_is_newer),
 	KUNIT_CASE(monotonic_equal_change_attr_is_unchanged),
@@ -3894,6 +4064,20 @@ static struct kunit_suite nfs_pagecache_suite = {
 	.test_cases	= nfs_pagecache_cases,
 };
 
+static struct kunit_case nfs_alloc_inode_cases[] = {
+	KUNIT_CASE(init_once_prepares_a_reusable_object),
+	KUNIT_CASE(alloc_inode_clears_per_allocation_state),
+	KUNIT_CASE(alloc_inode_arrives_constructed),
+	KUNIT_CASE(alloc_free_cycles_stay_consistent),
+	KUNIT_CASE(recycled_inode_keeps_its_lists),
+	{}
+};
+
+static struct kunit_suite nfs_alloc_inode_suite = {
+	.name		= "nfs-inode-allocation",
+	.test_cases	= nfs_alloc_inode_cases,
+};
+
 kunit_test_suites(&nfs_attr_cmp_suite,
 		  &nfs_cache_invalid_suite,
 		  &nfs_cache_expiry_suite,
@@ -3920,7 +4104,8 @@ kunit_test_suites(&nfs_attr_cmp_suite,
 		  &nfs_open_ctx_suite,
 		  &nfs_ooo_test_suite,
 		  &nfs_wait_bit_suite,
-		  &nfs_pagecache_suite);
+		  &nfs_pagecache_suite,
+		  &nfs_alloc_inode_suite);
 
 MODULE_DESCRIPTION("Test NFS inode attribute freshness comparison");
 MODULE_LICENSE("GPL");
