@@ -79,6 +79,7 @@ UNSTATIC=(
     "fs/nfs/inode.c:int:nfs_invalidate_mapping"
     "fs/nfs/inode.c:void:nfs_set_timestamps_to_ts"
     "fs/nfs/inode.c:void:nfs_ooo_record"
+    "fs/nfs/inode.c:int:nfs_inode_finish_partial_attr_update"
 )
 
 for entry in "${UNSTATIC[@]}"; do
