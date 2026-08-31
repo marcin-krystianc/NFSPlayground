@@ -40,6 +40,7 @@ TESTS=(
     "inode_test:fs/nfs:NFS_INODE_KUNIT_TEST:NFS_FS:NFS inode attribute comparison"
     "pnfs_test:fs/nfs:NFS_PNFS_KUNIT_TEST:NFS_V4_1:pNFS layout range arithmetic"
     "pagelist_test:fs/nfs:NFS_PAGELIST_KUNIT_TEST:NFS_FS:NFS page request coalescing"
+    "nfs4proc_test:fs/nfs:NFS_V4_PROC_KUNIT_TEST:NFS_V4:NFSv4 protocol decision logic"
 )
 
 # NFS_V4 is needed by the session slot table suite and is not in the
@@ -84,6 +85,17 @@ UNSTATIC=(
     "fs/nfs/pagelist.c:bool:nfs_page_is_contiguous"
     "fs/nfs/pagelist.c:bool:nfs_match_lock_context"
     "fs/nfs/pagelist.c:unsigned int:nfs_coalesce_size"
+    "fs/nfs/nfs4proc.c:int:nfs4_map_errors"
+    "fs/nfs/nfs4proc.c:long:nfs4_update_delay"
+    "fs/nfs/nfs4proc.c:u32:nfs4_fmode_to_share_access"
+    "fs/nfs/nfs4proc.c:u32:nfs4_map_atomic_open_share"
+    "fs/nfs/nfs4proc.c:enum open_claim_type4:nfs4_map_atomic_open_claim"
+    "fs/nfs/nfs4proc.c:const nfs4_stateid *:nfs4_recoverable_stateid"
+    "fs/nfs/nfs4proc.c:void:nfs4_bitmap_copy_adjust"
+    "fs/nfs/nfs4proc.c:void:nfs4_slot_sequence_record_sent"
+    "fs/nfs/nfs4proc.c:void:nfs4_slot_sequence_acked"
+    "fs/nfs/nfs4proc.c:fmode_t:_nfs4_ctx_to_accessmode"
+    "fs/nfs/nfs4proc.c:fmode_t:_nfs4_ctx_to_openmode"
 )
 
 for entry in "${UNSTATIC[@]}"; do
