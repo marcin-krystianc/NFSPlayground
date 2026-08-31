@@ -29,6 +29,8 @@
 #include <linux/nfs4.h>
 #include <linux/nfs_fs.h>
 #include <linux/nfs_fs_sb.h>
+#include <linux/iversion.h>
+#include <linux/sunrpc/sched.h>
 
 #include "nfs4_fs.h"
 #include "internal.h"
@@ -52,6 +54,57 @@ void nfs4_slot_sequence_record_sent(struct nfs4_slot *slot, u32 seqnr);
 void nfs4_slot_sequence_acked(struct nfs4_slot *slot, u32 seqnr);
 fmode_t _nfs4_ctx_to_accessmode(const struct nfs_open_context *ctx);
 fmode_t _nfs4_ctx_to_openmode(const struct nfs_open_context *ctx);
+bool nfs4_server_supports_acls(const struct nfs_server *server,
+			       enum nfs4_acl_type type);
+ssize_t nfs4_proc_get_acl(struct inode *inode, void *buf, size_t buflen,
+			  enum nfs4_acl_type type);
+int nfs4_proc_set_acl(struct inode *inode, const void *buf, size_t buflen,
+		      enum nfs4_acl_type type);
+int __nfs4_proc_set_acl(struct inode *inode, const void *buf, size_t buflen,
+			enum nfs4_acl_type type);
+void nfs4_update_changeattr_locked(struct inode *inode,
+				   struct nfs4_change_info *cinfo,
+				   unsigned long timestamp,
+				   unsigned long cache_validity);
+int nfs4_proc_unlink_done(struct rpc_task *task, struct inode *dir);
+void nfs4_fattr_set_prechange(struct nfs_fattr *fattr, u64 version);
+int nfs4_exception_should_retrans(const struct nfs_server *server,
+				  struct nfs4_exception *exception);
+bool _nfs4_is_integrity_protected(struct nfs_client *clp);
+int nfs4_sequence_process(struct rpc_task *task, struct nfs4_sequence_res *res);
+void nfs4_sequence_free_slot(struct nfs4_sequence_res *res);
+bool nfs4_clear_cap_atomic_open_v1(struct nfs_server *server, int err,
+				   struct nfs4_exception *exception);
+bool nfs4_mode_match_open_stateid(struct nfs4_state *state, fmode_t fmode);
+int can_open_cached(struct nfs4_state *state, fmode_t mode, int open_mode,
+		    enum open_claim_type4 claim);
+int can_open_delegated(struct nfs_delegation *delegation, fmode_t fmode,
+		       enum open_claim_type4 claim);
+void update_open_stateflags(struct nfs4_state *state, fmode_t fmode);
+bool nfs_open_stateid_recover_openmode(struct nfs4_state *state);
+void nfs_state_log_update_open_stateid(struct nfs4_state *state);
+void nfs_resync_open_stateid_locked(struct nfs4_state *state);
+void nfs_clear_open_stateid_locked(struct nfs4_state *state,
+				   nfs4_stateid *stateid, fmode_t fmode);
+void nfs_state_clear_open_state_flags(struct nfs4_state *state);
+void nfs_state_set_delegation(struct nfs4_state *state,
+			      const nfs4_stateid *deleg_stateid, fmode_t fmode);
+void nfs_state_clear_delegation(struct nfs4_state *state);
+int nfs4_check_cl_exchange_flags(u32 flags, u32 version);
+bool nfs41_same_server_scope(struct nfs41_server_scope *a,
+			     struct nfs41_server_scope *b);
+int nfs4_verify_fore_channel_attrs(struct nfs41_create_session_args *args,
+				   struct nfs41_create_session_res *res);
+int nfs4_verify_back_channel_attrs(struct nfs41_create_session_args *args,
+				   struct nfs41_create_session_res *res);
+int nfs4_verify_channel_attrs(struct nfs41_create_session_args *args,
+			      struct nfs41_create_session_res *res);
+bool nfs4_match_stateid(const nfs4_stateid *s1, const nfs4_stateid *s2);
+bool nfs41_match_stateid(const nfs4_stateid *s1, const nfs4_stateid *s2);
+bool nfs4_error_stateid_expired(int err);
+bool _is_same_nfs4_pathname(struct nfs4_pathname *path1,
+			    struct nfs4_pathname *path2);
+extern short nfs_delay_retrans;
 
 /*
  * nfs4_map_errors(): NFSv4 status to errno
@@ -725,6 +778,1508 @@ static void invalid_atime_is_still_requested(struct kunit *test)
 }
 
 /*
+ * ACL entry points: the checks made before any RPC is sent
+ *
+ * These functions do issue RPCs, which is why nothing in nfs4proc.c's
+ * request-sending half is normally reachable from a unit test. But each
+ * one validates its arguments first and can refuse outright, and those
+ * refusals are ordinary logic -- the kernel never gets as far as building
+ * a task. Driving only those paths tests real protocol behaviour: the ACL
+ * size ceiling, the rule that an ACL cannot be deleted, and what happens
+ * on a filehandle the server never gave us.
+ *
+ * The tests stop short of the dispatch in every case. That is a real
+ * limit, not an oversight: past these gates the next statement needs a
+ * server.
+ */
+
+struct acl_fixture {
+	struct nfs_inode	nfsi;
+	struct nfs_server	server;
+	struct super_block	sb;
+};
+
+/*
+ * @fh_size of 0 models an inode whose filehandle was never filled in.
+ * @acl_bit is the server's advertised support, from attr_bitmask.
+ */
+static struct inode *acl_inode(struct kunit *test, unsigned short fh_size,
+			       u32 word0, u32 word1)
+{
+	struct acl_fixture *f;
+	struct inode *inode;
+
+	f = kunit_kzalloc(test, sizeof(*f), GFP_KERNEL);
+	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, f);
+
+	f->server.attr_bitmask[0] = word0;
+	f->server.attr_bitmask[1] = word1;
+	f->sb.s_fs_info = &f->server;
+
+	inode = &f->nfsi.vfs_inode;
+	inode->i_sb = &f->sb;
+	f->nfsi.fh.size = fh_size;
+	return inode;
+}
+
+/* What the server advertises decides which ACL flavours are available. */
+static void acl_support_follows_the_attribute_bitmask(struct kunit *test)
+{
+	struct inode *acl = acl_inode(test, 4, FATTR4_WORD0_ACL, 0);
+	struct inode *dacl = acl_inode(test, 4, 0, FATTR4_WORD1_DACL);
+	struct inode *sacl = acl_inode(test, 4, 0, FATTR4_WORD1_SACL);
+
+	KUNIT_EXPECT_TRUE(test,
+			  nfs4_server_supports_acls(NFS_SERVER(acl), NFS4ACL_ACL));
+	KUNIT_EXPECT_TRUE(test,
+			  nfs4_server_supports_acls(NFS_SERVER(dacl), NFS4ACL_DACL));
+	KUNIT_EXPECT_TRUE(test,
+			  nfs4_server_supports_acls(NFS_SERVER(sacl), NFS4ACL_SACL));
+}
+
+/*
+ * The flavours are tracked in different bitmask words, so support for one
+ * must not imply support for another.
+ */
+static void acl_flavours_are_advertised_independently(struct kunit *test)
+{
+	struct inode *inode = acl_inode(test, 4, FATTR4_WORD0_ACL, 0);
+	struct nfs_server *server = NFS_SERVER(inode);
+
+	KUNIT_EXPECT_FALSE_MSG(test,
+			       nfs4_server_supports_acls(server, NFS4ACL_DACL),
+			       "plain ACL support implied DACL support");
+	KUNIT_EXPECT_FALSE_MSG(test,
+			       nfs4_server_supports_acls(server, NFS4ACL_SACL),
+			       "plain ACL support implied SACL support");
+}
+
+/*
+ * An inode with a zero-length filehandle has no server-side object behind
+ * it, so there is nothing to fetch an ACL from. Reported as "no such
+ * attribute" rather than an I/O error.
+ */
+static void get_acl_on_an_empty_filehandle_reports_no_data(struct kunit *test)
+{
+	struct inode *inode = acl_inode(test, 0, FATTR4_WORD0_ACL, 0);
+	char buf[16];
+
+	KUNIT_EXPECT_EQ(test,
+			nfs4_proc_get_acl(inode, buf, sizeof(buf), NFS4ACL_ACL),
+			-ENODATA);
+}
+
+static void set_acl_on_an_empty_filehandle_reports_no_data(struct kunit *test)
+{
+	struct inode *inode = acl_inode(test, 0, FATTR4_WORD0_ACL, 0);
+	char buf[16] = { 0 };
+
+	KUNIT_EXPECT_EQ(test,
+			nfs4_proc_set_acl(inode, buf, sizeof(buf), NFS4ACL_ACL),
+			-ENODATA);
+}
+
+/*
+ * The filehandle check comes first: an inode with no filehandle reports
+ * ENODATA even for a flavour the server does not support, which would
+ * otherwise be EOPNOTSUPP.
+ */
+static void the_filehandle_check_precedes_the_support_check(struct kunit *test)
+{
+	struct inode *inode = acl_inode(test, 0, 0, 0);
+	char buf[16];
+
+	KUNIT_EXPECT_EQ_MSG(test,
+			    nfs4_proc_get_acl(inode, buf, sizeof(buf),
+					      NFS4ACL_ACL),
+			    -ENODATA,
+			    "the support check ran before the filehandle check");
+}
+
+/* A server that does not advertise the flavour is refused before dispatch. */
+static void get_acl_for_an_unsupported_flavour_is_refused(struct kunit *test)
+{
+	struct inode *inode = acl_inode(test, 4, 0, 0);
+	char buf[16];
+
+	KUNIT_EXPECT_EQ(test,
+			nfs4_proc_get_acl(inode, buf, sizeof(buf), NFS4ACL_ACL),
+			-EOPNOTSUPP);
+}
+
+static void set_acl_for_an_unsupported_flavour_is_refused(struct kunit *test)
+{
+	struct inode *inode = acl_inode(test, 4, 0, 0);
+	char buf[16] = { 0 };
+
+	KUNIT_EXPECT_EQ(test,
+			__nfs4_proc_set_acl(inode, buf, sizeof(buf), NFS4ACL_ACL),
+			-EOPNOTSUPP);
+}
+
+/*
+ * system.nfs4_acl cannot be removed, only replaced, so an empty value is
+ * rejected rather than sent as a zero-length SETACL.
+ */
+static void setting_an_empty_acl_is_rejected(struct kunit *test)
+{
+	struct inode *inode = acl_inode(test, 4, FATTR4_WORD0_ACL, 0);
+
+	KUNIT_EXPECT_EQ_MSG(test,
+			    __nfs4_proc_set_acl(inode, "", 0, NFS4ACL_ACL),
+			    -EINVAL,
+			    "an empty ACL was accepted for transmission");
+}
+
+/*
+ * The emptiness check comes before the support check, so a zero-length
+ * value is EINVAL even where the flavour is unsupported.
+ */
+static void the_empty_check_precedes_the_support_check(struct kunit *test)
+{
+	struct inode *inode = acl_inode(test, 4, 0, 0);
+
+	KUNIT_EXPECT_EQ(test, __nfs4_proc_set_acl(inode, "", 0, NFS4ACL_ACL),
+			-EINVAL);
+}
+
+/*
+ * The request is built into a fixed on-stack page array, so an ACL needing
+ * more pages than that array holds is refused rather than overflowing it.
+ * The ceiling is XATTR_SIZE_MAX worth of pages.
+ */
+static void an_oversized_acl_is_refused(struct kunit *test)
+{
+	struct inode *inode = acl_inode(test, 4, FATTR4_WORD0_ACL, 0);
+	const size_t max_pages = DIV_ROUND_UP(XATTR_SIZE_MAX, PAGE_SIZE);
+	size_t too_big = (max_pages + 1) << PAGE_SHIFT;
+
+	KUNIT_EXPECT_EQ_MSG(test,
+			    __nfs4_proc_set_acl(inode, NULL, too_big, NFS4ACL_ACL),
+			    -ERANGE,
+			    "an ACL larger than the page array was accepted");
+}
+
+/*
+ * Processing a server reply
+ *
+ * Everything above stops before an RPC is sent. This section starts on the
+ * other side of one: the reply has arrived, and the client has to decide
+ * what its caches still mean. No transport is needed for that -- the
+ * server is a struct nfs4_change_info the test fills in, exactly as the
+ * XDR layer would have.
+ *
+ * The decision under test is NFSv4's directory-caching optimisation.
+ * Every operation that modifies a directory returns change_info4:
+ * the change attribute before and after, plus an "atomic" flag saying the
+ * server held the directory still across the operation. When the client
+ * made the only change (atomic, and before matches what it had cached) it
+ * may keep its cached lookups. Otherwise something else may have touched
+ * the directory and every cached dentry has to be revalidated.
+ *
+ * Getting that wrong in one direction serves stale dentries; in the other
+ * it throws away the whole dentry cache on every create and unlink.
+ * nfs_force_lookup_revalidate() bumps cache_change_attribute by 2, so
+ * which way it went is directly observable.
+ */
+
+struct reply_fixture {
+	struct nfs_inode	nfsi;
+	struct nfs_server	server;
+	struct nfs_client	client;
+	struct super_block	sb;
+	struct nfs_rpc_ops	rpc_ops;
+	struct nfs_unlinkdata	unlinkdata;
+	struct nfs_fattr	dir_attr;
+	struct rpc_task		task;
+	struct address_space	mapping;
+	bool			delegated;
+};
+
+static struct reply_fixture *reply_cur;
+
+static int reply_have_delegation(struct inode *inode, fmode_t type, int flags)
+{
+	return reply_cur->delegated;
+}
+
+/*
+ * A directory inode with a known change attribute. change_attr_type
+ * defaults to MONOTONIC_INCR, which is what a real server almost always
+ * advertises; the UNDEFINED case has its own test.
+ */
+static struct reply_fixture *reply_dir(struct kunit *test, u64 change_attr,
+				       umode_t mode)
+{
+	struct reply_fixture *f;
+	struct inode *inode;
+
+	f = kunit_kzalloc(test, sizeof(*f), GFP_KERNEL);
+	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, f);
+
+	f->rpc_ops.have_delegation = reply_have_delegation;
+	f->client.rpc_ops = &f->rpc_ops;
+	f->server.nfs_client = &f->client;
+	f->server.change_attr_type = NFS4_CHANGE_TYPE_IS_MONOTONIC_INCR;
+	f->sb.s_fs_info = &f->server;
+
+	inode = &f->nfsi.vfs_inode;
+	inode->i_sb = &f->sb;
+	inode->i_mode = mode;
+	spin_lock_init(&inode->i_lock);
+
+	/*
+	 * nfs_set_cache_invalid() reads inode->i_mapping->nrpages, so the
+	 * inode needs a real address_space. empty_aops is the kernel's own
+	 * do-nothing operations table.
+	 */
+	address_space_init_once(&f->mapping);
+	f->mapping.host = inode;
+	f->mapping.a_ops = &empty_aops;
+	mapping_set_gfp_mask(&f->mapping, GFP_KERNEL);
+	inode->i_mapping = &f->mapping;
+	inode_set_iversion_raw(inode, change_attr);
+	f->nfsi.cache_validity = 0;
+	f->nfsi.cache_change_attribute = 100;
+
+	reply_cur = f;
+	return f;
+}
+
+static void reply_drop_pages(void *mapping)
+{
+	truncate_inode_pages(mapping, 0);
+}
+
+/*
+ * Put one real folio in the page cache. Needed wherever a test cares about
+ * NFS_INO_INVALID_DATA: nfs_set_cache_invalid() clears that flag when the
+ * mapping is empty, on the grounds that there is nothing to invalidate.
+ */
+static void reply_cache_a_page(struct kunit *test, struct reply_fixture *f)
+{
+	struct folio *folio = folio_alloc(GFP_KERNEL, 0);
+
+	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, folio);
+	KUNIT_ASSERT_EQ(test, kunit_add_action_or_reset(test, reply_drop_pages,
+							&f->mapping), 0);
+	KUNIT_ASSERT_EQ(test, filemap_add_folio(&f->mapping, folio, 0,
+						GFP_KERNEL), 0);
+	folio_unlock(folio);
+	folio_put(folio);
+}
+
+static u64 dir_change_attr(struct reply_fixture *f)
+{
+	return inode_peek_iversion_raw(&f->nfsi.vfs_inode);
+}
+
+/*
+ * The client made the only change: cached lookups are still good, so the
+ * dentry cache is left alone.
+ */
+static void an_atomic_change_keeps_cached_lookups(struct kunit *test)
+{
+	struct reply_fixture *f = reply_dir(test, 10, S_IFDIR | 0755);
+	struct nfs4_change_info cinfo = { .atomic = 1, .before = 10, .after = 11 };
+	unsigned long before = f->nfsi.cache_change_attribute;
+
+	nfs4_update_changeattr_locked(&f->nfsi.vfs_inode, &cinfo, jiffies, 0);
+
+	KUNIT_EXPECT_EQ_MSG(test, f->nfsi.cache_change_attribute, before,
+			    "an atomic change threw away the dentry cache");
+	KUNIT_EXPECT_EQ(test, dir_change_attr(f), 11ULL);
+}
+
+/*
+ * The server would not promise atomicity, so another client may have
+ * changed the directory: every cached lookup has to be revalidated.
+ */
+static void a_non_atomic_change_drops_cached_lookups(struct kunit *test)
+{
+	struct reply_fixture *f = reply_dir(test, 10, S_IFDIR | 0755);
+	struct nfs4_change_info cinfo = { .atomic = 0, .before = 10, .after = 11 };
+	unsigned long before = f->nfsi.cache_change_attribute;
+
+	nfs4_update_changeattr_locked(&f->nfsi.vfs_inode, &cinfo, jiffies, 0);
+
+	KUNIT_EXPECT_EQ_MSG(test, f->nfsi.cache_change_attribute, before + 2,
+			    "a non-atomic change kept the dentry cache");
+}
+
+/*
+ * Atomic but the directory was not where the client left it -- someone
+ * else changed it in between, so the cached lookups are stale even though
+ * the server held it still across this one operation.
+ */
+static void an_atomic_change_from_an_unexpected_state_drops_lookups(struct kunit *test)
+{
+	struct reply_fixture *f = reply_dir(test, 10, S_IFDIR | 0755);
+	struct nfs4_change_info cinfo = { .atomic = 1, .before = 7, .after = 11 };
+	unsigned long before = f->nfsi.cache_change_attribute;
+
+	nfs4_update_changeattr_locked(&f->nfsi.vfs_inode, &cinfo, jiffies, 0);
+
+	KUNIT_EXPECT_EQ_MSG(test, f->nfsi.cache_change_attribute, before + 2,
+			    "trusted an atomic flag over a mismatched change attribute");
+}
+
+/* Losing the cached lookups also invalidates the attributes that go with them. */
+static void a_non_atomic_change_invalidates_the_attribute_cache(struct kunit *test)
+{
+	struct reply_fixture *f = reply_dir(test, 10, S_IFDIR | 0755);
+	struct nfs4_change_info cinfo = { .atomic = 0, .before = 10, .after = 11 };
+
+	nfs4_update_changeattr_locked(&f->nfsi.vfs_inode, &cinfo, jiffies, 0);
+
+	KUNIT_EXPECT_TRUE(test, f->nfsi.cache_validity & NFS_INO_INVALID_ACCESS);
+	KUNIT_EXPECT_TRUE(test, f->nfsi.cache_validity & NFS_INO_INVALID_NLINK);
+	KUNIT_EXPECT_TRUE(test, f->nfsi.cache_validity & NFS_INO_INVALID_MODE);
+}
+
+/* An atomic change leaves those attributes alone: that is the whole point. */
+static void an_atomic_change_spares_the_attribute_cache(struct kunit *test)
+{
+	struct reply_fixture *f = reply_dir(test, 10, S_IFDIR | 0755);
+	struct nfs4_change_info cinfo = { .atomic = 1, .before = 10, .after = 11 };
+
+	nfs4_update_changeattr_locked(&f->nfsi.vfs_inode, &cinfo, jiffies, 0);
+
+	KUNIT_EXPECT_FALSE_MSG(test,
+			       f->nfsi.cache_validity & NFS_INO_INVALID_ACCESS,
+			       "an atomic change invalidated the access cache");
+	KUNIT_EXPECT_FALSE(test, f->nfsi.cache_validity & NFS_INO_INVALID_NLINK);
+}
+
+/*
+ * A reply that arrives out of order carries a change attribute the client
+ * has already moved past. It must not be rolled backwards.
+ */
+static void a_stale_reply_does_not_rewind_the_change_attribute(struct kunit *test)
+{
+	struct reply_fixture *f = reply_dir(test, 20, S_IFDIR | 0755);
+	struct nfs4_change_info cinfo = { .atomic = 1, .before = 5, .after = 6 };
+
+	nfs4_update_changeattr_locked(&f->nfsi.vfs_inode, &cinfo, jiffies, 0);
+
+	KUNIT_EXPECT_EQ_MSG(test, dir_change_attr(f), 20ULL,
+			    "a late reply rewound the change attribute");
+}
+
+/*
+ * When the server will not say how its change attribute behaves, the
+ * client cannot assume it increases. Any different value is accepted,
+ * including a smaller one; only an identical value is a no-op.
+ */
+static void an_undefined_change_type_accepts_any_different_value(struct kunit *test)
+{
+	struct reply_fixture *f = reply_dir(test, 20, S_IFDIR | 0755);
+	struct nfs4_change_info cinfo = { .atomic = 1, .before = 5, .after = 6 };
+
+	f->server.change_attr_type = NFS4_CHANGE_TYPE_IS_UNDEFINED;
+	nfs4_update_changeattr_locked(&f->nfsi.vfs_inode, &cinfo, jiffies, 0);
+
+	KUNIT_EXPECT_EQ_MSG(test, dir_change_attr(f), 6ULL,
+			    "an undefined change type refused a lower value");
+}
+
+static void an_unchanged_directory_is_left_alone(struct kunit *test)
+{
+	struct reply_fixture *f = reply_dir(test, 10, S_IFDIR | 0755);
+	struct nfs4_change_info cinfo = { .atomic = 1, .before = 10, .after = 10 };
+	unsigned long before = f->nfsi.cache_change_attribute;
+
+	nfs4_update_changeattr_locked(&f->nfsi.vfs_inode, &cinfo, jiffies, 0);
+
+	KUNIT_EXPECT_EQ(test, dir_change_attr(f), 10ULL);
+	KUNIT_EXPECT_EQ(test, f->nfsi.cache_change_attribute, before);
+}
+
+/* Only directories have a dentry cache to drop. */
+static void a_regular_file_never_forces_lookup_revalidation(struct kunit *test)
+{
+	struct reply_fixture *f = reply_dir(test, 10, S_IFREG | 0644);
+	struct nfs4_change_info cinfo = { .atomic = 0, .before = 10, .after = 11 };
+	unsigned long before = f->nfsi.cache_change_attribute;
+
+	nfs4_update_changeattr_locked(&f->nfsi.vfs_inode, &cinfo, jiffies, 0);
+
+	KUNIT_EXPECT_EQ_MSG(test, f->nfsi.cache_change_attribute, before,
+			    "forced lookup revalidation on a regular file");
+	KUNIT_EXPECT_FALSE_MSG(test,
+			       f->nfsi.cache_validity & NFS_INO_INVALID_DATA,
+			       "invalidated the data cache of a regular file");
+}
+
+/*
+ * A directory with cached contents always refetches them, atomic or not:
+ * the entries themselves changed even when the cached lookups are still
+ * good.
+ */
+static void a_directory_always_invalidates_its_contents(struct kunit *test)
+{
+	struct reply_fixture *f = reply_dir(test, 10, S_IFDIR | 0755);
+	struct nfs4_change_info cinfo = { .atomic = 1, .before = 10, .after = 11 };
+
+	reply_cache_a_page(test, f);
+	nfs4_update_changeattr_locked(&f->nfsi.vfs_inode, &cinfo, jiffies, 0);
+
+	KUNIT_EXPECT_TRUE(test, f->nfsi.cache_validity & NFS_INO_INVALID_DATA);
+}
+
+/*
+ * With nothing cached there is nothing to invalidate, so the flag is
+ * dropped rather than recorded. Worth pinning: it means the flag cannot be
+ * used as a record of "the directory changed", only of "cached data is
+ * stale".
+ */
+static void an_empty_page_cache_drops_the_data_invalidation(struct kunit *test)
+{
+	struct reply_fixture *f = reply_dir(test, 10, S_IFDIR | 0755);
+	struct nfs4_change_info cinfo = { .atomic = 1, .before = 10, .after = 11 };
+
+	nfs4_update_changeattr_locked(&f->nfsi.vfs_inode, &cinfo, jiffies, 0);
+
+	KUNIT_EXPECT_FALSE_MSG(test,
+			       f->nfsi.cache_validity & NFS_INO_INVALID_DATA,
+			       "recorded a data invalidation with an empty page cache");
+}
+
+/* Holding a delegation over mtime means the timestamps need not be refetched. */
+static void a_delegation_spares_the_timestamps(struct kunit *test)
+{
+	struct reply_fixture *f = reply_dir(test, 10, S_IFDIR | 0755);
+	struct nfs4_change_info cinfo = { .atomic = 1, .before = 10, .after = 11 };
+
+	f->delegated = true;
+	nfs4_update_changeattr_locked(&f->nfsi.vfs_inode, &cinfo, jiffies, 0);
+
+	KUNIT_EXPECT_FALSE_MSG(test,
+			       f->nfsi.cache_validity & NFS_INO_INVALID_MTIME,
+			       "refetched mtime while holding a delegation over it");
+}
+
+static void without_a_delegation_the_timestamps_are_invalidated(struct kunit *test)
+{
+	struct reply_fixture *f = reply_dir(test, 10, S_IFDIR | 0755);
+	struct nfs4_change_info cinfo = { .atomic = 1, .before = 10, .after = 11 };
+
+	nfs4_update_changeattr_locked(&f->nfsi.vfs_inode, &cinfo, jiffies, 0);
+
+	KUNIT_EXPECT_TRUE(test, f->nfsi.cache_validity & NFS_INO_INVALID_MTIME);
+	KUNIT_EXPECT_TRUE(test, f->nfsi.cache_validity & NFS_INO_INVALID_CTIME);
+}
+
+/*
+ * The whole completion handler, driven end to end.
+ *
+ * nfs4_proc_unlink_done() is what the RPC layer calls when a REMOVE reply
+ * lands. Given a task carrying a successful status and a reply with no
+ * session slot, it runs the sequence check, the error check, and the
+ * change-attribute update without any transport at all.
+ */
+
+static struct rpc_task *unlink_reply(struct kunit *test,
+				     struct reply_fixture *f, int status,
+				     u32 atomic, u64 before, u64 after)
+{
+	struct nfs_removeres *res = &f->unlinkdata.res;
+
+	res->server = &f->server;
+	res->dir_attr = &f->dir_attr;
+	res->cinfo.atomic = atomic;
+	res->cinfo.before = before;
+	res->cinfo.after = after;
+	/*
+	 * No slot: nfs4_sequence_done() takes the NFSv4.0 path and returns
+	 * "done" without touching a session.
+	 */
+	res->seq_res.sr_slot = NULL;
+
+	f->task.tk_status = status;
+	f->task.tk_calldata = &f->unlinkdata;
+	return &f->task;
+}
+
+static void a_successful_unlink_reply_updates_the_directory(struct kunit *test)
+{
+	struct reply_fixture *f = reply_dir(test, 10, S_IFDIR | 0755);
+	struct rpc_task *task = unlink_reply(test, f, 0, 1, 10, 11);
+
+	KUNIT_EXPECT_EQ_MSG(test, nfs4_proc_unlink_done(task, &f->nfsi.vfs_inode),
+			    1, "the handler did not report completion");
+	KUNIT_EXPECT_EQ(test, dir_change_attr(f), 11ULL);
+}
+
+/* The reply's atomic flag reaches the cache decision through the handler. */
+static void a_non_atomic_unlink_reply_drops_cached_lookups(struct kunit *test)
+{
+	struct reply_fixture *f = reply_dir(test, 10, S_IFDIR | 0755);
+	struct rpc_task *task = unlink_reply(test, f, 0, 0, 10, 11);
+	unsigned long before = f->nfsi.cache_change_attribute;
+
+	KUNIT_ASSERT_EQ(test, nfs4_proc_unlink_done(task, &f->nfsi.vfs_inode), 1);
+	KUNIT_EXPECT_EQ(test, f->nfsi.cache_change_attribute, before + 2);
+}
+
+static void an_atomic_unlink_reply_keeps_cached_lookups(struct kunit *test)
+{
+	struct reply_fixture *f = reply_dir(test, 10, S_IFDIR | 0755);
+	struct rpc_task *task = unlink_reply(test, f, 0, 1, 10, 11);
+	unsigned long before = f->nfsi.cache_change_attribute;
+
+	KUNIT_ASSERT_EQ(test, nfs4_proc_unlink_done(task, &f->nfsi.vfs_inode), 1);
+	KUNIT_EXPECT_EQ_MSG(test, f->nfsi.cache_change_attribute, before,
+			    "an atomic unlink reply dropped the dentry cache");
+}
+
+/*
+ * A failed REMOVE changed nothing on the server, so the client must not
+ * advance its change attribute or drop its cached lookups. -EACCES takes
+ * the plain-errno path through nfs4_async_handle_exception(): no delay, no
+ * recovery, no retry.
+ */
+static void a_failed_unlink_reply_leaves_the_directory_alone(struct kunit *test)
+{
+	struct reply_fixture *f = reply_dir(test, 10, S_IFDIR | 0755);
+	struct rpc_task *task = unlink_reply(test, f, -EACCES, 1, 10, 11);
+	unsigned long before = f->nfsi.cache_change_attribute;
+
+	KUNIT_EXPECT_EQ(test, nfs4_proc_unlink_done(task, &f->nfsi.vfs_inode), 1);
+	KUNIT_EXPECT_EQ_MSG(test, dir_change_attr(f), 10ULL,
+			    "a failed unlink advanced the change attribute");
+	KUNIT_EXPECT_EQ_MSG(test, f->nfsi.cache_change_attribute, before,
+			    "a failed unlink dropped the dentry cache");
+}
+
+
+/*
+ * Miscellaneous small helpers
+ *
+ * These are one- or two-line functions with no dependency on RPC state:
+ * a bitmask accessor, a "first writer wins" flag setter, and predicates
+ * over plain structs. Grouped together because none of them is large
+ * enough to deserve its own suite.
+ */
+
+/* The first GETATTR reply sets the pre-op change attribute; later ones don't. */
+static void fattr_set_prechange_only_sets_it_once(struct kunit *test)
+{
+	struct nfs_fattr fattr = {};
+
+	nfs4_fattr_set_prechange(&fattr, 5);
+	KUNIT_EXPECT_EQ(test, fattr.pre_change_attr, 5ULL);
+	KUNIT_EXPECT_TRUE(test, fattr.valid & NFS_ATTR_FATTR_PRECHANGE);
+
+	nfs4_fattr_set_prechange(&fattr, 9);
+	KUNIT_EXPECT_EQ_MSG(test, fattr.pre_change_attr, 5ULL,
+			    "a second call overwrote the pre-change value");
+}
+
+/*
+ * exception_should_retrans(): NFS_MOUNT_SOFTERR retry ceiling
+ *
+ * nfs_delay_retrans defaults to -1 (disabled). Save and restore it since
+ * it is a module-wide variable, not per-call state.
+ */
+
+static void retrans_disabled_by_default_never_gives_up(struct kunit *test)
+{
+	struct nfs_server server = { .flags = NFS_MOUNT_SOFTERR };
+	struct nfs4_exception exception = {};
+	short saved = nfs_delay_retrans;
+
+	nfs_delay_retrans = -1;
+	KUNIT_EXPECT_EQ(test, nfs4_exception_should_retrans(&server, &exception), 0);
+	nfs_delay_retrans = saved;
+}
+
+static void softerr_off_ignores_the_retrans_ceiling(struct kunit *test)
+{
+	struct nfs_server server = {};
+	struct nfs4_exception exception = {};
+	short saved = nfs_delay_retrans;
+
+	nfs_delay_retrans = 0;
+	KUNIT_EXPECT_EQ_MSG(test,
+			    nfs4_exception_should_retrans(&server, &exception),
+			    0, "retrans ceiling applied without NFS_MOUNT_SOFTERR");
+	nfs_delay_retrans = saved;
+}
+
+static void softerr_gives_up_once_the_ceiling_is_reached(struct kunit *test)
+{
+	struct nfs_server server = { .flags = NFS_MOUNT_SOFTERR };
+	struct nfs4_exception exception = {};
+	short saved = nfs_delay_retrans;
+	int i;
+
+	/*
+	 * retrans is post-incremented and compared >= ceiling, so a ceiling
+	 * of 2 permits two attempts (retrans 0 and 1) and gives up on the
+	 * third (retrans 2).
+	 */
+	nfs_delay_retrans = 2;
+	for (i = 0; i < 2; i++)
+		KUNIT_ASSERT_EQ_MSG(test,
+				    nfs4_exception_should_retrans(&server, &exception),
+				    0, "gave up before reaching the ceiling");
+	KUNIT_EXPECT_EQ_MSG(test,
+			    nfs4_exception_should_retrans(&server, &exception),
+			    -EAGAIN, "did not give up once past the ceiling");
+	nfs_delay_retrans = saved;
+}
+
+/* Only krb5i and krb5p provide integrity; krb5 alone (auth only) does not. */
+static void integrity_protection_requires_krb5i_or_krb5p(struct kunit *test)
+{
+	struct rpc_auth auth_i = { .au_flavor = RPC_AUTH_GSS_KRB5I };
+	struct rpc_auth auth_p = { .au_flavor = RPC_AUTH_GSS_KRB5P };
+	struct rpc_auth auth_plain = { .au_flavor = RPC_AUTH_GSS_KRB5 };
+	struct rpc_clnt clnt_i = { .cl_auth = &auth_i };
+	struct rpc_clnt clnt_p = { .cl_auth = &auth_p };
+	struct rpc_clnt clnt_plain = { .cl_auth = &auth_plain };
+	struct nfs_client client = {};
+
+	client.cl_rpcclient = &clnt_i;
+	KUNIT_EXPECT_TRUE(test, _nfs4_is_integrity_protected(&client));
+	client.cl_rpcclient = &clnt_p;
+	KUNIT_EXPECT_TRUE(test, _nfs4_is_integrity_protected(&client));
+	client.cl_rpcclient = &clnt_plain;
+	KUNIT_EXPECT_FALSE_MSG(test, _nfs4_is_integrity_protected(&client),
+			       "plain krb5 auth was reported as integrity-protected");
+}
+
+/*
+ * A sequence result with no slot needs neither a session nor a slot table
+ * to be processed: NFSv4.0 requests never attach one.
+ */
+static void sequence_process_with_no_slot_reports_done(struct kunit *test)
+{
+	struct nfs4_sequence_res res = { .sr_slot = NULL };
+
+	KUNIT_EXPECT_EQ(test, nfs4_sequence_process(NULL, &res), 1);
+}
+
+/* Freeing a result with no slot is a no-op, not a NULL dereference. */
+static void sequence_free_slot_with_no_slot_is_a_no_op(struct kunit *test)
+{
+	struct nfs4_sequence_res res = { .sr_slot = NULL };
+
+	nfs4_sequence_free_slot(&res);
+}
+
+/*
+ * A server whose v1 atomic-open capability turns out not to work signals
+ * -EINVAL; the client drops the capability and retries without it. Any
+ * other error, or a server that never claimed the capability, is left
+ * alone.
+ */
+static void einval_on_a_v1_capable_server_disables_the_capability(struct kunit *test)
+{
+	struct nfs_server server = { .caps = NFS_CAP_ATOMIC_OPEN_V1 };
+	struct nfs4_exception exception = {};
+
+	KUNIT_EXPECT_TRUE(test,
+			  nfs4_clear_cap_atomic_open_v1(&server, -EINVAL, &exception));
+	KUNIT_EXPECT_FALSE_MSG(test, server.caps & NFS_CAP_ATOMIC_OPEN_V1,
+			       "the capability was not cleared");
+	KUNIT_EXPECT_TRUE(test, exception.retry);
+}
+
+static void einval_without_the_capability_is_left_alone(struct kunit *test)
+{
+	struct nfs_server server = { .caps = 0 };
+	struct nfs4_exception exception = {};
+
+	KUNIT_EXPECT_FALSE(test,
+			   nfs4_clear_cap_atomic_open_v1(&server, -EINVAL, &exception));
+	KUNIT_EXPECT_FALSE(test, exception.retry);
+}
+
+static void a_different_error_never_clears_the_capability(struct kunit *test)
+{
+	struct nfs_server server = { .caps = NFS_CAP_ATOMIC_OPEN_V1 };
+	struct nfs4_exception exception = {};
+
+	KUNIT_EXPECT_FALSE(test,
+			   nfs4_clear_cap_atomic_open_v1(&server, -EACCES, &exception));
+	KUNIT_EXPECT_TRUE_MSG(test, server.caps & NFS_CAP_ATOMIC_OPEN_V1,
+			      "an unrelated error cleared the capability");
+}
+
+static struct kunit_case nfs4_misc_cases[] = {
+	KUNIT_CASE(fattr_set_prechange_only_sets_it_once),
+	KUNIT_CASE(retrans_disabled_by_default_never_gives_up),
+	KUNIT_CASE(softerr_off_ignores_the_retrans_ceiling),
+	KUNIT_CASE(softerr_gives_up_once_the_ceiling_is_reached),
+	KUNIT_CASE(integrity_protection_requires_krb5i_or_krb5p),
+	KUNIT_CASE(sequence_process_with_no_slot_reports_done),
+	KUNIT_CASE(sequence_free_slot_with_no_slot_is_a_no_op),
+	KUNIT_CASE(einval_on_a_v1_capable_server_disables_the_capability),
+	KUNIT_CASE(einval_without_the_capability_is_left_alone),
+	KUNIT_CASE(a_different_error_never_clears_the_capability),
+	{}
+};
+
+static struct kunit_suite nfs4_misc_suite = {
+	.name		= "nfs4-misc",
+	.test_cases	= nfs4_misc_cases,
+};
+
+/*
+ * Open-state accounting: struct nfs4_state's n_rdonly/n_wronly/n_rdwr
+ * reference counts and the NFS_O_*_STATE flags that mirror them.
+ *
+ * Every open of the same file by the same owner shares one nfs4_state.
+ * The n_* counters track how many callers hold each mode so that closing
+ * one does not close the state for the others; the flags track which
+ * modes the *stateid on the wire* currently covers, which can lag the
+ * counters when an OPEN is in flight. can_open_cached() is what decides
+ * whether a second open can be satisfied without a trip to the server.
+ */
+
+static struct nfs4_state_owner *state_owner(struct kunit *test)
+{
+	struct nfs4_state_owner *owner;
+
+	owner = kunit_kzalloc(test, sizeof(*owner), GFP_KERNEL);
+	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, owner);
+	INIT_LIST_HEAD(&owner->so_states);
+	spin_lock_init(&owner->so_lock);
+	return owner;
+}
+
+static struct nfs4_state *open_state(struct kunit *test)
+{
+	struct nfs4_state *state;
+
+	state = kunit_kzalloc(test, sizeof(*state), GFP_KERNEL);
+	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, state);
+	INIT_LIST_HEAD(&state->open_states);
+	seqlock_init(&state->seqlock);
+	state->owner = state_owner(test);
+	return state;
+}
+
+static void mode_match_reads_the_right_counter(struct kunit *test)
+{
+	struct nfs4_state *state = open_state(test);
+
+	state->n_rdonly = 1;
+	KUNIT_EXPECT_TRUE(test, nfs4_mode_match_open_stateid(state, FMODE_READ));
+	KUNIT_EXPECT_FALSE(test, nfs4_mode_match_open_stateid(state, FMODE_WRITE));
+
+	state->n_wronly = 1;
+	KUNIT_EXPECT_TRUE(test, nfs4_mode_match_open_stateid(state, FMODE_WRITE));
+
+	state->n_rdwr = 1;
+	KUNIT_EXPECT_TRUE(test,
+			  nfs4_mode_match_open_stateid(state, FMODE_READ | FMODE_WRITE));
+}
+
+/* O_EXCL and O_TRUNC always need a fresh trip to the server. */
+static void o_excl_and_o_trunc_never_use_the_cache(struct kunit *test)
+{
+	struct nfs4_state *state = open_state(test);
+
+	set_bit(NFS_O_RDONLY_STATE, &state->flags);
+	state->n_rdonly = 1;
+
+	KUNIT_EXPECT_FALSE(test,
+			   can_open_cached(state, FMODE_READ, O_EXCL, NFS4_OPEN_CLAIM_PREVIOUS));
+	KUNIT_EXPECT_FALSE(test,
+			   can_open_cached(state, FMODE_READ, O_TRUNC, NFS4_OPEN_CLAIM_PREVIOUS));
+}
+
+/*
+ * NULL and FH claims are a fresh lookup, so caching never applies to them
+ * regardless of what the state already holds.
+ */
+static void null_and_fh_claims_never_use_the_cache(struct kunit *test)
+{
+	struct nfs4_state *state = open_state(test);
+
+	set_bit(NFS_O_RDONLY_STATE, &state->flags);
+	state->n_rdonly = 1;
+
+	KUNIT_EXPECT_FALSE(test,
+			   can_open_cached(state, FMODE_READ, 0, NFS4_OPEN_CLAIM_NULL));
+	KUNIT_EXPECT_FALSE(test,
+			   can_open_cached(state, FMODE_READ, 0, NFS4_OPEN_CLAIM_FH));
+}
+
+/*
+ * Otherwise the cache may be used, but only if the wire stateid already
+ * covers the requested mode -- the flag, not just the counter.
+ */
+static void other_claims_use_the_cache_when_the_flag_is_set(struct kunit *test)
+{
+	struct nfs4_state *state = open_state(test);
+
+	state->n_rdonly = 1;
+	KUNIT_EXPECT_FALSE_MSG(test,
+			       can_open_cached(state, FMODE_READ, 0,
+						NFS4_OPEN_CLAIM_PREVIOUS),
+			       "used the cache before the stateid flag was set");
+
+	set_bit(NFS_O_RDONLY_STATE, &state->flags);
+	KUNIT_EXPECT_TRUE(test,
+			  can_open_cached(state, FMODE_READ, 0,
+					   NFS4_OPEN_CLAIM_PREVIOUS));
+}
+
+/* A delegation of the wrong file mode cannot satisfy this open. */
+static void delegation_of_the_wrong_mode_cannot_be_used(struct kunit *test)
+{
+	struct nfs_delegation delegation = { .type = FMODE_READ };
+
+	KUNIT_EXPECT_FALSE(test,
+			   can_open_delegated(&delegation, FMODE_WRITE,
+					      NFS4_OPEN_CLAIM_NULL));
+}
+
+static void an_absent_delegation_cannot_be_used(struct kunit *test)
+{
+	KUNIT_EXPECT_FALSE(test,
+			   can_open_delegated(NULL, FMODE_READ, NFS4_OPEN_CLAIM_NULL));
+}
+
+/*
+ * CLAIM_PREVIOUS during reboot recovery may only use a delegation that
+ * does not itself need reclaiming -- otherwise the client would be
+ * vouching for state the server has already forgotten.
+ */
+static void claim_previous_needs_a_delegation_that_does_not_need_reclaim(struct kunit *test)
+{
+	struct nfs_delegation delegation = { .type = FMODE_READ };
+
+	KUNIT_EXPECT_TRUE(test,
+			  can_open_delegated(&delegation, FMODE_READ,
+					     NFS4_OPEN_CLAIM_PREVIOUS));
+
+	set_bit(NFS_DELEGATION_NEED_RECLAIM, &delegation.flags);
+	KUNIT_EXPECT_FALSE_MSG(test,
+			       can_open_delegated(&delegation, FMODE_READ,
+						  NFS4_OPEN_CLAIM_PREVIOUS),
+			       "used a delegation that itself needs reclaiming");
+}
+
+/* Delegation-based claims (recovery paths) are refused outright. */
+static void delegation_claims_are_never_satisfied_by_a_delegation(struct kunit *test)
+{
+	struct nfs_delegation delegation = { .type = FMODE_READ | FMODE_WRITE };
+
+	KUNIT_EXPECT_FALSE(test,
+			   can_open_delegated(&delegation, FMODE_READ,
+					      NFS4_OPEN_CLAIM_DELEGATE_CUR));
+}
+
+/* update_open_stateflags() bumps the right counter and merges the mode in. */
+static void update_stateflags_increments_the_matching_counter(struct kunit *test)
+{
+	struct nfs4_state *state = open_state(test);
+
+	update_open_stateflags(state, FMODE_READ);
+	KUNIT_EXPECT_EQ(test, state->n_rdonly, 1U);
+	KUNIT_EXPECT_EQ(test, state->n_wronly, 0U);
+
+	update_open_stateflags(state, FMODE_WRITE);
+	KUNIT_EXPECT_EQ(test, state->n_wronly, 1U);
+
+	update_open_stateflags(state, FMODE_READ);
+	KUNIT_EXPECT_EQ_MSG(test, state->n_rdonly, 2U,
+			    "a second read open did not add to the counter");
+}
+
+static void update_stateflags_merges_the_mode_bits(struct kunit *test)
+{
+	struct nfs4_state *state = open_state(test);
+
+	update_open_stateflags(state, FMODE_READ);
+	update_open_stateflags(state, FMODE_WRITE);
+
+	KUNIT_EXPECT_EQ(test, state->state, (fmode_t)(FMODE_READ | FMODE_WRITE));
+}
+
+/*
+ * The counters can run ahead of the flags while an OPEN upgrade is in
+ * flight -- that gap is exactly what recovery has to close.
+ */
+static void recover_openmode_detects_a_counter_ahead_of_its_flag(struct kunit *test)
+{
+	struct nfs4_state *state = open_state(test);
+
+	KUNIT_EXPECT_FALSE(test, nfs_open_stateid_recover_openmode(state));
+
+	state->n_wronly = 1;
+	KUNIT_EXPECT_TRUE_MSG(test, nfs_open_stateid_recover_openmode(state),
+			      "a counter ahead of its flag was not detected");
+
+	set_bit(NFS_O_WRONLY_STATE, &state->flags);
+	KUNIT_EXPECT_FALSE_MSG(test, nfs_open_stateid_recover_openmode(state),
+			       "recovery was still signalled once the flag caught up");
+}
+
+/* Logging an update wakes anyone waiting on the state's stateid, once. */
+static void log_update_wakes_only_when_the_wait_flag_was_set(struct kunit *test)
+{
+	struct nfs4_state *state = open_state(test);
+
+	init_waitqueue_head(&state->waitq);
+
+	/* No flag set: nothing to wake, and no crash from an empty queue. */
+	nfs_state_log_update_open_stateid(state);
+
+	set_bit(NFS_STATE_CHANGE_WAIT, &state->flags);
+	nfs_state_log_update_open_stateid(state);
+	KUNIT_EXPECT_FALSE_MSG(test, test_bit(NFS_STATE_CHANGE_WAIT, &state->flags),
+			       "the wait flag was not cleared after waking waiters");
+}
+
+/* With no opens outstanding there is nothing to resync. */
+static void resync_with_no_opens_does_not_set_the_open_flag(struct kunit *test)
+{
+	struct nfs4_state *state = open_state(test);
+
+	nfs_resync_open_stateid_locked(state);
+	KUNIT_EXPECT_FALSE(test, test_bit(NFS_OPEN_STATE, &state->flags));
+}
+
+/* Each outstanding counter gets its matching flag set back. */
+static void resync_sets_a_flag_for_every_outstanding_counter(struct kunit *test)
+{
+	struct nfs4_state *state = open_state(test);
+
+	state->n_rdonly = 1;
+	state->n_rdwr = 1;
+
+	nfs_resync_open_stateid_locked(state);
+
+	KUNIT_EXPECT_TRUE(test, test_bit(NFS_O_RDONLY_STATE, &state->flags));
+	KUNIT_EXPECT_TRUE(test, test_bit(NFS_O_RDWR_STATE, &state->flags));
+	KUNIT_EXPECT_FALSE_MSG(test, test_bit(NFS_O_WRONLY_STATE, &state->flags),
+			       "set a flag for a counter that was never incremented");
+	KUNIT_EXPECT_TRUE(test, test_bit(NFS_OPEN_STATE, &state->flags));
+}
+
+/* Dropping to no mode at all clears every open-related flag. */
+static void clear_open_stateid_to_no_mode_clears_every_flag(struct kunit *test)
+{
+	struct nfs4_state *state = open_state(test);
+
+	set_bit(NFS_O_RDONLY_STATE, &state->flags);
+	set_bit(NFS_O_WRONLY_STATE, &state->flags);
+	set_bit(NFS_O_RDWR_STATE, &state->flags);
+	set_bit(NFS_OPEN_STATE, &state->flags);
+
+	nfs_clear_open_stateid_locked(state, NULL, 0);
+
+	KUNIT_EXPECT_FALSE(test, test_bit(NFS_O_RDONLY_STATE, &state->flags));
+	KUNIT_EXPECT_FALSE(test, test_bit(NFS_O_WRONLY_STATE, &state->flags));
+	KUNIT_EXPECT_FALSE(test, test_bit(NFS_O_RDWR_STATE, &state->flags));
+	KUNIT_EXPECT_FALSE(test, test_bit(NFS_OPEN_STATE, &state->flags));
+}
+
+/*
+ * Downgrading to write-only leaves the read-write flag cleared (no caller
+ * has that combined mode any more) but leaves NFS_OPEN_STATE itself set,
+ * since some mode is still held.
+ */
+static void clear_open_stateid_downgrade_keeps_the_open_flag(struct kunit *test)
+{
+	struct nfs4_state *state = open_state(test);
+
+	set_bit(NFS_O_RDWR_STATE, &state->flags);
+	set_bit(NFS_OPEN_STATE, &state->flags);
+
+	nfs_clear_open_stateid_locked(state, NULL, FMODE_WRITE);
+
+	KUNIT_EXPECT_FALSE(test, test_bit(NFS_O_RDWR_STATE, &state->flags));
+	KUNIT_EXPECT_TRUE_MSG(test, test_bit(NFS_OPEN_STATE, &state->flags),
+			      "downgrading to a single mode cleared the open flag");
+}
+
+/* Clearing every open flag is independent of what state a lock might hold. */
+static void state_clear_open_flags_leaves_nothing_set(struct kunit *test)
+{
+	struct nfs4_state *state = open_state(test);
+
+	set_bit(NFS_O_RDONLY_STATE, &state->flags);
+	set_bit(NFS_O_WRONLY_STATE, &state->flags);
+	set_bit(NFS_O_RDWR_STATE, &state->flags);
+	set_bit(NFS_OPEN_STATE, &state->flags);
+	set_bit(NFS_DELEGATED_STATE, &state->flags);
+
+	nfs_state_clear_open_state_flags(state);
+
+	KUNIT_EXPECT_FALSE(test, test_bit(NFS_O_RDONLY_STATE, &state->flags));
+	KUNIT_EXPECT_FALSE(test, test_bit(NFS_OPEN_STATE, &state->flags));
+	KUNIT_EXPECT_TRUE_MSG(test, test_bit(NFS_DELEGATED_STATE, &state->flags),
+			      "cleared a flag it is not responsible for");
+}
+
+/* Setting a delegation copies its stateid in and raises the flag. */
+static void set_delegation_copies_the_stateid_and_raises_the_flag(struct kunit *test)
+{
+	struct nfs4_state *state = open_state(test);
+	nfs4_stateid deleg = { .seqid = cpu_to_be32(7) };
+
+	nfs_state_set_delegation(state, &deleg, FMODE_READ);
+
+	KUNIT_EXPECT_TRUE(test, nfs4_stateid_match(&state->stateid, &deleg));
+	KUNIT_EXPECT_TRUE(test, test_bit(NFS_DELEGATED_STATE, &state->flags));
+}
+
+/* Clearing it reverts the current stateid to the OPEN stateid. */
+static void clear_delegation_reverts_to_the_open_stateid(struct kunit *test)
+{
+	struct nfs4_state *state = open_state(test);
+	nfs4_stateid deleg = { .seqid = cpu_to_be32(7) };
+
+	state->open_stateid.seqid = cpu_to_be32(3);
+	nfs_state_set_delegation(state, &deleg, FMODE_READ);
+	nfs_state_clear_delegation(state);
+
+	KUNIT_EXPECT_TRUE_MSG(test,
+			      nfs4_stateid_match(&state->stateid, &state->open_stateid),
+			      "the current stateid was not reverted to the open stateid");
+	KUNIT_EXPECT_FALSE(test, test_bit(NFS_DELEGATED_STATE, &state->flags));
+}
+
+static struct kunit_case nfs4_open_state_cases[] = {
+	KUNIT_CASE(mode_match_reads_the_right_counter),
+	KUNIT_CASE(o_excl_and_o_trunc_never_use_the_cache),
+	KUNIT_CASE(null_and_fh_claims_never_use_the_cache),
+	KUNIT_CASE(other_claims_use_the_cache_when_the_flag_is_set),
+	KUNIT_CASE(delegation_of_the_wrong_mode_cannot_be_used),
+	KUNIT_CASE(an_absent_delegation_cannot_be_used),
+	KUNIT_CASE(claim_previous_needs_a_delegation_that_does_not_need_reclaim),
+	KUNIT_CASE(delegation_claims_are_never_satisfied_by_a_delegation),
+	KUNIT_CASE(update_stateflags_increments_the_matching_counter),
+	KUNIT_CASE(update_stateflags_merges_the_mode_bits),
+	KUNIT_CASE(recover_openmode_detects_a_counter_ahead_of_its_flag),
+	KUNIT_CASE(log_update_wakes_only_when_the_wait_flag_was_set),
+	KUNIT_CASE(resync_with_no_opens_does_not_set_the_open_flag),
+	KUNIT_CASE(resync_sets_a_flag_for_every_outstanding_counter),
+	KUNIT_CASE(clear_open_stateid_to_no_mode_clears_every_flag),
+	KUNIT_CASE(clear_open_stateid_downgrade_keeps_the_open_flag),
+	KUNIT_CASE(state_clear_open_flags_leaves_nothing_set),
+	KUNIT_CASE(set_delegation_copies_the_stateid_and_raises_the_flag),
+	KUNIT_CASE(clear_delegation_reverts_to_the_open_stateid),
+	{}
+};
+
+static struct kunit_suite nfs4_open_state_suite = {
+	.name		= "nfs4-open-state",
+	.test_cases	= nfs4_open_state_cases,
+};
+
+/*
+ * EXCHANGE_ID flag validation, server-scope comparison, and session
+ * channel attribute negotiation. All pure, all decode-adjacent: these run
+ * on values the XDR layer has already parsed out of an EXCHANGE_ID or
+ * CREATE_SESSION reply.
+ */
+
+static void a_bare_pnfs_mds_flag_is_accepted(struct kunit *test)
+{
+	KUNIT_EXPECT_EQ(test,
+			nfs4_check_cl_exchange_flags(EXCHGID4_FLAG_USE_PNFS_MDS, 1),
+			NFS_OK);
+}
+
+/* Claiming to be both a pNFS metadata server and a non-pNFS one is invalid. */
+static void mds_and_non_pnfs_together_is_invalid(struct kunit *test)
+{
+	u32 flags = EXCHGID4_FLAG_USE_PNFS_MDS | EXCHGID4_FLAG_USE_NON_PNFS;
+
+	KUNIT_EXPECT_EQ(test, nfs4_check_cl_exchange_flags(flags, 1),
+			-NFS4ERR_INVAL);
+}
+
+/* At least one of the pNFS role flags must be present. */
+static void no_pnfs_role_flag_at_all_is_invalid(struct kunit *test)
+{
+	KUNIT_EXPECT_EQ(test, nfs4_check_cl_exchange_flags(0, 1), -NFS4ERR_INVAL);
+}
+
+/*
+ * Minor version 2 accepts a wider flag mask than 1.x; a flag valid under
+ * 2 but not under 1.x is rejected when negotiating the older minor
+ * version.
+ */
+static void a_flag_valid_under_v2_is_rejected_under_v1(struct kunit *test)
+{
+	u32 v2_only_bit = ~EXCHGID4_FLAG_MASK_R & EXCHGID4_2_FLAG_MASK_R &
+			  EXCHGID4_FLAG_USE_PNFS_MDS;
+	u32 flags = EXCHGID4_FLAG_USE_PNFS_MDS | v2_only_bit;
+
+	/* Skip if this kernel's mask difference does not isolate a bit. */
+	if (!v2_only_bit)
+		kunit_skip(test, "no minor-version-only bit in this mask");
+
+	KUNIT_EXPECT_EQ(test, nfs4_check_cl_exchange_flags(flags, 2), NFS_OK);
+	KUNIT_EXPECT_EQ(test, nfs4_check_cl_exchange_flags(flags, 1),
+			-NFS4ERR_INVAL);
+}
+
+static void identical_server_scopes_match(struct kunit *test)
+{
+	struct nfs41_server_scope a = { .server_scope_sz = 3, .server_scope = "abc" };
+	struct nfs41_server_scope b = { .server_scope_sz = 3, .server_scope = "abc" };
+
+	KUNIT_EXPECT_TRUE(test, nfs41_same_server_scope(&a, &b));
+}
+
+static void different_lengths_never_match(struct kunit *test)
+{
+	struct nfs41_server_scope a = { .server_scope_sz = 3, .server_scope = "abc" };
+	struct nfs41_server_scope b = { .server_scope_sz = 4, .server_scope = "abcd" };
+
+	KUNIT_EXPECT_FALSE_MSG(test, nfs41_same_server_scope(&a, &b),
+			       "compared bytes past a shorter scope's length");
+}
+
+static void same_length_different_bytes_do_not_match(struct kunit *test)
+{
+	struct nfs41_server_scope a = { .server_scope_sz = 3, .server_scope = "abc" };
+	struct nfs41_server_scope b = { .server_scope_sz = 3, .server_scope = "abd" };
+
+	KUNIT_EXPECT_FALSE(test, nfs41_same_server_scope(&a, &b));
+}
+
+/*
+ * Fore-channel verification: the server may not promise more than the
+ * client offered, in either direction of the "how much can I send you"
+ * negotiation.
+ */
+static void fore_channel_response_exceeding_max_resp_sz_is_rejected(struct kunit *test)
+{
+	struct nfs41_create_session_args args = { .fc_attrs = { .max_resp_sz = 100 } };
+	struct nfs41_create_session_res res = { .fc_attrs = { .max_resp_sz = 200,
+							      .max_ops = 2,
+							      .max_reqs = 1 } };
+
+	KUNIT_EXPECT_EQ(test, nfs4_verify_fore_channel_attrs(&args, &res), -EINVAL);
+}
+
+/*
+ * The client's requested max_ops is the minimum it can work with, since
+ * it may not be able to break a compound into smaller pieces than that.
+ */
+static void fore_channel_max_ops_below_the_request_is_rejected(struct kunit *test)
+{
+	struct nfs41_create_session_args args = { .fc_attrs = { .max_ops = 8 } };
+	struct nfs41_create_session_res res = { .fc_attrs = { .max_ops = 4,
+							      .max_reqs = 1 } };
+
+	KUNIT_EXPECT_EQ(test, nfs4_verify_fore_channel_attrs(&args, &res), -EINVAL);
+}
+
+static void fore_channel_zero_max_reqs_is_rejected(struct kunit *test)
+{
+	struct nfs41_create_session_args args = {};
+	struct nfs41_create_session_res res = {};
+
+	KUNIT_EXPECT_EQ(test, nfs4_verify_fore_channel_attrs(&args, &res), -EINVAL);
+}
+
+/* An oversized max_reqs is silently clamped rather than rejected. */
+static void fore_channel_oversized_max_reqs_is_clamped_not_rejected(struct kunit *test)
+{
+	struct nfs41_create_session_args args = { .fc_attrs = { .max_ops = 2 } };
+	struct nfs41_create_session_res res = { .fc_attrs = {
+			.max_ops = 2, .max_reqs = NFS4_MAX_SLOT_TABLE + 100 } };
+
+	KUNIT_EXPECT_EQ(test, nfs4_verify_fore_channel_attrs(&args, &res), 0);
+	KUNIT_EXPECT_EQ_MSG(test, res.fc_attrs.max_reqs, (u32)NFS4_MAX_SLOT_TABLE,
+			    "an oversized max_reqs was not clamped");
+}
+
+/* Without a back channel, none of the back-channel fields are checked. */
+static void no_back_channel_skips_verification_entirely(struct kunit *test)
+{
+	struct nfs41_create_session_args args = {};
+	struct nfs41_create_session_res res = { .flags = 0,
+						.bc_attrs = { .max_reqs = 99999 } };
+
+	KUNIT_EXPECT_EQ(test, nfs4_verify_back_channel_attrs(&args, &res), 0);
+}
+
+/* With a back channel, the server may not exceed what was offered. */
+static void back_channel_exceeding_max_reqs_is_rejected(struct kunit *test)
+{
+	struct nfs41_create_session_args args = { .bc_attrs = { .max_reqs = 1 } };
+	struct nfs41_create_session_res res = { .flags = SESSION4_BACK_CHAN,
+						.bc_attrs = { .max_reqs = 2 } };
+
+	KUNIT_EXPECT_EQ(test, nfs4_verify_back_channel_attrs(&args, &res), -EINVAL);
+}
+
+/* The combined check runs fore before back, so a fore failure is reported first. */
+static void combined_verification_checks_fore_before_back(struct kunit *test)
+{
+	struct nfs41_create_session_args args = {};
+	struct nfs41_create_session_res res = { .fc_attrs = { .max_reqs = 0 },
+						.bc_attrs = { .max_reqs = 0 } };
+
+	KUNIT_EXPECT_EQ(test, nfs4_verify_channel_attrs(&args, &res), -EINVAL);
+}
+
+/*
+ * A fore-channel pass must not short-circuit the back-channel check: the
+ * combined function has to actually call both, not just propagate a
+ * successful fore-channel result.
+ */
+static void combined_verification_still_checks_back_after_fore_passes(struct kunit *test)
+{
+	struct nfs41_create_session_args args = { .fc_attrs = { .max_ops = 1 },
+						  .bc_attrs = { .max_reqs = 1 } };
+	struct nfs41_create_session_res res = { .flags = SESSION4_BACK_CHAN,
+						.fc_attrs = { .max_ops = 1,
+							     .max_reqs = 1 },
+						.bc_attrs = { .max_reqs = 2 } };
+
+	KUNIT_EXPECT_EQ_MSG(test, nfs4_verify_channel_attrs(&args, &res), -EINVAL,
+			    "a fore-channel pass suppressed the back-channel check");
+}
+
+static void combined_verification_passes_when_both_channels_are_fine(struct kunit *test)
+{
+	struct nfs41_create_session_args args = { .fc_attrs = { .max_ops = 1 } };
+	struct nfs41_create_session_res res = { .fc_attrs = { .max_ops = 1,
+							      .max_reqs = 1 } };
+
+	KUNIT_EXPECT_EQ(test, nfs4_verify_channel_attrs(&args, &res), 0);
+}
+
+static struct kunit_case nfs4_session_negotiation_cases[] = {
+	KUNIT_CASE(a_bare_pnfs_mds_flag_is_accepted),
+	KUNIT_CASE(mds_and_non_pnfs_together_is_invalid),
+	KUNIT_CASE(no_pnfs_role_flag_at_all_is_invalid),
+	KUNIT_CASE(a_flag_valid_under_v2_is_rejected_under_v1),
+	KUNIT_CASE(identical_server_scopes_match),
+	KUNIT_CASE(different_lengths_never_match),
+	KUNIT_CASE(same_length_different_bytes_do_not_match),
+	KUNIT_CASE(fore_channel_response_exceeding_max_resp_sz_is_rejected),
+	KUNIT_CASE(fore_channel_max_ops_below_the_request_is_rejected),
+	KUNIT_CASE(fore_channel_zero_max_reqs_is_rejected),
+	KUNIT_CASE(fore_channel_oversized_max_reqs_is_clamped_not_rejected),
+	KUNIT_CASE(no_back_channel_skips_verification_entirely),
+	KUNIT_CASE(back_channel_exceeding_max_reqs_is_rejected),
+	KUNIT_CASE(combined_verification_checks_fore_before_back),
+	KUNIT_CASE(combined_verification_still_checks_back_after_fore_passes),
+	KUNIT_CASE(combined_verification_passes_when_both_channels_are_fine),
+	{}
+};
+
+static struct kunit_suite nfs4_session_negotiation_suite = {
+	.name		= "nfs4-session-negotiation",
+	.test_cases	= nfs4_session_negotiation_cases,
+};
+
+/*
+ * Stateid comparison and status classification
+ */
+
+/*
+ * nfs41_match_stateid() treats a zero seqid as a wildcard: it appears in
+ * "any state" stateids used by RELEASE_LOCKOWNER and friends, so a zero
+ * on either side matches any seqid on the other.
+ */
+static void nfs41_match_treats_a_zero_seqid_as_a_wildcard(struct kunit *test)
+{
+	nfs4_stateid a = { .type = NFS4_LOCK_STATEID_TYPE, .seqid = 0 };
+	nfs4_stateid b = { .type = NFS4_LOCK_STATEID_TYPE, .seqid = cpu_to_be32(9) };
+
+	memset(a.other, 0x42, sizeof(a.other));
+	memset(b.other, 0x42, sizeof(b.other));
+
+	KUNIT_EXPECT_TRUE(test, nfs41_match_stateid(&a, &b));
+}
+
+static void nfs41_match_requires_the_same_other_field(struct kunit *test)
+{
+	nfs4_stateid a = { .type = NFS4_LOCK_STATEID_TYPE };
+	nfs4_stateid b = { .type = NFS4_LOCK_STATEID_TYPE };
+
+	memset(a.other, 0x11, sizeof(a.other));
+	memset(b.other, 0x22, sizeof(b.other));
+
+	KUNIT_EXPECT_FALSE(test, nfs41_match_stateid(&a, &b));
+}
+
+static void nfs41_match_requires_the_same_type(struct kunit *test)
+{
+	nfs4_stateid a = { .type = NFS4_LOCK_STATEID_TYPE };
+	nfs4_stateid b = { .type = NFS4_OPEN_STATEID_TYPE };
+
+	KUNIT_EXPECT_FALSE_MSG(test, nfs41_match_stateid(&a, &b),
+			       "stateids of different types were treated as equal");
+}
+
+/*
+ * nfs4_match_stateid() delegates to nfs4_stateid_match(), which -- unlike
+ * nfs41_match_stateid() above -- requires an exact match: same type, and
+ * the full 16-byte payload including seqid, with no zero-seqid wildcard.
+ * Recorded as the contrast: two functions with almost the same name and a
+ * real difference in what they consider equal.
+ */
+static void nfs4_match_requires_an_exact_seqid(struct kunit *test)
+{
+	nfs4_stateid a = { .type = NFS4_LOCK_STATEID_TYPE, .seqid = cpu_to_be32(1) };
+	nfs4_stateid b = { .type = NFS4_LOCK_STATEID_TYPE, .seqid = cpu_to_be32(9) };
+
+	memset(a.other, 0x77, sizeof(a.other));
+	memset(b.other, 0x77, sizeof(b.other));
+
+	KUNIT_EXPECT_FALSE_MSG(test, nfs4_match_stateid(&a, &b),
+			       "differing seqids matched with no wildcard rule");
+
+	b.seqid = a.seqid;
+	KUNIT_EXPECT_TRUE(test, nfs4_match_stateid(&a, &b));
+}
+
+static void nfs4_match_requires_the_same_type_too(struct kunit *test)
+{
+	nfs4_stateid a = { .type = NFS4_LOCK_STATEID_TYPE, .seqid = cpu_to_be32(1) };
+	nfs4_stateid b = { .type = NFS4_OPEN_STATEID_TYPE, .seqid = cpu_to_be32(1) };
+
+	memset(a.other, 0x77, sizeof(a.other));
+	memset(b.other, 0x77, sizeof(b.other));
+
+	KUNIT_EXPECT_FALSE(test, nfs4_match_stateid(&a, &b));
+}
+
+/*
+ * Every status nfs4_error_stateid_expired() recognises means the same
+ * thing operationally: the stateid the client is holding is no longer
+ * valid on the server and open/lock recovery has to run.
+ */
+struct stateid_expired_param {
+	const char	*desc;
+	int		err;
+	bool		expected;
+};
+
+static void stateid_expired_get_desc(const struct stateid_expired_param *p, char *desc)
+{
+	strscpy(desc, p->desc, KUNIT_PARAM_DESC_SIZE);
+}
+
+static const struct stateid_expired_param stateid_expired_params[] = {
+	{ "DELEG_REVOKED",	-NFS4ERR_DELEG_REVOKED,	true },
+	{ "ADMIN_REVOKED",	-NFS4ERR_ADMIN_REVOKED,	true },
+	{ "BAD_STATEID",	-NFS4ERR_BAD_STATEID,		true },
+	{ "STALE_STATEID",	-NFS4ERR_STALE_STATEID,	true },
+	{ "OLD_STATEID",	-NFS4ERR_OLD_STATEID,		true },
+	{ "OPENMODE",		-NFS4ERR_OPENMODE,		true },
+	{ "EXPIRED",		-NFS4ERR_EXPIRED,		true },
+	{ "unrelated error",	-EACCES,			false },
+	{ "success",		0,				false },
+	{ "GRACE is not expiry", -NFS4ERR_GRACE,		false },
+};
+
+KUNIT_ARRAY_PARAM(stateid_expired, stateid_expired_params, stateid_expired_get_desc);
+
+static void stateid_expired_case(struct kunit *test)
+{
+	const struct stateid_expired_param *p = test->param_value;
+
+	KUNIT_EXPECT_EQ_MSG(test, nfs4_error_stateid_expired(p->err), p->expected,
+			    "classifying %d", p->err);
+}
+
+/*
+ * fs4_path comparison, used to detect a referral or migration target
+ * that is actually the same location the client is already using.
+ */
+
+/*
+ * NFS4_PATHNAME_MAXCOMPONENTS is 512, so struct nfs4_pathname is too large
+ * for a kernel thread's stack -- allocated rather than declared inline.
+ */
+static struct nfs4_pathname *alloc_pathname(struct kunit *test)
+{
+	struct nfs4_pathname *path;
+
+	path = kunit_kzalloc(test, sizeof(*path), GFP_KERNEL);
+	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, path);
+	return path;
+}
+
+static void identical_pathnames_are_the_same(struct kunit *test)
+{
+	struct nfs4_pathname *path = alloc_pathname(test);
+
+	path->ncomponents = 2;
+	path->components[0].data = "export";
+	path->components[0].len = 6;
+	path->components[1].data = "home";
+	path->components[1].len = 4;
+
+	KUNIT_EXPECT_TRUE(test, _is_same_nfs4_pathname(path, path));
+}
+
+static void different_component_counts_are_different_paths(struct kunit *test)
+{
+	struct nfs4_pathname *a = alloc_pathname(test);
+	struct nfs4_pathname *b = alloc_pathname(test);
+
+	a->ncomponents = 1;
+	a->components[0].data = "export";
+	a->components[0].len = 6;
+
+	b->ncomponents = 2;
+	b->components[0].data = "export";
+	b->components[0].len = 6;
+	b->components[1].data = "home";
+	b->components[1].len = 4;
+
+	KUNIT_EXPECT_FALSE(test, _is_same_nfs4_pathname(a, b));
+}
+
+/* Same component count and lengths, but different bytes. */
+static void differing_component_bytes_are_different_paths(struct kunit *test)
+{
+	struct nfs4_pathname *a = alloc_pathname(test);
+	struct nfs4_pathname *b = alloc_pathname(test);
+
+	a->ncomponents = 1;
+	a->components[0].data = "export";
+	a->components[0].len = 6;
+
+	b->ncomponents = 1;
+	b->components[0].data = "exp0rt";
+	b->components[0].len = 6;
+
+	KUNIT_EXPECT_FALSE(test, _is_same_nfs4_pathname(a, b));
+}
+
+static struct kunit_case nfs4_stateid_status_cases[] = {
+	KUNIT_CASE(nfs41_match_treats_a_zero_seqid_as_a_wildcard),
+	KUNIT_CASE(nfs41_match_requires_the_same_other_field),
+	KUNIT_CASE(nfs41_match_requires_the_same_type),
+	KUNIT_CASE(nfs4_match_requires_an_exact_seqid),
+	KUNIT_CASE(nfs4_match_requires_the_same_type_too),
+	{
+		.name			= "stateid expired classification",
+		.run_case		= stateid_expired_case,
+		.generate_params	= stateid_expired_gen_params,
+	},
+	KUNIT_CASE(identical_pathnames_are_the_same),
+	KUNIT_CASE(different_component_counts_are_different_paths),
+	KUNIT_CASE(differing_component_bytes_are_different_paths),
+	{}
+};
+
+static struct kunit_suite nfs4_stateid_status_suite = {
+	.name		= "nfs4-stateid-status",
+	.test_cases	= nfs4_stateid_status_cases,
+};
+
+/*
  * Suites
  */
 
@@ -823,6 +2378,60 @@ static struct kunit_suite nfs4_slot_sequence_suite = {
 	.test_cases	= nfs4_slot_sequence_cases,
 };
 
+static struct kunit_case nfs4_acl_cases[] = {
+	KUNIT_CASE(acl_support_follows_the_attribute_bitmask),
+	KUNIT_CASE(acl_flavours_are_advertised_independently),
+	KUNIT_CASE(get_acl_on_an_empty_filehandle_reports_no_data),
+	KUNIT_CASE(set_acl_on_an_empty_filehandle_reports_no_data),
+	KUNIT_CASE(the_filehandle_check_precedes_the_support_check),
+	KUNIT_CASE(get_acl_for_an_unsupported_flavour_is_refused),
+	KUNIT_CASE(set_acl_for_an_unsupported_flavour_is_refused),
+	KUNIT_CASE(setting_an_empty_acl_is_rejected),
+	KUNIT_CASE(the_empty_check_precedes_the_support_check),
+	KUNIT_CASE(an_oversized_acl_is_refused),
+	{}
+};
+
+static struct kunit_suite nfs4_acl_suite = {
+	.name		= "nfs4-acl-gates",
+	.test_cases	= nfs4_acl_cases,
+};
+
+static struct kunit_case nfs4_changeattr_cases[] = {
+	KUNIT_CASE(an_atomic_change_keeps_cached_lookups),
+	KUNIT_CASE(a_non_atomic_change_drops_cached_lookups),
+	KUNIT_CASE(an_atomic_change_from_an_unexpected_state_drops_lookups),
+	KUNIT_CASE(a_non_atomic_change_invalidates_the_attribute_cache),
+	KUNIT_CASE(an_atomic_change_spares_the_attribute_cache),
+	KUNIT_CASE(a_stale_reply_does_not_rewind_the_change_attribute),
+	KUNIT_CASE(an_undefined_change_type_accepts_any_different_value),
+	KUNIT_CASE(an_unchanged_directory_is_left_alone),
+	KUNIT_CASE(a_regular_file_never_forces_lookup_revalidation),
+	KUNIT_CASE(a_directory_always_invalidates_its_contents),
+	KUNIT_CASE(an_empty_page_cache_drops_the_data_invalidation),
+	KUNIT_CASE(a_delegation_spares_the_timestamps),
+	KUNIT_CASE(without_a_delegation_the_timestamps_are_invalidated),
+	{}
+};
+
+static struct kunit_suite nfs4_changeattr_suite = {
+	.name		= "nfs4-change-info",
+	.test_cases	= nfs4_changeattr_cases,
+};
+
+static struct kunit_case nfs4_unlink_done_cases[] = {
+	KUNIT_CASE(a_successful_unlink_reply_updates_the_directory),
+	KUNIT_CASE(a_non_atomic_unlink_reply_drops_cached_lookups),
+	KUNIT_CASE(an_atomic_unlink_reply_keeps_cached_lookups),
+	KUNIT_CASE(a_failed_unlink_reply_leaves_the_directory_alone),
+	{}
+};
+
+static struct kunit_suite nfs4_unlink_done_suite = {
+	.name		= "nfs4-unlink-done",
+	.test_cases	= nfs4_unlink_done_cases,
+};
+
 static struct kunit_case nfs4_bitmap_cases[] = {
 	KUNIT_CASE(absent_inode_copies_the_mask_unchanged),
 	KUNIT_CASE(undelegated_inode_copies_the_mask_unchanged),
@@ -846,7 +2455,14 @@ kunit_test_suites(&nfs4_map_errors_suite,
 		  &nfs4_open_claim_suite,
 		  &nfs4_stateid_suite,
 		  &nfs4_slot_sequence_suite,
-		  &nfs4_bitmap_suite);
+		  &nfs4_bitmap_suite,
+		  &nfs4_acl_suite,
+		  &nfs4_changeattr_suite,
+		  &nfs4_unlink_done_suite,
+		  &nfs4_misc_suite,
+		  &nfs4_open_state_suite,
+		  &nfs4_session_negotiation_suite,
+		  &nfs4_stateid_status_suite);
 
 MODULE_DESCRIPTION("Test NFSv4 protocol decision logic");
 MODULE_LICENSE("GPL");
