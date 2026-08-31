@@ -59,7 +59,7 @@ jobs:
       # this close to a no-op: the clone is skipped and only the pinned SHA
       # is re-verified.
       - name: Fetch the kernel tree
-        run: LINUX_FULL=1 scripts/fetch-sources.sh linux
+        run: LINUX_FULL=1 bash scripts/fetch-sources.sh linux
 
       # Saved here, before the runner script edits the tree. That script
       # copies test sources in and drops `static` off the functions under
