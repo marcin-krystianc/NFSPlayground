@@ -128,6 +128,25 @@ UNSTATIC=(
     "fs/nfs/nfs4proc.c:bool:nfs41_match_stateid"
     "fs/nfs/nfs4proc.c:bool:nfs4_error_stateid_expired"
     "fs/nfs/nfs4proc.c:bool:_is_same_nfs4_pathname"
+    "fs/nfs/nfs4proc.c:void:nfs4_sequence_attach_slot"
+    "fs/nfs/nfs4proc.c:void:nfs4_inc_nlink_locked"
+    "fs/nfs/nfs4proc.c:void:nfs4_inc_nlink"
+    "fs/nfs/nfs4proc.c:void:nfs4_dec_nlink_locked"
+    "fs/nfs/nfs4proc.c:void:nfs4_update_changeattr"
+    "fs/nfs/nfs4proc.c:bool:nfs_stateid_is_sequential"
+    "fs/nfs/nfs4proc.c:void:nfs_clear_open_stateid"
+    "fs/nfs/nfs4proc.c:void:nfs4_return_incompatible_delegation"
+    "fs/nfs/nfs4proc.c:void:nfs4_close_context"
+    "fs/nfs/nfs4proc.c:bool:nfs4_read_plus_not_supported"
+    "fs/nfs/nfs4proc.c:bool:nfs4_write_need_cache_consistency_data"
+    "fs/nfs/nfs4proc.c:void:nfs4_bitmask_set"
+    "fs/nfs/nfs4proc.c:int:nfs4_buf_to_pages_noslab"
+    "fs/nfs/nfs4proc.c:void:nfs4_zap_acl_attr"
+    "fs/nfs/nfs4proc.c:void:nfs_fixup_secinfo_attributes"
+    "fs/nfs/nfs4proc.c:void:nfs4_disable_swap"
+    "fs/nfs/nfs4proc.c:void:nfs4_init_boot_verifier"
+    "fs/nfs/nfs4proc.c:void:do_renew_lease"
+    "fs/nfs/nfs4proc.c:void:renew_lease"
 )
 
 for entry in "${UNSTATIC[@]}"; do
@@ -147,7 +166,7 @@ for entry in "${UNSTATIC[@]}"; do
     # "static int" with "foo(" on the next, and "static struct x *foo("
     # where the pointer star abuts the name. \s* covers all three, since
     # \s matches the newline too.
-    perl -0pi -e "s/^static \Q${rettype}\E\s*\Q${func}\E\(/VISIBLE_IF_KUNIT ${rettype} ${func}(/mg" "$src"
+    perl -0pi -e "s/^static\s+\Q${rettype}\E\s*\Q${func}\E\(/VISIBLE_IF_KUNIT ${rettype} ${func}(/mg" "$src"
 
     # Verify by absence: the definition must no longer be static.
     grep -qE "^static .*\b${func}\(" "$src" &&
