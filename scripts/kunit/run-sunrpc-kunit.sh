@@ -39,6 +39,7 @@ TESTS=(
     "nfs4session_test:fs/nfs:NFS_V4_SESSION_KUNIT_TEST:NFS_V4:NFSv4.1 session slot tables"
     "inode_test:fs/nfs:NFS_INODE_KUNIT_TEST:NFS_FS:NFS inode attribute comparison"
     "pnfs_test:fs/nfs:NFS_PNFS_KUNIT_TEST:NFS_V4_1:pNFS layout range arithmetic"
+    "pagelist_test:fs/nfs:NFS_PAGELIST_KUNIT_TEST:NFS_FS:NFS page request coalescing"
 )
 
 # NFS_V4 is needed by the session slot table suite and is not in the
@@ -80,6 +81,9 @@ UNSTATIC=(
     "fs/nfs/inode.c:void:nfs_set_timestamps_to_ts"
     "fs/nfs/inode.c:void:nfs_ooo_record"
     "fs/nfs/inode.c:int:nfs_inode_finish_partial_attr_update"
+    "fs/nfs/pagelist.c:bool:nfs_page_is_contiguous"
+    "fs/nfs/pagelist.c:bool:nfs_match_lock_context"
+    "fs/nfs/pagelist.c:unsigned int:nfs_coalesce_size"
 )
 
 for entry in "${UNSTATIC[@]}"; do
