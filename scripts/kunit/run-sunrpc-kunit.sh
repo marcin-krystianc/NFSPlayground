@@ -41,7 +41,21 @@ TESTS=(
     "pnfs_test:fs/nfs:NFS_PNFS_KUNIT_TEST:NFS_V4_1:pNFS layout range arithmetic"
     "pagelist_test:fs/nfs:NFS_PAGELIST_KUNIT_TEST:NFS_FS:NFS page request coalescing"
     "nfs4proc_test:fs/nfs:NFS_V4_PROC_KUNIT_TEST:NFS_V4:NFSv4 protocol decision logic"
-    "xfstests/generic/001:fs:NFS_GENERIC001_KUNIT_TEST:NFSD:xfstests generic/001 over a loopback NFS mount"
+    # The xfstests ports share one Kconfig symbol and the loopback NFS
+    # fixture object; nfs_fixture must be listed (it has no suite, it is
+    # the shared deployment the generic/* suites mount through).
+    "xfstests/nfs_fixture:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
+    "xfstests/generic/001:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
+    "xfstests/generic/002:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
+    "xfstests/generic/004:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
+    "xfstests/generic/005:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
+    "xfstests/generic/006:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
+    "xfstests/generic/007:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
+    "xfstests/generic/008:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
+    "xfstests/generic/010:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
+    "xfstests/generic/011:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
+    "xfstests/generic/013:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
+    "xfstests/generic/014:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
 )
 
 # NFS_V4 is needed by the session slot table suite and is not in the
@@ -155,6 +169,7 @@ UNSTATIC=(
     "fs/nfsd/export.c:int:expkey_parse"
     "fs/nfsd/export.c:int:svc_export_parse"
     "net/sunrpc/svcauth_unix.c:int:ip_map_parse"
+    "fs/namei.c:int:do_mknodat"
 )
 
 for entry in "${UNSTATIC[@]}"; do
@@ -195,9 +210,14 @@ for entry in "${TESTS[@]}"; do
     flat="${stem//\//_}"
     log "installing ${subdir}/${flat}.c"
     cp "${REPO_ROOT}/kunit/${stem}.c" "${dir}/${flat}.c"
+    if [ -f "${REPO_ROOT}/kunit/${stem}.h" ]; then
+        cp "${REPO_ROOT}/kunit/${stem}.h" "${dir}/${flat}.h"
+    fi
 
     # Mirrors net/sunrpc/auth_gss/Makefile:17, the pre-existing KUnit test.
-    if ! grep -q "$symbol" "${dir}/Makefile"; then
+    # Keyed on the object name, not the symbol: the xfstests ports share
+    # one symbol across many objects.
+    if ! grep -q "${flat}.o" "${dir}/Makefile"; then
         log "wiring Makefile for $symbol"
         printf '\nobj-$(CONFIG_%s) += %s.o\n' "$symbol" "$flat" \
             >> "${dir}/Makefile"
