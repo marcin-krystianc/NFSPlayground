@@ -343,7 +343,7 @@ return 0 — every IPv6 case would pass while testing nothing.
 
 ## xfstests cases that ARE ported: generic/* over a loopback NFS mount
 
-The `kunit/xfstests/` tree holds ports of **61 xfstests generic cases**,
+The `kunit/xfstests/` tree holds ports of **62 xfstests generic cases**,
 each a KUnit suite named after its original (`xfstests/generic/001` ...),
 each running against a real NFS mount served by knfsd inside the same UML
 kernel. The deployment lives in `kunit/xfstests/nfs_fixture.{c,h}`: tmpfs
@@ -354,7 +354,7 @@ because `create_client()` needs it; grace is ended the `v4_end_grace` way.
 Bring-up is refcounted per suite, so every full run also exercises ~60
 consecutive nfsd restart and mount/unmount cycles.
 
-Ported: 001 002 004 005 006 007 008 010 011 013 014 015 020 021 023 024
+Ported: 001 002 004 005 006 007 008 010 011 012 013 014 015 020 021 023 024
 035 037 058 062 069 070 071 074 075 087 088 089 092 097 102 109 110 123
 126 129 131 132 169 193 204 213 221 228 236 245 255 257 258 273 275 285
 286 294 306 308 309 313 314 320 360.
@@ -396,13 +396,21 @@ failing "wrong" expectation and verified before being encoded:
 - xattr gets are served from the client's xattr cache; only a server-side
   check (through the export directory) proves the SETXATTR wire value
   (097 -- added after a truncation mutation went uncaught).
+- `common/punch`'s engine is shared by four collapse tests that differ
+  only in flags: 021 plain, 022 `-d` (no fsync), 012 `-k`, 016 `-d -k`.
+  `-k` keeps the scratch file between the 17 layouts, so each is built on
+  the previous one's result -- that cumulative behaviour is the whole
+  difference between 012 and 021, and upstream's golden files differ
+  because of it. 012.c is cumulative to match, and asserts the carryover
+  positively (an offset a layout never wrote must still hold earlier
+  data), because a shadow-model test would otherwise pass either way.
 
 Validation on the full set: three one-line kernel mutations -- the client
 write path dropping a byte (17 failures across the data ports), rename
 silently skipping its RPC (8 failures across the namespace ports), and
 SETXATTR truncating its wire value (caught precisely by 097's server-side
 check) -- each reverted to a double-confirmed green run. Whole-run cost of
-all 61 ports plus fixture cycles: under two minutes wall clock including
+all 62 ports plus fixture cycles: under two minutes wall clock including
 the kernel build.
 
 ## Why these are not ports of xfstests cases
