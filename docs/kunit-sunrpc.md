@@ -343,7 +343,7 @@ return 0 — every IPv6 case would pass while testing nothing.
 
 ## An xfstests case that IS ported: generic/001 over a loopback NFS mount
 
-`kunit/generic001_test.c` (suite `nfs-generic001`) is the exception to the
+`kunit/xfstests/generic/001.c` (suite `xfstests/generic/001`) is the exception to the
 section below, and exists to answer a direct question: can this harness
 express an xfstests-style integration test against the real NFS client?
 

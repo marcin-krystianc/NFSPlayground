@@ -41,7 +41,7 @@ TESTS=(
     "pnfs_test:fs/nfs:NFS_PNFS_KUNIT_TEST:NFS_V4_1:pNFS layout range arithmetic"
     "pagelist_test:fs/nfs:NFS_PAGELIST_KUNIT_TEST:NFS_FS:NFS page request coalescing"
     "nfs4proc_test:fs/nfs:NFS_V4_PROC_KUNIT_TEST:NFS_V4:NFSv4 protocol decision logic"
-    "generic001_test:fs:NFS_GENERIC001_KUNIT_TEST:NFSD:xfstests generic/001 over a loopback NFS mount"
+    "xfstests/generic/001:fs:NFS_GENERIC001_KUNIT_TEST:NFSD:xfstests generic/001 over a loopback NFS mount"
 )
 
 # NFS_V4 is needed by the session slot table suite and is not in the
@@ -189,13 +189,17 @@ for entry in "${TESTS[@]}"; do
 
     [ -d "$dir" ] || die "${dir} not found in the kernel tree"
 
-    log "installing ${subdir}/${stem}.c"
-    cp "${REPO_ROOT}/kunit/${stem}.c" "${dir}/${stem}.c"
+    # A stem with slashes mirrors a source-tree layout under kunit/ (e.g.
+    # xfstests/generic/001). The kernel-side copy flattens it: kbuild would
+    # need a Makefile in every subdirectory otherwise.
+    flat="${stem//\//_}"
+    log "installing ${subdir}/${flat}.c"
+    cp "${REPO_ROOT}/kunit/${stem}.c" "${dir}/${flat}.c"
 
     # Mirrors net/sunrpc/auth_gss/Makefile:17, the pre-existing KUnit test.
     if ! grep -q "$symbol" "${dir}/Makefile"; then
         log "wiring Makefile for $symbol"
-        printf '\nobj-$(CONFIG_%s) += %s.o\n' "$symbol" "$stem" \
+        printf '\nobj-$(CONFIG_%s) += %s.o\n' "$symbol" "$flat" \
             >> "${dir}/Makefile"
     fi
 

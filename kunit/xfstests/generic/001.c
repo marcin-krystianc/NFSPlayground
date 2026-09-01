@@ -850,7 +850,7 @@ static struct kunit_case gen001_cases[] = {
 };
 
 static struct kunit_suite gen001_suite = {
-	.name		= "nfs-generic001",
+	.name		= "xfstests/generic/001",
 	.suite_init	= gen001_suite_init,
 	.suite_exit	= gen001_suite_exit,
 	.test_cases	= gen001_cases,
