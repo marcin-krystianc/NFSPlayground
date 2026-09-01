@@ -355,7 +355,7 @@ Bring-up is refcounted per suite, so every full run also exercises ~60
 consecutive nfsd restart and mount/unmount cycles.
 
 Ported: 001 002 004 005 006 007 008 010 011 012 013 014 015 016 020 021 022 023 024 025 026 027 028 029 030
-035 037 058 062 069 070 071 074 075 087 088 089 092 097 102 109 110 123
+031 032 033 034 035 037 039 058 062 069 070 071 074 075 087 088 089 092 097 102 109 110 123
 126 129 131 132 169 193 204 213 221 228 236 245 255 257 258 273 275 285
 286 294 306 308 309 313 314 320 360.
 
@@ -520,6 +520,66 @@ What the newly ported four added, and what porting them taught:
 - **028** is upstream's getcwd() race, rendered as d_path() over a churning
   tree including a renamed ancestor. Teeth confirmed: a nfs_rename() that
   returns success without telling the server fails it.
+
+### The 031-039 band
+
+031, 032, 033, 034 and 039 are ported; **036 and 038 are not, and will not
+be.** Both need things the fixture cannot have and that no amount of
+restructuring supplies:
+
+- **036** is CVE-2014-8086, an aio/dio race. It runs the compiled
+  `aio-dio-fcntl-race` binary, which needs libaio, multiple userspace
+  threads, and `fcntl()` toggling `O_DIRECT` underneath in-flight AIO. There
+  is no AIO submission path callable from a KUnit case, and the race is
+  between userspace threads by construction.
+- **038** stresses btrfs block-group allocation against `fstrim` running in
+  parallel, over 200,000 files. tmpfs has no discard, NFS has no trim
+  operation, and the bug is in btrfs' block group lifecycle -- there is no
+  client-side residue to test.
+
+Of the five that are in, two are honest partial ports and the docs should not
+pretend otherwise. **034 and 039 are both dm-flakey crash-consistency tests,
+and the crash is the test.** dm-flakey needs a block device; the fixture
+exports tmpfs and runs client and server in one kernel, so writes cannot be
+dropped and replayed. Neither port tests what upstream tests, and **nothing in
+the ported set covers crash consistency at all** -- it is the largest single
+gap in this collection.
+
+What those two keep is still NFS-specific rather than filler. Both upstream
+tests end by unlinking every entry and calling rmdir, and over NFS that is
+where sillyrename bites: an unlinked file whose `struct file` still awaits its
+delayed fput becomes a `.nfsXXXX` entry, the directory is not empty, and rmdir
+returns ENOTEMPTY -- the same errno as the btrfs bug, from an unrelated cause.
+Both ports therefore use the **plain** `xfs_rmdir()`, not
+`xfs_rmdir_settled()`, so that condition is reported rather than retried away.
+034 additionally covers directory fsync (`nfs_fsync_dir`), which no other port
+calls; 039 asserts nlink at each step through a forced revalidation, since a
+stale cached nlink would pass a test that only checked the file still exists.
+
+The other three:
+
+- **031** is generic/012's collapse-refusal in a second layout: two
+  overlapping writes whose offsets and lengths are not page multiples (55756
+  bytes at 185332, 63394 at 133228), where 012's layouts are all 64K units.
+  Same relationship 030 has to 029 -- a layout, not a mechanism. Its golden
+  output inverts against upstream's, because upstream's expected size (196032)
+  is what the file measures after two successful collapses remove 45056 bytes,
+  and here they are refused.
+- **033** is thinner still, and labelled as such in the source: NFSv4.2 has no
+  ZERO_RANGE, so all sixteen `fzero` calls return EOPNOTSUPP and the file keeps
+  its data. Upstream expects 64K of zeroes; this expects 64K of 0xcd. Its
+  value is forward-looking -- if this ever stops returning EOPNOTSUPP, something
+  is emulating ZERO_RANGE client-side, and the byte check says whether the
+  emulation is right.
+- **032** is the one with genuinely new coverage. Its fiemap and
+  unwritten-extent assertions cannot be ported (neither concept reaches an NFS
+  client), but what remains is **the only case in the set with a second thread
+  inside the NFS client at the same time as the writer**: a background loop
+  calling `sync_filesystem()` on the NFS superblock while sub-page writes, a
+  real ALLOCATE, a 1 MB overwrite and an fsync run against the same file. It
+  is a check on locking rather than on sequencing. The case logs its sync-loop
+  count and fails if it is zero, so a pass cannot silently mean the
+  concurrency never happened.
 
 Two debugging notes from this batch, both costing several rounds:
 `nfs_update_folio()` rounds a write's dirty range back up to the page
