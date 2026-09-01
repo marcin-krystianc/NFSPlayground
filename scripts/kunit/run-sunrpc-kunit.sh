@@ -41,11 +41,16 @@ TESTS=(
     "pnfs_test:fs/nfs:NFS_PNFS_KUNIT_TEST:NFS_V4_1:pNFS layout range arithmetic"
     "pagelist_test:fs/nfs:NFS_PAGELIST_KUNIT_TEST:NFS_FS:NFS page request coalescing"
     "nfs4proc_test:fs/nfs:NFS_V4_PROC_KUNIT_TEST:NFS_V4:NFSv4 protocol decision logic"
+    "generic001_test:fs:NFS_GENERIC001_KUNIT_TEST:NFSD:xfstests generic/001 over a loopback NFS mount"
 )
 
 # NFS_V4 is needed by the session slot table suite and is not in the
 # stock .kunitconfig, which only enables CONFIG_NFS_FS.
-kunit_opts=(CONFIG_IPV6=y CONFIG_NFS_V4=y CONFIG_NFS_V4_1=y)
+# NFS_V4_2/NFSD/TMPFS serve the generic/001 suite, which stands up knfsd
+# inside the UML kernel and mounts it back over loopback; the export lives
+# on tmpfs because ramfs has no export_operations.
+kunit_opts=(CONFIG_IPV6=y CONFIG_NFS_V4=y CONFIG_NFS_V4_1=y
+            CONFIG_NFS_V4_2=y CONFIG_NFSD=y CONFIG_NFSD_V4=y CONFIG_TMPFS=y)
 
 # Some functions worth testing are file-private. The kernel's own answer to
 # that is VISIBLE_IF_KUNIT (include/kunit/visibility.h), which drops the
@@ -147,6 +152,9 @@ UNSTATIC=(
     "fs/nfs/nfs4proc.c:void:nfs4_init_boot_verifier"
     "fs/nfs/nfs4proc.c:void:do_renew_lease"
     "fs/nfs/nfs4proc.c:void:renew_lease"
+    "fs/nfsd/export.c:int:expkey_parse"
+    "fs/nfsd/export.c:int:svc_export_parse"
+    "net/sunrpc/svcauth_unix.c:int:ip_map_parse"
 )
 
 for entry in "${UNSTATIC[@]}"; do

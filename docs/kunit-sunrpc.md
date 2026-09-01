@@ -341,6 +341,59 @@ adding one line to that array.
 set it, and without it `rpc_pton6()`/`rpc_ntop6()` compile to stubs that
 return 0 — every IPv6 case would pass while testing nothing.
 
+## An xfstests case that IS ported: generic/001 over a loopback NFS mount
+
+`kunit/generic001_test.c` (suite `nfs-generic001`) is the exception to the
+section below, and exists to answer a direct question: can this harness
+express an xfstests-style integration test against the real NFS client?
+
+It replicates xfstests `generic/001` -- the SGI data-integrity chain
+copier: 36 files from 1 byte to 1 MB with deterministic per-file content,
+five iterations of 200 randomized chain copies (`f -> f.0 -> f.1 -> ...`),
+chains collapsed to `f.last` and byte-compared against the untouched
+originals. The twist is where it runs. The suite's `suite_init` stands up
+a complete NFS deployment inside the one UML kernel, with no userspace:
+
+1. brings the loopback interface up (`dev_change_flags`; the kernel
+   auto-assigns 127.0.0.1 to a loopback device on UP)
+2. mounts tmpfs on `/export` (ramfs has no `export_operations`; shmem does)
+3. mounts the `nfsd` control filesystem -- its `fill_super` populates
+   `nn->nfsd_client_dir`, which `create_client()` dereferences on the first
+   EXCHANGE_ID; without this mount the first client connection panics knfsd
+4. feeds the three sunrpc caches rpc.mountd normally writes
+   (`auth.unix.ip`, `nfsd.export`, `nfsd.fh`) by calling their parse
+   functions directly, un-staticed by the runner like everything else
+5. starts one knfsd thread, v4-only (`nfsd_vers` clears v2/v3, avoiding
+   lockd and rpcbind registration; `nfsd_init_socks` creates the default
+   port-2049 listeners itself), then ends the 90-second v4 grace period
+   the way `/proc/fs/nfsd/v4_end_grace` does
+6. mounts `127.0.0.1:/` as NFSv4.2 (`sec=sys`) on `/mnt/nfs` via
+   `path_mount()`, so ordinary path-based VFS calls work under it
+
+Every file operation in the test is then a real RPC round-trip:
+OPEN/READ/WRITE/RENAME/REMOVE through `fs/nfs` and `net/sunrpc`, served by
+`fs/nfsd`, over loopback TCP. The whole five-iteration run adds about 1.3
+seconds to the suite, and it runs unchanged in the GitHub Actions workflow
+-- UML needs no services, so this is NFS integration testing in CI, which
+the real xfstests setup (Docker servers, a VM) cannot do.
+
+Validation followed the house rule, with the kernel-side mutation as the
+point of the exercise: a one-line bug injected into the NFS client's
+buffered write path (`nfs_update_folio` shrinking every write by one byte)
+fails the suite's round-trip probe and its chain-integrity case while all
+other suites stay green -- the test observes the real client data path.
+Test-side mutations (the copier dropping its final chunk; the verifier
+seeding differently from the writer) fail the right cases too. One
+teardown detail worth knowing: `fput()` from a kernel thread defers the
+final file release to the delayed-fput workqueue, so the client unmount
+flushes it (`flush_delayed_fput`) and retries briefly before treating
+-EBUSY as real.
+
+Honest scope: client and server share one kernel and one page cache, so
+cross-client cache coherence and crash consistency are out of reach, and
+the server is knfsd, not VAST. v3 would additionally need the userspace
+mountd protocol, so the loopback fixture is v4-only by construction.
+
 ## Why these are not ports of xfstests cases
 
 An obvious-sounding idea is to reimplement xfstests cases as KUnit tests.
