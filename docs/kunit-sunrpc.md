@@ -343,7 +343,7 @@ return 0 — every IPv6 case would pass while testing nothing.
 
 ## xfstests cases that ARE ported: generic/* over a loopback NFS mount
 
-The `kunit/xfstests/` tree holds ports of **68 xfstests generic cases**,
+The `kunit/xfstests/` tree holds ports of **69 xfstests generic cases**,
 each a KUnit suite named after its original (`xfstests/generic/001` ...),
 each running against a real NFS mount served by knfsd inside the same UML
 kernel. The deployment lives in `kunit/xfstests/nfs_fixture.{c,h}`: tmpfs
@@ -354,7 +354,7 @@ because `create_client()` needs it; grace is ended the `v4_end_grace` way.
 Bring-up is refcounted per suite, so every full run also exercises ~60
 consecutive nfsd restart and mount/unmount cycles.
 
-Ported: 001 002 004 005 006 007 008 010 011 012 013 014 015 016 020 021 022 023 024 025 026 027 028
+Ported: 001 002 004 005 006 007 008 010 011 012 013 014 015 016 020 021 022 023 024 025 026 027 028 029 030
 035 037 058 062 069 070 071 074 075 087 088 089 092 097 102 109 110 123
 126 129 131 132 169 193 204 213 221 228 236 245 255 257 258 273 275 285
 286 294 306 308 309 313 314 320 360.
@@ -420,11 +420,78 @@ failing "wrong" expectation and verified before being encoded:
   per-case log line reporting whether the server had the data before the
   close.
 
-The 020-030 band is now complete except for two structural impossibilities.
-**029 and 030 cannot be ported**: both test mapped (mmap) writes against
-truncate, and `vm_mmap()` needs `current->mm`, which a KUnit case running in
-a kernel thread does not have. That rules out every mmap-based test in the
-suite, not just these two.
+The 020-030 band is now complete.
+
+An earlier version of this section claimed 029 and 030 were both impossible,
+because `vm_mmap()` needs `current->mm` and a KUnit case runs in a kernel
+thread which has none. **That was wrong, and it was wrong by not looking**:
+KUnit ships `kunit_vm_mmap()` (`lib/kunit/user_alloc.c`), which allocates an
+mm, runs `arch_pick_mmap_layout()` on it, attaches it with
+`kthread_use_mm()`, and tracks the mapping as a test resource -- `mm_alloc()`
+is even already `EXPORT_SYMBOL_IF_KUNIT` for the purpose, and the helper is
+built into `lib/kunit` unconditionally. So **mmap is available to every
+port**, and 029 and 030 are both in. Writes into a mapping go through
+`copy_to_user()`, which is the correct way to touch user addresses with a
+borrowed mm (a bare dereference happens to work on UML but not under SMAP or
+PAN).
+
+**030** was then also recorded as out, for a smaller and more specific
+reason: it drives `mremap` around its truncates, and `mremap` exists only as
+a syscall entry point (`SYSCALL_DEFINE5(mremap, ...)`) with only static
+helpers. `nm` on `.kunit/vmlinux` confirms it -- `__do_sys_mremap`,
+`__se_sys_mremap` and `sys_mremap` are all local symbols (`t`, not `T`), so
+nothing outside `mm/mremap.c` can call it, and there is no `vm_mmap()`
+equivalent.
+
+**That reason was real but the conclusion was still wrong, because the
+mremap calls do nothing.** `mremap` rounds both lengths up to a page, and
+030's file is 5017k, which is 1254.25 pages. `PAGE_ALIGN(5017k)` and
+`PAGE_ALIGN(5020k)` are both 5020k, so every `mremap -m 5020k` / `mremap
+5017k` in upstream 030 takes the `old_len == new_len` path and returns the
+same address without touching a VMA. What they resize is xfs_io's own record
+of the mapping length, which is what lets its next `mwrite` clear its own
+bounds check. A 5017k mapping already covers the whole range 030 writes to.
+
+This was established by doing it the wrong way first: a forwarding wrapper
+was appended to `mm/mremap.c`, the grow and shrink were performed through it,
+and an assertion that a write past the shrunk mapping must now fail was added
+to prove the shrink had landed. It did not fail -- the tail was still mapped.
+The wrapper and the kernel edit were removed; a kernel change to call a
+function that provably does nothing is worse than no test. `kunit/xfstests/
+generic/030.c` asserts the rounding directly instead, so if the premise ever
+stops holding the test says so rather than silently drifting.
+
+What 030 does add is a second layout over 029's code path: unaligned mapped
+writes inside the last page of a ~5 MB file, versus 029's page-multiple 5 KB
+ones. It is worth being precise about how much that is worth, because two
+mutations run against both give a split answer:
+
+| mutation | 029 | 030 |
+|---|---|---|
+| drop `truncate_pagecache()` in `nfs_vmtruncate()` (inode.c:811) | catches | catches |
+| drop `nfs_folio_length()`'s partial-last-folio clamp (internal.h) | catches | **misses** |
+
+The clamp mutation is caught by 029 because its third case is 5121 bytes, and
+is invisible to 030 -- including to the mid-test check described below. I
+predicted twice that 030 would catch it and was wrong both times, so the
+measurement stands without a third guessed mechanism. **030 is not a strictly
+stronger 029.**
+
+030's one genuine improvement on upstream is where it looks. Upstream dumps
+the file only at the end, by which point its final `mwrite Y` has overwritten
+the entire range the truncates disturbed. The port adds a check between the
+truncate up and the Y write, and that is the assertion the
+`truncate_pagecache()` mutation fails on -- "byte 5137408 is 57, expected
+00", the stale W surviving the truncate down, on both scenarios. The
+end-of-test comparison upstream relies on does not notice.
+
+029 covers a path no other port reaches, which its mutations confirm:
+making `nfs_vm_page_mkwrite()` skip recording the dirty range loses every
+mapped write and fails all three of its scenarios while every other suite
+stays green; and making `nfs_vmtruncate()` skip `truncate_pagecache()` leaves
+stale bytes past the new EOF, which 029 catches both server-side and
+client-side ("byte 5118 is 58, expected 00") alongside the older
+nfs-inode-pagecache unit tests and 014/075.
 
 What the newly ported four added, and what porting them taught:
 
@@ -472,7 +539,7 @@ write path dropping a byte (17 failures across the data ports), rename
 silently skipping its RPC (8 failures across the namespace ports), and
 SETXATTR truncating its wire value (caught precisely by 097's server-side
 check) -- each reverted to a double-confirmed green run. Whole-run cost of
-all 68 ports plus fixture cycles: under two minutes wall clock including
+all 69 ports plus fixture cycles: under two minutes wall clock including
 the kernel build.
 
 ## Why these are not ports of xfstests cases
