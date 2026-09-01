@@ -61,15 +61,19 @@ static void user_xattrs_respect_file_types(struct kunit *test)
 
 	/*
 	 * Symlinks and special files refuse user.* with EPERM (the VFS's
-	 * xattr_permission), before the client would build any RPC. Note
-	 * kern_path follows the symlink, so the device node is the honest
-	 * probe for the special-file rule; the symlink row uses the node
-	 * as its target to stay unfollowed... simplest: point at the dev.
+	 * xattr_permission), before the client would build any RPC. Both
+	 * are checked: kern_path() does not follow a trailing symlink
+	 * unless LOOKUP_FOLLOW is passed (fs/namei.c:1906), so the symlink
+	 * row really does land on the link itself.
 	 */
 	KUNIT_EXPECT_EQ_MSG(test,
 			    xfs_setxattr(G062_ROOT "/dev", "user.test", "d", 1,
 					 0), -EPERM,
 			    "a device node accepted a user.* attribute");
+	KUNIT_EXPECT_EQ_MSG(test,
+			    xfs_setxattr(G062_ROOT "/lnk", "user.test", "l", 1,
+					 0), -EPERM,
+			    "a symlink accepted a user.* attribute");
 
 	/* a name with no namespace prefix has no handler */
 	KUNIT_EXPECT_EQ(test,

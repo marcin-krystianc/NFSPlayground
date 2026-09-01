@@ -343,7 +343,7 @@ return 0 — every IPv6 case would pass while testing nothing.
 
 ## xfstests cases that ARE ported: generic/* over a loopback NFS mount
 
-The `kunit/xfstests/` tree holds ports of **62 xfstests generic cases**,
+The `kunit/xfstests/` tree holds ports of **68 xfstests generic cases**,
 each a KUnit suite named after its original (`xfstests/generic/001` ...),
 each running against a real NFS mount served by knfsd inside the same UML
 kernel. The deployment lives in `kunit/xfstests/nfs_fixture.{c,h}`: tmpfs
@@ -354,7 +354,7 @@ because `create_client()` needs it; grace is ended the `v4_end_grace` way.
 Bring-up is refcounted per suite, so every full run also exercises ~60
 consecutive nfsd restart and mount/unmount cycles.
 
-Ported: 001 002 004 005 006 007 008 010 011 012 013 014 015 020 021 023 024
+Ported: 001 002 004 005 006 007 008 010 011 012 013 014 015 016 020 021 022 023 024 025 026 027 028
 035 037 058 062 069 070 071 074 075 087 088 089 092 097 102 109 110 123
 126 129 131 132 169 193 204 213 221 228 236 245 255 257 258 273 275 285
 286 294 306 308 309 313 314 320 360.
@@ -398,19 +398,81 @@ failing "wrong" expectation and verified before being encoded:
   (097 -- added after a truncation mutation went uncaught).
 - `common/punch`'s engine is shared by four collapse tests that differ
   only in flags: 021 plain, 022 `-d` (no fsync), 012 `-k`, 016 `-d -k`.
-  `-k` keeps the scratch file between the 17 layouts, so each is built on
-  the previous one's result -- that cumulative behaviour is the whole
-  difference between 012 and 021, and upstream's golden files differ
-  because of it. 012.c is cumulative to match, and asserts the carryover
-  positively (an offset a layout never wrote must still hold earlier
-  data), because a shadow-model test would otherwise pass either way.
+  All four are now ported, because the flags are not cosmetic:
+  - `-k` keeps the scratch file between the 17 layouts, so each is built
+    on the previous one's result. That is the whole difference between 012
+    and 021, and upstream's golden files differ because of it. 012.c and
+    016.c are cumulative to match, and assert the carryover positively
+    (an offset a layout never wrote must still hold earlier data) --
+    a shadow-model test would otherwise pass either way.
+  - `-d` drops the fsync, so the layouts reach the server only via
+    writeback. 016.c/022.c therefore double as close-to-open consistency
+    tests, and are the only ports that exercise it: mutating
+    `nfs4_file_flush()` to return early fails both on the first case that
+    writes anything, while 012 (same layouts, with fsync) still passes.
+  Getting that mutation to bite took three attempts, and each failure was
+  informative: `nfs_getattr()` flushes when STATX_CTIME/MTIME are asked
+  for (inode.c:982), `nfs_file_read()` flushes before invalidating a
+  mapping, and the v4 mount's `.flush` is `nfs4_file_flush()`
+  (nfs4file.c:111) -- not `nfs_file_flush()` (file.c:140), which serves
+  v2/v3 only. Hence the strict ordering in those ports (server check
+  first after close, size and client reads afterwards) and the permanent
+  per-case log line reporting whether the server had the data before the
+  close.
+
+The 020-030 band is now complete except for two structural impossibilities.
+**029 and 030 cannot be ported**: both test mapped (mmap) writes against
+truncate, and `vm_mmap()` needs `current->mm`, which a KUnit case running in
+a kernel thread does not have. That rules out every mmap-based test in the
+suite, not just these two.
+
+What the newly ported four added, and what porting them taught:
+
+- **025** runs `_rename_tests`' real 5x5x2 type matrix for RENAME_EXCHANGE,
+  where the already-ported 024 only probed one combination. The matrix
+  splits into two regimes -- either name absent gives ENOENT from
+  do_renameat2()'s own checks and never reaches NFS; both present gives
+  EINVAL from nfs_rename() -- so 024's single probe was exercising just one
+  of them. Teeth confirmed: making nfs_rename() accept flags fails 024 and
+  025 together.
+- **026** pins that POSIX ACLs are unusable over NFSv4 (no handler; and the
+  tmpfs export is built without CONFIG_TMPFS_POSIX_ACL) and that the NFSv4
+  ACL xattr refuses cleanly -- measured EOPNOTSUPP, reported rather than
+  hard-pinned since an ACL-carrying export would answer differently.
+  Mutation established a limit worth writing down: giving the nfs4_acl
+  handler the POSIX name so the call reaches the wire leaves the test
+  passing, because the server refuses with the same errno. The test pins
+  the user-visible contract, not which layer refuses, and now says so.
+- **027** fills eight directories round-robin to ENOSPC on a 16MB export,
+  four times, checking a 2MB reserve file survives each squeeze. Two
+  findings: the reserve check had to move server-side (a client-side read is
+  answered from the page cache), and 027 detects ENOSPC at *file creation*
+  rather than at write/fsync -- the fsync-swallowing mutation that fails
+  015/204/273/275 leaves 027 green. It is the only ENOSPC port covering the
+  create path, and no one-line kernel mutation for it has been found yet.
+- **028** is upstream's getcwd() race, rendered as d_path() over a churning
+  tree including a renamed ancestor. Teeth confirmed: a nfs_rename() that
+  returns success without telling the server fails it.
+
+Two debugging notes from this batch, both costing several rounds:
+`nfs_update_folio()` rounds a write's dirty range back up to the page
+boundary, so the "drop the last byte" mutation is absorbed entirely for
+page-aligned writes -- which is why it fails the unaligned ports and not
+012/027. And 025 spent three rounds chasing a phantom "partially applied
+exchange" that was really its own cleanup leaking a directory: removing the
+"tree" layout's child leaves a sillyrename entry pending, so a plain rmdir
+returns ENOTEMPTY. The fix is `xfs_rmdir_settled()` plus an assertion at the
+cleanup itself, so the next such leak is reported where it happens rather
+than three combinations later. Worth noting the failure mode: mid-hunt I
+"corrected" a expectation that was right all along to match a measurement
+that was an artifact of that leak.
 
 Validation on the full set: three one-line kernel mutations -- the client
 write path dropping a byte (17 failures across the data ports), rename
 silently skipping its RPC (8 failures across the namespace ports), and
 SETXATTR truncating its wire value (caught precisely by 097's server-side
 check) -- each reverted to a double-confirmed green run. Whole-run cost of
-all 62 ports plus fixture cycles: under two minutes wall clock including
+all 68 ports plus fixture cycles: under two minutes wall clock including
 the kernel build.
 
 ## Why these are not ports of xfstests cases
