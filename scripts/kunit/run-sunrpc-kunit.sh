@@ -56,6 +56,56 @@ TESTS=(
     "xfstests/generic/011:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
     "xfstests/generic/013:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
     "xfstests/generic/014:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
+    "xfstests/generic/021:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
+    "xfstests/generic/023:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
+    "xfstests/generic/024:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
+    "xfstests/generic/035:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
+    "xfstests/generic/058:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
+    "xfstests/generic/069:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
+    "xfstests/generic/071:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
+    "xfstests/generic/089:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
+    "xfstests/generic/092:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
+    "xfstests/generic/109:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
+    "xfstests/generic/245:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
+    "xfstests/generic/294:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
+    "xfstests/generic/015:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
+    "xfstests/generic/075:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
+    "xfstests/generic/102:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
+    "xfstests/generic/129:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
+    "xfstests/generic/132:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
+    "xfstests/generic/169:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
+    "xfstests/generic/204:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
+    "xfstests/generic/213:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
+    "xfstests/generic/255:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
+    "xfstests/generic/273:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
+    "xfstests/generic/275:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
+    "xfstests/generic/308:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
+    "xfstests/generic/320:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
+    "xfstests/generic/131:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
+    "xfstests/generic/221:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
+    "xfstests/generic/236:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
+    "xfstests/generic/257:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
+    "xfstests/generic/258:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
+    "xfstests/generic/285:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
+    "xfstests/generic/286:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
+    "xfstests/generic/309:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
+    "xfstests/generic/313:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
+    "xfstests/generic/360:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
+    "xfstests/generic/097:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
+    "xfstests/generic/020:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
+    "xfstests/generic/037:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
+    "xfstests/generic/062:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
+    "xfstests/generic/070:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
+    "xfstests/generic/074:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
+    "xfstests/generic/087:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
+    "xfstests/generic/088:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
+    "xfstests/generic/110:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
+    "xfstests/generic/123:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
+    "xfstests/generic/126:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
+    "xfstests/generic/193:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
+    "xfstests/generic/228:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
+    "xfstests/generic/306:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
+    "xfstests/generic/314:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
 )
 
 # NFS_V4 is needed by the session slot table suite and is not in the
@@ -64,7 +114,8 @@ TESTS=(
 # inside the UML kernel and mounts it back over loopback; the export lives
 # on tmpfs because ramfs has no export_operations.
 kunit_opts=(CONFIG_IPV6=y CONFIG_NFS_V4=y CONFIG_NFS_V4_1=y
-            CONFIG_NFS_V4_2=y CONFIG_NFSD=y CONFIG_NFSD_V4=y CONFIG_TMPFS=y)
+            CONFIG_NFS_V4_2=y CONFIG_NFSD=y CONFIG_NFSD_V4=y CONFIG_TMPFS=y
+            CONFIG_TMPFS_XATTR=y)
 
 # Some functions worth testing are file-private. The kernel's own answer to
 # that is VISIBLE_IF_KUNIT (include/kunit/visibility.h), which drops the

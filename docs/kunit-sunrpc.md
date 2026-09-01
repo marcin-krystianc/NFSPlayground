@@ -343,61 +343,67 @@ return 0 — every IPv6 case would pass while testing nothing.
 
 ## xfstests cases that ARE ported: generic/* over a loopback NFS mount
 
-The `kunit/xfstests/` tree holds ports of eleven xfstests generic cases,
-each a KUnit suite named after its original (`xfstests/generic/001` ...)
-and each running against a real NFS mount. The deployment lives in
-`kunit/xfstests/nfs_fixture.c`: tmpfs on `/export`, knfsd serving it on
-127.0.0.1:2049 (v4-only, one thread, grace ended the `v4_end_grace` way),
-and the real NFS client mounted as v4.2 on `/mnt/nfs` -- all inside the one
-UML kernel, no userspace. mountd's job is done by feeding its three caches
-(`auth.unix.ip`, `nfsd.export`, `nfsd.fh`) through their un-staticed parse
-functions; the nfsd control filesystem is mounted because `create_client()`
-needs `nn->nfsd_client_dir` on the first EXCHANGE_ID. Bring-up is
-refcounted per suite (get/put in suite_init/exit), which in practice also
-proves a dozen consecutive nfsd restart and mount/unmount cycles per run.
+The `kunit/xfstests/` tree holds ports of **61 xfstests generic cases**,
+each a KUnit suite named after its original (`xfstests/generic/001` ...),
+each running against a real NFS mount served by knfsd inside the same UML
+kernel. The deployment lives in `kunit/xfstests/nfs_fixture.{c,h}`: tmpfs
+on `/export` (size settable per suite for the ENOSPC family), knfsd
+v4-only on 127.0.0.1:2049, the real client mounted as NFSv4.2 on
+`/mnt/nfs`. mountd's three caches are fed directly; nfsdfs is mounted
+because `create_client()` needs it; grace is ended the `v4_end_grace` way.
+Bring-up is refcounted per suite, so every full run also exercises ~60
+consecutive nfsd restart and mount/unmount cycles.
 
-The ports, with their character:
+Ported: 001 002 004 005 006 007 008 010 011 013 014 015 020 021 023 024
+035 037 058 062 069 070 071 074 075 087 088 089 092 097 102 109 110 123
+126 129 131 132 169 193 204 213 221 228 236 245 255 257 258 273 275 285
+286 294 306 308 309 313 314 320 360.
 
-- **001** chain copier (data integrity through copy/rename/unlink)
-- **002** hard-link counts checked against the server after every LINK/REMOVE
-- **004** O_TMPFILE: the honest notrun-mirror -- pins EOPNOTSUPP, since the
-  protocol has no anonymous create
-- **005** symlink chains: ELOOP exactly at the MAXSYMLINKS boundary
-- **006** permname: all 4096 length-6 names over {a,b,c,d} in one directory
-- **007** nametest: model-checked random create/remove/lookup with inode
-  numbers verified against the model (20k of upstream's 100k iterations)
-- **008** zeroed ranges: ZERO_RANGE pinned as EOPNOTSUPP (the reason
-  xfstests _notruns), then the same property through DEALLOCATE and
-  ALLOCATE, which NFSv4.2 does have
-- **010** dbtest re-expressed as a keyed record store with per-record
-  generations, byte-verified fetches
-- **011** dirstress: mixed entry types (files, dirs, self-symlinks, device
-  nodes) created, scrambled with tolerated-failure renames/removes, and
-  removed -- plus a leak check upstream lacks
-- **013** a deliberately reduced mini-fsstress: 2,000 seeded random ops, an
-  expected-errno envelope, a success-rate vacuity guard, full teardown
-- **014** truncfile write/truncate churn, plus a sparse epilogue proving
-  truncate-down really discards data
+The families: protocol-pin mirrors for ops NFS lacks (021 collapse, 058
+insert, 092 bare KEEP_SIZE, 024 renameat2 flags, 110 clone-on-tmpfs, 004
+O_TMPFILE); namespace semantics (023, 035 sillyrename-on-rename-over, 089
+mtab link/rename churn, 109, 245, 294, 309, 360); data integrity (001
+chain copier, 075 mini-fsx with a shadow model, 069 O_APPEND, 071, 074,
+129, 132, 169, 213 ALLOCATE boundaries, 255 punch matrix, 286 seek-driven
+sparse copy, 308 1TB offsets); ENOSPC on a 16MB export (015, 102, 204,
+273, 275, 320); timestamps (221, 236, 258 pre-epoch, 313); xattrs -- RFC
+8276 works end to end here -- (020, 037, 062, 070 model-checked storm,
+097); permissions via in-kernel credential switching with dropped
+capabilities (087, 088, 123, 126, 193, 314 SGID inheritance); plus POSIX
+locks as NFSv4 LOCK state (131), SEEK RPCs (285/286), READDIR cookie
+stability (257), RLIMIT_FSIZE (228) and device nodes on RO mounts (306).
 
-Not ported, with reasons: **003** (atime/relatime remount semantics are
-mount-option and server-side matters on NFS), **009/012** (fiemap, zero
-range and collapse range -- the same EOPNOTSUPP contract 008 already pins),
-**015** (ENOSPC needs a size-limited export; possible later by mounting
-the tmpfs with size=).
+NFS-specific semantics the porting surfaced and pinned, each found as a
+failing "wrong" expectation and verified before being encoded:
 
-Two port-wide findings worth knowing: hard-linking a directory is a
-legitimate -EPERM the 013 storm must tolerate; and a directory can be
-transiently non-empty after removing every name, because unlinking or
-renaming over a just-closed file leaves a sillyrename (.nfsXXXX) entry
-until the delayed fput lands -- the fixture's xfs_rmdir_settled() exists
-for exactly that, and it is correct NFS client behaviour, not a leak.
+- RENAME_NOREPLACE is two-layer: EEXIST from the VFS's exclusive lookup
+  when the target exists (works over NFS with no protocol support), EINVAL
+  from nfs_rename once past it (024).
+- EEXIST-vs-EROFS on a read-only mount depends on the dcache: primed
+  names give EEXIST, cold lookups take nfs_lookup's exclusive-create
+  shortcut, never ask the server, and yield EROFS (294).
+- A same-size truncate is optimised away by the client -- no SETATTR, no
+  ctime/mtime update -- diverging from local filesystems (313).
+- Renaming over an open target sillyrenames it: nlink stays 1 and a .nfs
+  entry appears until the last close (035); removal storms can leave
+  transient .nfs entries, hence the fixture's settled rmdir (011/013).
+- Space freed by REMOVE returns eventually, not immediately (server-side
+  file caching): the ENOSPC ports wait, bounded (015/102/204).
+- statfs over NFS reports f_bsize as the 128K transfer size, not the
+  filesystem block size -- unit bugs in tests are easy (015/102/204).
+- In-kernel opens lack force_o_largefile(): without O_LARGEFILE the 2GiB
+  MAX_NON_LFS limit applies (308).
+- xattr gets are served from the client's xattr cache; only a server-side
+  check (through the export directory) proves the SETXATTR wire value
+  (097 -- added after a truncation mutation went uncaught).
 
-Validation: a one-line corruption in the client write path
-(nfs_update_folio shrinking every write) fails 12 cases across the
-data-integrity ports; a one-line "rename succeeds without telling the
-server" in nfs_rename fails 12 cases across the namespace ports; all other
-suites stay green under both. Whole-run cost of all eleven ports plus the
-fixture cycles: a few seconds.
+Validation on the full set: three one-line kernel mutations -- the client
+write path dropping a byte (17 failures across the data ports), rename
+silently skipping its RPC (8 failures across the namespace ports), and
+SETXATTR truncating its wire value (caught precisely by 097's server-side
+check) -- each reverted to a double-confirmed green run. Whole-run cost of
+all 61 ports plus fixture cycles: under two minutes wall clock including
+the kernel build.
 
 ## Why these are not ports of xfstests cases
 

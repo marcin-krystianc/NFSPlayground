@@ -11,6 +11,9 @@
 
 #include <linux/fs.h>
 #include <linux/stat.h>
+#include <linux/statfs.h>
+#include <linux/time64.h>
+#include <linux/cred.h>
 
 /* Where the NFS client mount lives; every port works under this root. */
 #define XFS_MNT		"/mnt/nfs"
@@ -20,6 +23,18 @@
 int xfstests_nfs_get(void);
 void xfstests_nfs_put(void);
 bool xfstests_nfs_mounted(void);
+
+/*
+ * Override the tmpfs export's mount options for the NEXT bring-up (the
+ * fixture re-mounts per suite). The ENOSPC ports use this to get a small
+ * filesystem; everyone else gets the default. Reset to the default at
+ * teardown automatically.
+ */
+void xfstests_nfs_export_opts(const char *opts);
+#define XFS_EXPORT_OPTS_DEFAULT	"size=67108864,nr_inodes=32768"
+
+/* Remount the NFS client mount read-only / read-write. */
+int xfs_remount_client(bool ro);
 
 /*
  * Path-based helpers over the fs/namei.c syscall bodies. All return 0 or a
@@ -47,5 +62,36 @@ int xfs_truncate(const char *path, loff_t length);
 /* Whole-file convenience wrappers (open/loop/close inside). */
 int xfs_write_new_file(const char *path, const void *data, size_t len);
 ssize_t xfs_read_range(const char *path, void *buf, size_t len, loff_t off);
+
+int xfs_statfs(const char *path, struct kstatfs *st);
+/* poll until XFS_MNT reports at least this many bytes available */
+int xfs_wait_for_free_bytes(u64 bytes);
+int xfs_fsync_path(const char *path);
+int xfs_chmod(const char *path, umode_t mode);
+int xfs_chown(const char *path, uid_t uid, gid_t gid);
+/* SETATTR of atime/mtime; ns == UTIME_OMIT semantics are not needed here */
+int xfs_utimes(const char *path, time64_t atime, time64_t mtime);
+
+/*
+ * Run as another user: switches fsuid/euid/... AND drops capabilities so
+ * DAC checks actually apply. Serial use only (tests run one at a time).
+ */
+int xfs_switch_creds(uid_t uid, gid_t gid);
+void xfs_restore_creds(void);
+
+/* xattrs by path, with the mnt_want_write dance callers of vfs_* owe */
+int xfs_setxattr(const char *path, const char *name, const void *value,
+		 size_t size, int flags);
+ssize_t xfs_getxattr(const char *path, const char *name, void *value,
+		     size_t size);
+ssize_t xfs_listxattr(const char *path, char *list, size_t size);
+int xfs_removexattr(const char *path, const char *name);
+
+/*
+ * POSIX advisory lock via vfs_lock_file: type is F_RDLCK/F_WRLCK/F_UNLCK,
+ * owner distinguishes lockowners (each becomes an NFSv4 lockowner).
+ */
+int xfs_posix_lock(struct file *f, unsigned char type, loff_t start,
+		   loff_t end, fl_owner_t owner, bool wait);
 
 #endif /* _XFSTESTS_NFS_FIXTURE_H */

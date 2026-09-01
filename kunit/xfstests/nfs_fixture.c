@@ -47,6 +47,7 @@
 #include <linux/file.h>
 #include <linux/namei.h>
 #include <linux/mount.h>
+#include <uapi/linux/mount.h>	/* MS_REMOUNT, MS_RDONLY */
 #include <linux/ktime.h>
 #include <linux/delay.h>
 #include <linux/netdevice.h>
@@ -54,6 +55,12 @@
 #include <net/net_namespace.h>
 #include <linux/sunrpc/svc.h>
 #include <linux/sunrpc/cache.h>
+#include <linux/statfs.h>
+#include <linux/xattr.h>
+#include <linux/filelock.h>
+#include <linux/cred.h>
+#include <linux/capability.h>
+#include <linux/uidgid.h>
 
 #include "internal.h"		/* path_mount/path_umount, do_*at bodies */
 #include "nfsd/nfsd.h"		/* nfsd_svc, nfsd_vers, nfsd_mutex */
@@ -71,6 +78,9 @@ int svc_export_parse(struct cache_detail *cd, char *mesg, int mlen);
 int expkey_parse(struct cache_detail *cd, char *mesg, int mlen);
 /* fs/namei.c syscall body without a declaration in fs/internal.h */
 int do_mknodat(int dfd, struct filename *name, umode_t mode, unsigned int dev);
+/* fs/open.c bodies; non-static there but not declared in a header */
+int chmod_common(const struct path *path, umode_t mode);
+int chown_common(const struct path *path, uid_t user, gid_t group);
 
 #define XFS_NFSDFS	"/nfsdfs"
 #define XFS_DOMAIN	"localhost"
@@ -196,6 +206,198 @@ ssize_t xfs_read_range(const char *path, void *buf, size_t len, loff_t off)
 	return got;
 }
 
+int xfs_statfs(const char *path, struct kstatfs *st)
+{
+	struct path p;
+	int err;
+
+	err = kern_path(path, 0, &p);
+	if (err)
+		return err;
+	err = vfs_statfs(&p, st);
+	path_put(&p);
+	return err;
+}
+
+int xfs_fsync_path(const char *path)
+{
+	struct file *f;
+	int err;
+
+	f = filp_open(path, O_RDONLY, 0);
+	if (IS_ERR(f))
+		return PTR_ERR(f);
+	err = vfs_fsync(f, 0);
+	filp_close(f, NULL);
+	return err;
+}
+
+int xfs_chmod(const char *path, umode_t mode)
+{
+	struct path p;
+	int err;
+
+	err = kern_path(path, 0, &p);
+	if (err)
+		return err;
+	err = chmod_common(&p, mode);
+	path_put(&p);
+	return err;
+}
+
+int xfs_chown(const char *path, uid_t uid, gid_t gid)
+{
+	struct path p;
+	int err;
+
+	err = kern_path(path, 0, &p);
+	if (err)
+		return err;
+	err = chown_common(&p, uid, gid);
+	path_put(&p);
+	return err;
+}
+
+int xfs_utimes(const char *path, time64_t atime, time64_t mtime)
+{
+	struct timespec64 times[2] = {
+		{ .tv_sec = atime, .tv_nsec = 0 },
+		{ .tv_sec = mtime, .tv_nsec = 0 },
+	};
+	struct path p;
+	int err;
+
+	err = kern_path(path, 0, &p);
+	if (err)
+		return err;
+	err = vfs_utimes(&p, times);
+	path_put(&p);
+	return err;
+}
+
+/*
+ * Credentials switching. NFS with sec=sys puts current fsuid/fsgid on the
+ * wire, and the client's own permission checks (ACCESS) use current creds
+ * too -- but only if capabilities are dropped, since CAP_DAC_OVERRIDE
+ * bypasses DAC entirely.
+ */
+static const struct cred *xfs_saved_creds;
+static struct cred *xfs_override;
+
+int xfs_switch_creds(uid_t uid, gid_t gid)
+{
+	struct cred *c;
+
+	if (WARN_ON(xfs_saved_creds))
+		return -EBUSY;
+	c = prepare_creds();
+	if (!c)
+		return -ENOMEM;
+	c->uid = c->euid = c->suid = c->fsuid = KUIDT_INIT(uid);
+	c->gid = c->egid = c->sgid = c->fsgid = KGIDT_INIT(gid);
+	cap_clear(c->cap_inheritable);
+	cap_clear(c->cap_permitted);
+	cap_clear(c->cap_effective);
+	xfs_override = c;
+	xfs_saved_creds = override_creds(c);
+	return 0;
+}
+
+void xfs_restore_creds(void)
+{
+	if (!xfs_saved_creds)
+		return;
+	revert_creds(xfs_saved_creds);
+	put_cred(xfs_override);
+	xfs_saved_creds = NULL;
+	xfs_override = NULL;
+}
+
+int xfs_setxattr(const char *path, const char *name, const void *value,
+		 size_t size, int flags)
+{
+	struct path p;
+	int err;
+
+	err = kern_path(path, 0, &p);
+	if (err)
+		return err;
+	err = mnt_want_write(p.mnt);
+	if (!err) {
+		err = vfs_setxattr(&nop_mnt_idmap, p.dentry, name, value,
+				   size, flags);
+		mnt_drop_write(p.mnt);
+	}
+	path_put(&p);
+	return err;
+}
+
+ssize_t xfs_getxattr(const char *path, const char *name, void *value,
+		     size_t size)
+{
+	struct path p;
+	ssize_t ret;
+
+	ret = kern_path(path, 0, &p);
+	if (ret)
+		return ret;
+	ret = vfs_getxattr(&nop_mnt_idmap, p.dentry, name, value, size);
+	path_put(&p);
+	return ret;
+}
+
+ssize_t xfs_listxattr(const char *path, char *list, size_t size)
+{
+	struct path p;
+	ssize_t ret;
+
+	ret = kern_path(path, 0, &p);
+	if (ret)
+		return ret;
+	ret = vfs_listxattr(p.dentry, list, size);
+	path_put(&p);
+	return ret;
+}
+
+int xfs_removexattr(const char *path, const char *name)
+{
+	struct path p;
+	int err;
+
+	err = kern_path(path, 0, &p);
+	if (err)
+		return err;
+	err = mnt_want_write(p.mnt);
+	if (!err) {
+		err = vfs_removexattr(&nop_mnt_idmap, p.dentry, name);
+		mnt_drop_write(p.mnt);
+	}
+	path_put(&p);
+	return err;
+}
+
+int xfs_posix_lock(struct file *f, unsigned char type, loff_t start,
+		   loff_t end, fl_owner_t owner, bool wait)
+{
+	struct file_lock *fl;
+	int err;
+
+	fl = locks_alloc_lock();
+	if (!fl)
+		return -ENOMEM;
+	fl->c.flc_type = type;
+	fl->c.flc_flags = FL_POSIX | (wait ? FL_SLEEP : 0);
+	fl->c.flc_owner = owner;
+	fl->c.flc_pid = current->tgid;
+	fl->c.flc_file = f;
+	fl->fl_start = start;
+	fl->fl_end = end;
+
+	err = vfs_lock_file(f, wait ? F_SETLKW : F_SETLK, fl, NULL);
+	locks_free_lock(fl);
+	return err;
+}
+
 /*
  * ---------------------------------------------------------------------
  * Bring-up / teardown
@@ -204,6 +406,12 @@ ssize_t xfs_read_range(const char *path, void *buf, size_t len, loff_t off)
 
 static DEFINE_MUTEX(xfs_fixture_lock);
 static int xfs_fixture_refs;
+static char xfs_export_mount_opts[64] = XFS_EXPORT_OPTS_DEFAULT;
+
+void xfstests_nfs_export_opts(const char *opts)
+{
+	strscpy(xfs_export_mount_opts, opts, sizeof(xfs_export_mount_opts));
+}
 
 static struct {
 	bool	tmpfs_mounted;
@@ -293,7 +501,51 @@ static int xfs_umount_settled(const char *mountpoint)
 		if (err == -EBUSY)
 			msleep(100);
 	}
+	if (err == -EBUSY) {
+		/*
+		 * A test case that aborted mid-assertion leaks its open
+		 * struct file, and that reference never goes away. Lazily
+		 * detach so the mountpoint is reusable and the next suite
+		 * is not poisoned; the superblock lingers until the leaked
+		 * file dies with the kernel.
+		 */
+		struct path p;
+
+		if (!kern_path(mountpoint, 0, &p)) {
+			err = path_umount(&p, MNT_DETACH);
+			pr_warn("xfstests-nfs: lazy-detached %s (leaked file?): %d\n",
+				mountpoint, err);
+		}
+	}
 	return err;
+}
+
+/*
+ * Space freed by REMOVE comes back once the server side lets go of the
+ * file (knfsd's file cache holds recently used files briefly), so "the
+ * space is back" is an eventually-true statement over NFS. Poll for it.
+ */
+int xfs_wait_for_free_bytes(u64 bytes)
+{
+	struct kstatfs st;
+	int tries, err;
+
+	for (tries = 0; tries < 100; tries++) {
+		flush_delayed_fput();
+		err = xfs_statfs(XFS_MNT, &st);
+		if (err)
+			return err;
+		/*
+		 * Careful with units: NFS reports f_bsize as the server's
+		 * preferred transfer size (128K here), not 4K.
+		 */
+		if ((u64)st.f_bavail * st.f_bsize >= bytes)
+			return 0;
+		msleep(100);
+	}
+	pr_warn("xfstests-nfs: free-space wait: %llu bytes of %llu wanted\n",
+		(u64)st.f_bavail * st.f_bsize, bytes);
+	return -ETIMEDOUT;
 }
 
 /*
@@ -428,7 +680,7 @@ static int xfs_bringup(void)
 	}
 
 	/* ramfs is not exportable (no export_operations); tmpfs is. */
-	err = xfs_mount_at("none", XFS_EXPORT, "tmpfs", NULL);
+	err = xfs_mount_at("none", XFS_EXPORT, "tmpfs", xfs_export_mount_opts);
 	if (err) {
 		pr_warn("xfstests-nfs: tmpfs mount failed: %d\n", err);
 		return err;
@@ -494,6 +746,34 @@ static void xfs_teardown(void)
 	xfs_rmdir(XFS_MNT);
 	xfs_rmdir(XFS_NFSDFS);
 	xfs_rmdir(XFS_EXPORT);
+	/* a suite-specific export size applies to one bring-up only */
+	strscpy(xfs_export_mount_opts, XFS_EXPORT_OPTS_DEFAULT,
+		sizeof(xfs_export_mount_opts));
+}
+
+int xfs_remount_client(bool ro)
+{
+	struct path p;
+	int err = -EBUSY;
+	int tries;
+
+	/*
+	 * Going read-only requires no write references on the mount, and a
+	 * just-closed file's delayed fput still holds one. Same settling
+	 * dance as the unmount.
+	 */
+	for (tries = 0; tries < 20 && err == -EBUSY; tries++) {
+		flush_delayed_fput();
+		err = kern_path(XFS_MNT, 0, &p);
+		if (err)
+			return err;
+		err = path_mount("127.0.0.1:/", &p, "nfs4",
+				 MS_REMOUNT | (ro ? MS_RDONLY : 0), NULL);
+		path_put(&p);
+		if (err == -EBUSY)
+			msleep(100);
+	}
+	return err;
 }
 
 int xfstests_nfs_get(void)
