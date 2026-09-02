@@ -6,7 +6,7 @@ name: NFS xfstests
 # from its own knfsd over the loopback interface and mounts them back with
 # its own NFS client.
 #
-# Everything is in scripts/00-run-xfstests-on-ci.sh, deliberately: the job is
+# Everything is in scripts/00-run-xfstests-on-gh-ci.sh, deliberately: the job is
 # one line, so a failure here reproduces on any throwaway Ubuntu box with the
 # same single command instead of by reading YAML and replaying steps by hand.
 # Its sibling scripts/00-run-xfstests-on-vm-and-docker.sh does the same
@@ -56,7 +56,7 @@ jobs:
           CHECK_ARGS: ${{ inputs.check_args || '-g quick' }}
         run: |
           set -o pipefail
-          bash 00-run-xfstests-on-gh-ci.sh $CHECK_ARGS 2>&1 \
+          bash scripts/00-run-xfstests-on-gh-ci.sh $CHECK_ARGS 2>&1 \
             | tee xfstests.log
 
       - name: Summarise
