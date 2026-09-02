@@ -1,0 +1,142 @@
+name: NFS xfstests
+
+# Runs real xfstests against a real NFS mount, on whatever NFS client and
+# server modules the runner's own kernel already has. No kernel is built and
+# nothing is installed into the kernel: the runner exports two directories
+# from its own knfsd over the loopback interface and mounts them back with
+# its own NFS client.
+#
+# This is the complement to the NFS KUnit workflow. KUnit tests kernel
+# functions directly under UML; this exercises the shipped client/server pair
+# through the userspace test suite they are actually validated with. What it
+# cannot do is test a *different* kernel -- the runner's is fixed, so this
+# says nothing about VAST's modules or about any kernel but the runner's.
+#
+# The bring-up is scripts/nfs-test-env/01-setup-loopback-server.sh, the same
+# script a developer runs locally, so a red run here reproduces in one command.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      check_args:
+        description: 'Arguments for xfstests check (e.g. "-g quick", "generic/001 generic/002", "-g auto")'
+        required: false
+        default: '-g quick'
+
+concurrency:
+  group: xfstests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  xfstests:
+    runs-on: ubuntu-latest
+    # The quick group over loopback NFS is dominated by per-test mount and
+    # sync latency, not CPU. Generous, and the step has its own timeout so a
+    # single wedged test cannot eat the whole budget silently.
+    timeout-minutes: 120
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # xfstests is a submodule and is the thing being run here.
+          submodules: true
+
+      - name: Install NFS server, client and xfstests build dependencies
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            --no-install-recommends \
+            nfs-kernel-server nfs-common \
+            build-essential autoconf automake libtool-bin pkg-config gettext \
+            uuid-dev libattr1-dev libacl1-dev libaio-dev libgdbm-dev \
+            xfslibs-dev xfsprogs e2fsprogs attr acl quota
+
+      # Many generic tests call _require_user and are skipped without these.
+      # The odd third name is xfstests' own: it checks that a numeric-leading
+      # username is handled (common/rc's _require_user 123456-fsgqa).
+      - name: Create the fsgqa test users
+        run: |
+          sudo groupadd -f fsgqa
+          for u in fsgqa fsgqa2 123456-fsgqa; do
+            id "$u" >/dev/null 2>&1 || \
+              sudo useradd -m -g fsgqa "$u" 2>/dev/null || \
+              sudo useradd -M -g fsgqa "$u"
+          done
+
+      - name: Build xfstests
+        run: |
+          cd xfstests
+          make -j"$(nproc)"
+
+      - name: Export two directories over loopback NFS
+        run: bash scripts/nfs-test-env/01-setup-loopback-server.sh
+
+      - name: Record what is actually under test
+        run: |
+          {
+            echo "### Environment"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| kernel | \`$(uname -r)\` |"
+            echo "| nfs-utils | \`$(dpkg-query -W -f='${Version}' nfs-common)\` |"
+            echo "| server-side fs | \`$(findmnt -no FSTYPE -T /srv/nfs-test-env)\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          # Which client modules the run will exercise, so a result is
+          # attributable to a specific pair rather than to "NFS".
+          lsmod | grep -E '^(nfs|nfsd|nfsv4|sunrpc|lockd)' || true
+
+      - name: Configure xfstests
+        env:
+          TEST_DEV: 127.0.0.1:/srv/nfs-test-env/test
+          SCRATCH_DEV: 127.0.0.1:/srv/nfs-test-env/scratch
+        run: bash scripts/nfs-test-env/02-configure-xfstests.sh
+
+      # The exclude file is the baseline: tests known to fail against this
+      # client/server pair for reasons already understood. It starts empty on
+      # purpose -- a test belongs in it only with a comment saying why, so the
+      # file stays a record of decisions rather than a way to get CI green.
+      - name: Run xfstests
+        id: run
+        timeout-minutes: 100
+        shell: bash
+        env:
+          CHECK_ARGS: ${{ inputs.check_args || '-g quick' }}
+        run: |
+          set -o pipefail
+          cd xfstests
+          exclude=()
+          if [ -s "${GITHUB_WORKSPACE}/scripts/nfs-test-env/xfstests-exclude" ]; then
+            exclude=(-E "${GITHUB_WORKSPACE}/scripts/nfs-test-env/xfstests-exclude")
+          fi
+          sudo ./check -nfs "${exclude[@]}" $CHECK_ARGS 2>&1 | tee "${GITHUB_WORKSPACE}/xfstests.log"
+
+      - name: Summarise
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo
+            echo "### Results"
+            echo
+            echo '```'
+            # check's trailer: the Ran/Not run/Failures/passed lines.
+            sed -n '/^Ran:/,$p' "${GITHUB_WORKSPACE}/xfstests.log" 2>/dev/null \
+              | head -40 || echo "no result trailer -- the run did not finish"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # results/ holds the .out.bad and .full files for every failure, which
+      # is the only way to diagnose one after the fact.
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xfstests-results
+          path: |
+            xfstests.log
+            xfstests/results/
+          if-no-files-found: warn

@@ -20,6 +20,13 @@ NFS_EXPORT_BASE="${NFS_EXPORT_BASE:-${HOME}/nfs-test-env-exports}"
 NFS_TEST_FSID="${NFS_TEST_FSID:-1}"
 NFS_SCRATCH_FSID="${NFS_SCRATCH_FSID:-2}"
 
+# Loopback (single-host) alternative to the docker servers: see
+# 01-setup-loopback-server.sh. Used by the CI workflow, where there is one
+# machine and the point is to test whichever NFS modules it already has.
+NFS_LOOPBACK_BASE="${NFS_LOOPBACK_BASE:-/srv/nfs-test-env}"
+NFS_LOOPBACK_CLIENT="${NFS_LOOPBACK_CLIENT:-127.0.0.1}"
+NFS_LOOPBACK_VERS="${NFS_LOOPBACK_VERS:-4.2}"
+
 TEST_MNT="${TEST_MNT:-/mnt/nfs-test-env/test}"
 SCRATCH_MNT="${SCRATCH_MNT:-/mnt/nfs-test-env/scratch}"
 
