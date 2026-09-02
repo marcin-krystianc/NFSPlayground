@@ -64,12 +64,25 @@ struct g032_syncer {
 	unsigned long		loops;
 };
 
+/*
+ * syncfs(2) reduced to what it does to the superblock. The s_umount read
+ * lock is not optional: sync_filesystem() opens with
+ * WARN_ON(!rwsem_is_locked(&sb->s_umount)) (fs/sync.c:38), and so do two
+ * places inside sync_inodes_sb() (fs/fs-writeback.c:2626 and :2803). The
+ * first version of this thread called sync_filesystem() bare and the case
+ * still reported PASSED while spraying three WARNs per loop into the kernel
+ * log -- a reminder that a green KUnit result says nothing about what the
+ * kernel logged underneath it. SYSCALL_DEFINE1(syncfs) takes the same lock
+ * around the same call.
+ */
 static int g032_sync_fn(void *arg)
 {
 	struct g032_syncer *s = arg;
 
 	while (!kthread_should_stop()) {
+		down_read(&s->sb->s_umount);
 		sync_filesystem(s->sb);
+		up_read(&s->sb->s_umount);
 		s->loops++;
 		cond_resched();
 	}

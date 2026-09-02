@@ -355,7 +355,7 @@ Bring-up is refcounted per suite, so every full run also exercises ~60
 consecutive nfsd restart and mount/unmount cycles.
 
 Ported: 001 002 004 005 006 007 008 010 011 012 013 014 015 016 020 021 022 023 024 025 026 027 028 029 030
-031 032 033 034 035 037 039 058 062 069 070 071 074 075 087 088 089 092 097 102 109 110 123
+031 032 033 034 035 037 039 040 041 047 048 058 062 069 070 071 074 075 087 088 089 092 097 102 109 110 123
 126 129 131 132 169 193 204 213 221 228 236 245 255 257 258 273 275 285
 286 294 306 308 309 313 314 320 360.
 
@@ -580,6 +580,124 @@ The other three:
   is a check on locking rather than on sequencing. The case logs its sync-loop
   count and fails if it is zero, so a pass cannot silently mean the
   concurrency never happened.
+
+### The 040-049 band
+
+Ported: **040, 041, 047, 048**. **049 is folded into 048** as a second case,
+not given a suite of its own. **042, 043, 044, 045, 046 are not ported.**
+
+This band is dominated by two upstream families, and both lose their core to
+the same missing capability:
+
+- **040 and 041** are dm-flakey crash tests, like 034 and 039. No block
+  device, no crash, no log replay.
+- **043-049** are the "NULL files problem" family. Every one of them calls
+  `_scratch_shutdown` (the XFS shutdown ioctl, `src/godown`) and then counts
+  extents with fiemap. NFS has neither: there is no shutdown ioctl, and
+  fiemap is not in NFSv4.2, so "non-zero size but no extents" is a question
+  the client cannot ask.
+
+**Crash consistency remains entirely uncovered by this collection.** Four
+ports now sit in its shadow (034, 039, 040, 041) and none of them test it.
+
+What the four ports keep:
+
+- **040** reduces to link-count bookkeeping at scale, which over NFS is a
+  protocol question rather than an on-disk one -- nlink travels in GETATTR and
+  is cached on the client inode. Upstream's entire output is two link counts
+  and the file's contents, and that is exactly the part that survives:
+  `N + 2` after the links are made, `1` after the bulk unlink, both read with
+  a forced revalidation, then the data checked on the server so a surviving
+  inode is proven reachable rather than ESTALE.
+- **041** is the one with content 040 does not have. It removes a link and
+  then **recreates a link under the name it just removed** before fsyncing.
+  Over NFS that is a dentry-cache question: the client must not serve the
+  removed name from a stale dentry, nor hide the recreated one behind a
+  negative entry. The port keeps upstream's name-by-name sweep including its
+  inverted check for the single index that stays removed, because a link
+  count alone cannot see either failure.
+- **047** is per-file `fsync` in bulk -- `nfs_file_fsync()` -> `nfs_wb_all()`
+  plus COMMIT, across many files rather than one. It is the only case in the
+  set shaped that way, so a client that dropped one COMMIT among hundreds
+  fails here and nowhere else.
+- **048** is the same durability question through `sync_filesystem()` on the
+  whole superblock, which is a different path from 047's per-file fsync and
+  the only place in the set where syncfs is the durability mechanism.
+
+**On folding 049 in.** 048 syncs as it writes; 049 writes everything unsynced
+and syncs once at the end. Upstream keeps them apart because the XFS log
+replay paths they expose *after a shutdown* differ -- and without a shutdown
+that divergence does not exist, so over NFS they land on the same code path. A
+separate 049 suite would be a copy of 048 with one loop moved. Both shapes run
+as cases of 048; the distinction upstream draws is real, and this deployment
+simply cannot see it.
+
+The five that are out, individually:
+
+- **042** needs `src/godown` plus a loopback-mounted filesystem image inside
+  the scratch mount, and detects stale data by pre-writing a pattern to the
+  *image*. There is no image and no block layer here, and its three operations
+  (`falloc -k`, `fpunch`, `fzero -k`) are two that NFS rejects outright.
+- **043, 044, 045, 046** are shutdown-plus-fiemap, as above. Strip both and
+  what remains is "write files, optionally truncate, check size and content"
+  -- 045 is write-64K-truncate-to-32K and 046 is write-32K-truncate-to-64K,
+  which is truncate-down-discards and truncate-up-zero-fills, already covered
+  by 012, 029 and 030. Porting them would add four near-identical suites and
+  no coverage, so they are declined rather than padded in.
+
+### An intermittent whole-run live-lock (pre-existing, unresolved)
+
+A full run sometimes never finishes. The UML process spins at ~99% CPU
+indefinitely and no further KTAP output appears. Established so far:
+
+- It always stalls **after every xfstests suite has passed**, somewhere in the
+  pure-logic SunRPC suites that follow (observed stopping after
+  `sunrpc-rtt-init`, after `sunrpc-addr-uaddr`, and after
+  `sunrpc-rtt-ntimeo` on three different runs). Those suites are integer
+  arithmetic and string parsing with no I/O, so they are almost certainly the
+  victim rather than the cause -- something is holding the single CPU and they
+  never get scheduled.
+- **Every suite passes in isolation**, including the ones it stalls in:
+  `sunrpc-rtt-*` alone runs in 0.068s, `xfstests/generic/032` alone in 1.2s,
+  the whole `xfstests/generic/04*` band in 4.5s.
+- **It is not caused by the 031-034/039/040/041/047/048 additions.** Removing
+  all nine registrations *and* deleting their sources and `fs/Makefile` lines
+  reproduces the hang on a 71-suite run.
+- **It is not memory pressure.** `--kernel_args mem=2G` does not fix it.
+- The host is not the problem: 10 CPUs, load 1.00 from the single spinning
+  UML, ~2.7 GB available.
+- It is intermittent -- the same runner completed full 806-test runs several
+  times the same day.
+
+The leading hypothesis, untested, is an accumulating leak in the fixture's
+nfsd start/stop path: a full run now performs ~80 consecutive
+`nfsd_svc()` bring-ups and mount/unmount cycles, and a leaked kernel thread
+spinning after some cycle count would produce exactly this signature. That is
+a guess, not a finding, and it is recorded as one. Diagnosing it properly
+needs a console on the wedged UML to see what the runnable task is.
+
+Practical impact: **CI can report a hang rather than a failure**, and a hung
+run produces no totals line at all. When that happens, re-run; if a specific
+result is needed, a filtered run (`kunit.py ... "xfstests/generic/04*"`)
+completes reliably.
+
+### A note on green results and kernel logs
+
+generic/032's background syncer originally called `sync_filesystem()` without
+holding `s_umount`. The case reported PASSED while emitting **404 WARNs** in a
+single run -- three per sync loop, from `fs/sync.c:38` and two places in
+`sync_inodes_sb()` (`fs/fs-writeback.c:2626` and `:2803`), each of which opens
+with `WARN_ON(!rwsem_is_locked(&sb->s_umount))`. `SYSCALL_DEFINE1(syncfs)`
+takes that lock around the same call; the thread now does too, as does
+generic/048's `g048_syncfs()`.
+
+The lesson is worth keeping: **a green KUnit result says nothing about what
+the kernel logged underneath it.** Nothing in the runner fails a suite for
+WARNing, and the default (non-raw) `kunit.py` output does not show kernel log
+lines at all -- the warnings were only visible because a `--raw_output` run
+was being read for another reason. The same run also confirmed the syncer is
+genuinely concurrent with the writer: 134 sync loops interleaved with the
+10 write iterations.
 
 Two debugging notes from this batch, both costing several rounds:
 `nfs_update_folio()` rounds a write's dirty range back up to the page
