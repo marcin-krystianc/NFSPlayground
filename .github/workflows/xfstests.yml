@@ -22,9 +22,9 @@ on:
   workflow_dispatch:
     inputs:
       check_args:
-        description: 'Arguments for xfstests check (e.g. "-g quick", "generic/001 generic/002", "-g auto")'
+        description: 'Arguments for xfstests check. Default matches CI; "-g quick" is 645 tests and runs for hours.'
         required: false
-        default: '-g quick'
+        default: '-g attr -g acl -g dir'
 
 concurrency:
   group: xfstests-${{ github.ref }}
@@ -104,7 +104,7 @@ jobs:
         timeout-minutes: 100
         shell: bash
         env:
-          CHECK_ARGS: ${{ inputs.check_args || '-g quick' }}
+          CHECK_ARGS: ${{ inputs.check_args || '-g attr -g acl -g dir' }}
         run: |
           set -o pipefail
           cd xfstests
