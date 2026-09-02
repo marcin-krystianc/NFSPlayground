@@ -343,7 +343,7 @@ return 0 — every IPv6 case would pass while testing nothing.
 
 ## xfstests cases that ARE ported: generic/* over a loopback NFS mount
 
-The `kunit/xfstests/` tree holds ports of **69 xfstests generic cases**,
+The `kunit/xfstests/` tree holds ports of **46 xfstests generic cases**,
 each a KUnit suite named after its original (`xfstests/generic/001` ...),
 each running against a real NFS mount served by knfsd inside the same UML
 kernel. The deployment lives in `kunit/xfstests/nfs_fixture.{c,h}`: tmpfs
@@ -354,10 +354,15 @@ because `create_client()` needs it; grace is ended the `v4_end_grace` way.
 Bring-up is refcounted per suite, so every full run also exercises ~60
 consecutive nfsd restart and mount/unmount cycles.
 
-Ported: 001 002 004 005 006 007 008 010 011 012 013 014 015 016 020 021 022 023 024 025 026 027 028 029 030
-031 032 033 034 035 037 039 040 041 047 048 058 062 069 070 071 074 075 087 088 089 092 097 102 109 110 123
-126 129 131 132 169 193 204 213 221 228 236 245 255 257 258 273 275 285
-286 294 306 308 309 313 314 320 360.
+Ported: 001 002 005 006 007 010 011 013 014 020 023 028 029 030 035 037 069 070 074 075 087 088 089 109 123
+126 129 131 132 169 193 213 221 228 236 245 257 258 285 286 306 308 309
+313 314 360.
+
+The set is limited to cases upstream xfstests actually runs against NFS:
+a case that upstream reports `[not run]` on an NFSv4.2 mount is not
+ported, since there is no upstream result to mirror. Measured with
+`scripts/00-run-xfstests-on-vm-and-docker.sh` against knfsd in docker at
+`vers=4.2`.
 
 The families: protocol-pin mirrors for ops NFS lacks (021 collapse, 058
 insert, 092 bare KEEP_SIZE, 024 renameat2 flags, 110 clone-on-tmpfs, 004
