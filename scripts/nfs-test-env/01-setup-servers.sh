@@ -51,7 +51,16 @@ for i in $(seq 1 "$NFS_SERVER_COUNT"); do
     ip="$(server_ip "$i")"
 
     if docker inspect "$name" >/dev/null 2>&1; then
-        log "$name already exists, skipping"
+        # Existing is not the same as running. A host reboot or an
+        # interrupted run leaves the container stopped, and skipping it here
+        # is what later surfaces as "No route to host" from mount.nfs, a long
+        # way from the cause.
+        if [ "$(docker inspect -f '{{.State.Running}}' "$name")" = "true" ]; then
+            log "$name already running, skipping"
+        else
+            log "$name exists but is stopped, starting it"
+            docker start "$name" >/dev/null
+        fi
         continue
     fi
 
