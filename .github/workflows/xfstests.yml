@@ -6,14 +6,17 @@ name: NFS xfstests
 # from its own knfsd over the loopback interface and mounts them back with
 # its own NFS client.
 #
+# Everything is in scripts/00-run-xfstests-on-ci.sh, deliberately: the job is
+# one line, so a failure here reproduces on any throwaway Ubuntu box with the
+# same single command instead of by reading YAML and replaying steps by hand.
+# Its sibling scripts/00-run-xfstests-on-vm-and-docker.sh does the same
+# against the docker servers.
+#
 # This is the complement to the NFS KUnit workflow. KUnit tests kernel
 # functions directly under UML; this exercises the shipped client/server pair
 # through the userspace test suite they are actually validated with. What it
 # cannot do is test a *different* kernel -- the runner's is fixed, so this
 # says nothing about VAST's modules or about any kernel but the runner's.
-#
-# The bring-up is scripts/nfs-test-env/01-setup-loopback-server.sh, the same
-# script a developer runs locally, so a red run here reproduces in one command.
 
 on:
   push:
@@ -22,7 +25,7 @@ on:
   workflow_dispatch:
     inputs:
       check_args:
-        description: 'Arguments for xfstests check (e.g. "-g quick", "generic/001 generic/002", "-g auto")'
+        description: 'Arguments for xfstests check. Default matches CI; "-g quick" is 645 tests and runs for hours.'
         required: false
         default: '-g quick'
 
@@ -33,10 +36,11 @@ concurrency:
 jobs:
   xfstests:
     runs-on: ubuntu-latest
-    # The quick group over loopback NFS is dominated by per-test mount and
-    # sync latency, not CPU. Generous, and the step has its own timeout so a
-    # single wedged test cannot eat the whole budget silently.
-    timeout-minutes: 120
+    # The default set measured ~14 minutes on a 6.8 Ubuntu box, plus a few
+    # minutes for apt and the xfstests build. Budget is ~3x for a slower
+    # runner; the step has its own timeout so one wedged test cannot eat the
+    # whole job silently.
+    timeout-minutes: 60
 
     steps:
       - uses: actions/checkout@v4
@@ -44,88 +48,34 @@ jobs:
           # xfstests is a submodule and is the thing being run here.
           submodules: true
 
-      - name: Install NFS server, client and xfstests build dependencies
-        run: |
-          sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
-            --no-install-recommends \
-            nfs-kernel-server nfs-common \
-            build-essential autoconf automake libtool-bin pkg-config gettext \
-            uuid-dev libattr1-dev libacl1-dev libaio-dev libgdbm-dev \
-            xfslibs-dev xfsprogs e2fsprogs attr acl quota
-
-      # Many generic tests call _require_user and are skipped without these.
-      # The odd third name is xfstests' own: it checks that a numeric-leading
-      # username is handled (common/rc's _require_user 123456-fsgqa).
-      - name: Create the fsgqa test users
-        run: |
-          sudo groupadd -f fsgqa
-          for u in fsgqa fsgqa2 123456-fsgqa; do
-            id "$u" >/dev/null 2>&1 || \
-              sudo useradd -m -g fsgqa "$u" 2>/dev/null || \
-              sudo useradd -M -g fsgqa "$u"
-          done
-
-      - name: Build xfstests
-        run: |
-          cd xfstests
-          make -j"$(nproc)"
-
-      - name: Export two directories over loopback NFS
-        run: bash scripts/nfs-test-env/01-setup-loopback-server.sh
-
-      - name: Record what is actually under test
-        run: |
-          {
-            echo "### Environment"
-            echo
-            echo "| | |"
-            echo "|---|---|"
-            echo "| kernel | \`$(uname -r)\` |"
-            echo "| nfs-utils | \`$(dpkg-query -W -f='${Version}' nfs-common)\` |"
-            echo "| server-side fs | \`$(findmnt -no FSTYPE -T /srv/nfs-test-env)\` |"
-          } >> "$GITHUB_STEP_SUMMARY"
-          # Which client modules the run will exercise, so a result is
-          # attributable to a specific pair rather than to "NFS".
-          lsmod | grep -E '^(nfs|nfsd|nfsv4|sunrpc|lockd)' || true
-
-      - name: Configure xfstests
-        env:
-          TEST_DEV: 127.0.0.1:/srv/nfs-test-env/test
-          SCRATCH_DEV: 127.0.0.1:/srv/nfs-test-env/scratch
-        run: bash scripts/nfs-test-env/02-configure-xfstests.sh
-
-      # The exclude file is the baseline: tests known to fail against this
-      # client/server pair for reasons already understood. It starts empty on
-      # purpose -- a test belongs in it only with a comment saying why, so the
-      # file stays a record of decisions rather than a way to get CI green.
-      - name: Run xfstests
+      - name: Run xfstests against loopback NFS
         id: run
-        timeout-minutes: 100
+        timeout-minutes: 50
         shell: bash
         env:
           CHECK_ARGS: ${{ inputs.check_args || '-g quick' }}
         run: |
           set -o pipefail
-          cd xfstests
-          exclude=()
-          if [ -s "${GITHUB_WORKSPACE}/scripts/nfs-test-env/xfstests-exclude" ]; then
-            exclude=(-E "${GITHUB_WORKSPACE}/scripts/nfs-test-env/xfstests-exclude")
-          fi
-          sudo ./check -nfs "${exclude[@]}" $CHECK_ARGS 2>&1 | tee "${GITHUB_WORKSPACE}/xfstests.log"
+          bash 00-run-xfstests-on-gh-ci.sh $CHECK_ARGS 2>&1 \
+            | tee xfstests.log
 
       - name: Summarise
         if: always()
         shell: bash
         run: |
           {
+            echo "### Environment"
+            echo
+            echo '```'
+            sed -n '/^==> under test/,/^$/p' xfstests.log 2>/dev/null | head -6
+            echo '```'
             echo
             echo "### Results"
             echo
             echo '```'
             # check's trailer: the Ran/Not run/Failures/passed lines.
-            sed -n '/^Ran:/,$p' "${GITHUB_WORKSPACE}/xfstests.log" 2>/dev/null \
-              | head -40 || echo "no result trailer -- the run did not finish"
+            sed -n '/^Ran:/,$p' xfstests.log 2>/dev/null | head -40 \
+              || echo "no result trailer -- the run did not finish"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
