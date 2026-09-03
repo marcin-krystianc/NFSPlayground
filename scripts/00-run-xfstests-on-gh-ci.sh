@@ -15,13 +15,11 @@
 # runner's root filesystem, because the backing filesystem is a test
 # parameter that xfstests cannot see: FSTYP is "nfs" and nothing probes the
 # server. See NFS_LOOPBACK_IMG_SIZE below for what that costs when it is
-# ext4. scripts/nfs-test-env/check-xfs-backing-store.sh asserts the
-# capacities the suite assumes.
+# ext4. scripts/check-xfs-backing-store.sh asserts the capacities the suite
+# assumes, and needs no NFS to run.
 #
-# Standalone on purpose: it does not source env.sh and calls no sibling
-# script, so a CI job is one line and a throwaway VM can run the identical
-# thing. The cost is duplication with 01-setup-loopback-server.sh and
-# 02-configure-xfstests.sh; change one, check the other.
+# Standalone on purpose: it sources nothing and calls no sibling script, so a
+# CI job is one line and a throwaway VM can run the identical thing.
 #
 # It installs packages and creates users, which is fine on a disposable
 # runner and rude anywhere else -- hence INSTALL_DEPS, on by default only
@@ -36,7 +34,7 @@
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
-# Config. Defaults match scripts/nfs-test-env/env.sh where they overlap.
+# Config. Every value is overridable from the environment.
 # ---------------------------------------------------------------------------
 REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 XFSTESTS_DIR="${XFSTESTS_DIR:-${REPO_ROOT}/xfstests}"
@@ -70,7 +68,15 @@ NFS_SCRATCH_FSID="${NFS_SCRATCH_FSID:-2}"
 # Sparse, so the size is a ceiling and not an upfront cost -- only generic/103
 # and friends ever inflate it. Must be >=300MB or so, which is mkfs.xfs's own
 # minimum.
-NFS_LOOPBACK_IMG_SIZE="${NFS_LOOPBACK_IMG_SIZE:-4G}"
+#
+# Empty means "as large as the disk allows", computed below once the space is
+# actually known. A hosted runner has 14GB of storage in total and neither
+# GitHub's docs nor the image readme say how much of it is free, so a
+# hardcoded default is a guess that costs a whole CI run to disprove.
+NFS_LOOPBACK_IMG_SIZE="${NFS_LOOPBACK_IMG_SIZE:-}"
+NFS_LOOPBACK_IMG_MAX="${NFS_LOOPBACK_IMG_MAX:-8G}"   # no point going bigger
+NFS_LOOPBACK_IMG_MIN="${NFS_LOOPBACK_IMG_MIN:-1G}"   # below this, give up
+NFS_LOOPBACK_DISK_MARGIN="${NFS_LOOPBACK_DISK_MARGIN:-2G}"  # for apt, the build, results/
 NFS_LOOPBACK_IMG_DIR="${NFS_LOOPBACK_IMG_DIR:-${NFS_LOOPBACK_BASE}/images}"
 
 TEST_MNT="${TEST_MNT:-/mnt/nfs-test-env/test}"
@@ -78,10 +84,19 @@ SCRATCH_MNT="${SCRATCH_MNT:-/mnt/nfs-test-env/scratch}"
 
 INSTALL_DEPS="${INSTALL_DEPS:-1}"
 
+# Delete the preinstalled toolchains a hosted runner ships with, to make room
+# for the backing images. GitHub documents 14GB of storage for ubuntu-latest
+# and most of it is spent on toolchains this suite never touches.
+#
+# Off by default and deliberately not grouped with INSTALL_DEPS: installing
+# packages on someone's machine is rude, but rm -rf /usr/share/dotnet is
+# destructive, so it stays opt-in even though CI is the intended caller.
+RECLAIM_DISK="${RECLAIM_DISK:-0}"
+
 # Optional: one test per line, xfstests -E format. Empty today -- a test earns
 # a place only with a comment saying why, so the file stays a record of
 # decisions rather than a way to get CI green.
-EXCLUDE_FILE="${EXCLUDE_FILE:-${REPO_ROOT}/scripts/nfs-test-env/xfstests-exclude}"
+EXCLUDE_FILE="${EXCLUDE_FILE:-${REPO_ROOT}/scripts/xfstests-exclude}"
 
 # Not "-g quick": that is 645 tests for NFS and runs for hours, because the
 # cost is per-test mount and sync latency, not CPU (generic/007 alone is ~6
@@ -171,8 +186,84 @@ trap teardown EXIT
 log "loading nfsd"
 sudo modprobe nfsd || die "cannot load nfsd -- this runner cannot host knfsd"
 
+# The images are sparse but generic/103 and friends inflate them to their
+# full size, so what matters is the free space on whatever holds them. Report
+# every local filesystem: on a hosted runner the root filesystem is the small
+# one and there is usually a much larger scratch disk elsewhere, and knowing
+# which is which is the difference between choosing NFS_LOOPBACK_IMG_DIR and
+# guessing. A previous run drove the root filesystem to 0 MB and the runner
+# itself warned about it.
+log "disk space before setup"
+df -h -x tmpfs -x devtmpfs -x overlay -x squashfs \
+    --output=target,fstype,size,used,avail,pcent 2>/dev/null | sed 's/^/  /' ||
+    warn "could not read df"
+
+if [ "$RECLAIM_DISK" = "1" ]; then
+    # Reported per path rather than as a total, because which of these exists
+    # and what it costs is exactly what is undocumented -- the log becomes the
+    # measurement for the next time this needs tuning.
+    log "reclaiming disk space"
+    for path in /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                /usr/local/.ghcup /opt/hostedtoolcache /usr/local/share/powershell \
+                /usr/local/share/chromium /usr/local/lib/node_modules; do
+        [ -e "$path" ] || continue
+        size="$(sudo du -sh "$path" 2>/dev/null | cut -f1)"
+        if sudo rm -rf "$path" 2>/dev/null; then
+            echo "  freed ${size:-?} from $path"
+        else
+            warn "could not remove $path"
+        fi
+    done
+    if command -v docker >/dev/null; then
+        reclaimed="$(sudo docker system prune -af 2>/dev/null | tail -1)"
+        echo "  docker: ${reclaimed:-nothing to prune}"
+    fi
+
+    log "disk space after reclaiming"
+    df -h -x tmpfs -x devtmpfs -x overlay -x squashfs \
+        --output=target,fstype,size,used,avail,pcent 2>/dev/null | sed 's/^/  /' ||
+        warn "could not read df"
+fi
+
 log "creating the xfs backing filesystems under $NFS_LOOPBACK_BASE"
 sudo mkdir -p "$NFS_LOOPBACK_IMG_DIR"
+
+# Both images can reach their full size at once (generic/103 fills one, the
+# reflink CoW tests fill the other), so the budget is 2 x size + a margin for
+# apt, the xfstests build and results/.
+margin_bytes="$(numfmt --from=iec "$NFS_LOOPBACK_DISK_MARGIN")"
+have="$(df -B1 --output=avail "$NFS_LOOPBACK_IMG_DIR" | tail -1)"
+echo "  $NFS_LOOPBACK_IMG_DIR is on $(findmnt -no TARGET,FSTYPE -T "$NFS_LOOPBACK_IMG_DIR")"
+echo "  $(numfmt --to=iec "$have") available, keeping ${NFS_LOOPBACK_DISK_MARGIN} in reserve"
+
+if [ -n "$NFS_LOOPBACK_IMG_SIZE" ]; then
+    img_bytes="$(numfmt --from=iec "$NFS_LOOPBACK_IMG_SIZE")" ||
+        die "NFS_LOOPBACK_IMG_SIZE=${NFS_LOOPBACK_IMG_SIZE} is not a size numfmt understands"
+    need=$((img_bytes * 2 + margin_bytes))
+    [ "$have" -ge "$need" ] ||
+        die "NFS_LOOPBACK_IMG_SIZE=${NFS_LOOPBACK_IMG_SIZE} needs $(numfmt --to=iec "$need") but only $(numfmt --to=iec "$have") is available.
+    Lower it, raise RECLAIM_DISK, or point NFS_LOOPBACK_IMG_DIR at a bigger
+    filesystem -- see the df above."
+else
+    # Fit to what is there rather than guessing: a wrong hardcoded default
+    # either wastes a run failing this check or hits ENOSPC mid-suite.
+    img_bytes=$(( (have - margin_bytes) / 2 ))
+    max_bytes="$(numfmt --from=iec "$NFS_LOOPBACK_IMG_MAX")"
+    [ "$img_bytes" -le "$max_bytes" ] || img_bytes="$max_bytes"
+    min_bytes="$(numfmt --from=iec "$NFS_LOOPBACK_IMG_MIN")"
+    [ "$img_bytes" -ge "$min_bytes" ] ||
+        die "only $(numfmt --to=iec "$have") available, which leaves less than
+    ${NFS_LOOPBACK_IMG_MIN} per backing image after a ${NFS_LOOPBACK_DISK_MARGIN} margin.
+    Set RECLAIM_DISK=1, or point NFS_LOOPBACK_IMG_DIR at a bigger filesystem."
+    echo "  sized each image at $(numfmt --to=iec "$img_bytes") (set NFS_LOOPBACK_IMG_SIZE to override)"
+fi
+
+# truncate rejects fractional suffixes ("4.5G" is an invalid number), and
+# numfmt --to=iec produces exactly those, so bytes are the only safe currency
+# from here on. The IEC string is for humans.
+img_bytes=$(( img_bytes / 1048576 * 1048576 ))
+img_human="$(numfmt --to=iec "$img_bytes")"
+
 for name in test scratch; do
     img="${NFS_LOOPBACK_IMG_DIR}/${name}.img"
     mnt="${NFS_LOOPBACK_BASE}/${name}"
@@ -186,8 +277,8 @@ for name in test scratch; do
     fi
 
     sudo rm -f "$img"
-    sudo truncate -s "$NFS_LOOPBACK_IMG_SIZE" "$img" ||
-        die "could not create $img -- is there ${NFS_LOOPBACK_IMG_SIZE} free?"
+    sudo truncate -s "$img_bytes" "$img" ||
+        die "could not create $img -- is there ${img_human} free?"
     sudo mkfs.xfs -q "$img" || die "mkfs.xfs failed on $img"
     # mount -o loop attaches the loop device itself and umount detaches it, so
     # teardown needs no losetup -d.
@@ -196,7 +287,7 @@ for name in test scratch; do
     # xfstests runs as root and chowns freely. After the mount, not before:
     # the mount would hide a chmod applied to the underlying directory.
     sudo chmod 777 "$mnt"
-    echo "  $mnt <- $img ($(findmnt -no FSTYPE "$mnt"), ${NFS_LOOPBACK_IMG_SIZE} max)"
+    echo "  $mnt <- $img ($(findmnt -no FSTYPE "$mnt"), ${img_human} max)"
 done
 
 # Replace only our own block, so an unrelated NFS setup on the machine

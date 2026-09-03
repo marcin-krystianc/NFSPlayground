@@ -54,6 +54,10 @@ jobs:
         shell: bash
         env:
           CHECK_ARGS: ${{ inputs.check_args || '-g quick' }}
+          # A hosted runner has 14GB of storage and spends most of it on
+          # toolchains this suite never touches. Safe here because the runner
+          # is disposable; the script keeps it off by default for real machines.
+          RECLAIM_DISK: '1'
         run: |
           set -o pipefail
           bash scripts/00-run-xfstests-on-gh-ci.sh $CHECK_ARGS 2>&1 \
