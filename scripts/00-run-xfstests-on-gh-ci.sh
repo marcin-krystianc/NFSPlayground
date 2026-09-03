@@ -6,10 +6,17 @@
 #
 # The difference from the docker script is where the server comes from. There
 # the servers are containers on a bridge network; here the runner exports two
-# directories from its own knfsd over loopback and mounts them back with its
-# own NFS client. So this tests the client and server pair the runner's kernel
-# ships -- which also means it says nothing about any other kernel, VAST's
-# included.
+# xfs filesystems from its own knfsd over loopback and mounts them back with
+# its own NFS client. So this tests the client and server pair the runner's
+# kernel ships -- which also means it says nothing about any other kernel,
+# VAST's included.
+#
+# The exports are loop-mounted xfs images rather than directories on the
+# runner's root filesystem, because the backing filesystem is a test
+# parameter that xfstests cannot see: FSTYP is "nfs" and nothing probes the
+# server. See NFS_LOOPBACK_IMG_SIZE below for what that costs when it is
+# ext4. scripts/nfs-test-env/check-xfs-backing-store.sh asserts the
+# capacities the suite assumes.
 #
 # Standalone on purpose: it does not source env.sh and calls no sibling
 # script, so a CI job is one line and a throwaway VM can run the identical
@@ -42,6 +49,29 @@ NFS_LOOPBACK_VERS="${NFS_LOOPBACK_VERS:-4.2}"
 # SCRATCH_DEV freely, so SCRATCH cannot be the filesystem TEST_DIR lives on.
 NFS_TEST_FSID="${NFS_TEST_FSID:-1}"
 NFS_SCRATCH_FSID="${NFS_SCRATCH_FSID:-2}"
+
+# Each export is its own xfs filesystem in a loop-mounted sparse image rather
+# than a directory on the runner's root filesystem. Two reasons, both of them
+# things a plain directory cannot give:
+#
+#  1. xfstests keys its per-filesystem limits on FSTYP, which over NFS is
+#     "nfs" and says nothing about the server's backing store -- there is no
+#     probe for it. tests/generic/020's _attr_get_max groups nfs with xfs and
+#     asserts max_attrs=1000; generic/486 asserts a 65536-byte xattr value.
+#     ext4 with 4k blocks gives 112 attrs and caps a value at one block, so
+#     both fail with ENOSPC against an ext4-backed export. xfs satisfies both.
+#  2. generic/103 is an ENOSPC test: _consume_freesp fallocates all free space
+#     bar ~512kB. Against a directory on the root filesystem that fills the
+#     runner's own disk, which is how a previous run got "tac: /tmp/...: write
+#     error: No space left on device" out of unrelated tests. A sized image
+#     bounds the damage, and separate images mean filling SCRATCH cannot
+#     starve TEST.
+#
+# Sparse, so the size is a ceiling and not an upfront cost -- only generic/103
+# and friends ever inflate it. Must be >=300MB or so, which is mkfs.xfs's own
+# minimum.
+NFS_LOOPBACK_IMG_SIZE="${NFS_LOOPBACK_IMG_SIZE:-4G}"
+NFS_LOOPBACK_IMG_DIR="${NFS_LOOPBACK_IMG_DIR:-${NFS_LOOPBACK_BASE}/images}"
 
 TEST_MNT="${TEST_MNT:-/mnt/nfs-test-env/test}"
 SCRATCH_MNT="${SCRATCH_MNT:-/mnt/nfs-test-env/scratch}"
@@ -87,6 +117,8 @@ fi
 
 command -v exportfs >/dev/null ||
     die "exportfs not found -- install nfs-kernel-server (or set INSTALL_DEPS=1)"
+command -v mkfs.xfs >/dev/null ||
+    die "mkfs.xfs not found -- install xfsprogs (or set INSTALL_DEPS=1)"
 
 # Many generic tests call _require_user and are silently skipped without
 # these. The numeric-leading third name is xfstests' own: it checks that such
@@ -118,6 +150,17 @@ teardown() {
     sudo sed -i '/# BEGIN nfs-test-env ci/,/# END nfs-test-env ci/d' \
         /etc/exports 2>/dev/null || true
     sudo exportfs -ra 2>/dev/null || true
+
+    # After unexporting, or nfsd still holds a reference and the umount is
+    # EBUSY. umount detaches the loop device it set up.
+    for name in test scratch; do
+        mnt="${NFS_LOOPBACK_BASE}/${name}"
+        if mountpoint -q "$mnt" 2>/dev/null; then
+            sudo umount "$mnt" 2>/dev/null || sudo umount -l "$mnt" 2>/dev/null ||
+                warn "could not unmount the backing filesystem $mnt"
+        fi
+        sudo rm -f "${NFS_LOOPBACK_IMG_DIR}/${name}.img" 2>/dev/null || true
+    done
     return $rc
 }
 trap teardown EXIT
@@ -128,10 +171,33 @@ trap teardown EXIT
 log "loading nfsd"
 sudo modprobe nfsd || die "cannot load nfsd -- this runner cannot host knfsd"
 
-log "creating the exported directories under $NFS_LOOPBACK_BASE"
-sudo mkdir -p "${NFS_LOOPBACK_BASE}/test" "${NFS_LOOPBACK_BASE}/scratch"
-# xfstests runs as root and chowns freely.
-sudo chmod 777 "${NFS_LOOPBACK_BASE}/test" "${NFS_LOOPBACK_BASE}/scratch"
+log "creating the xfs backing filesystems under $NFS_LOOPBACK_BASE"
+sudo mkdir -p "$NFS_LOOPBACK_IMG_DIR"
+for name in test scratch; do
+    img="${NFS_LOOPBACK_IMG_DIR}/${name}.img"
+    mnt="${NFS_LOOPBACK_BASE}/${name}"
+
+    sudo mkdir -p "$mnt"
+    # A leftover mount from an interrupted run would otherwise be silently
+    # exported instead of the fresh filesystem.
+    if mountpoint -q "$mnt" 2>/dev/null; then
+        sudo umount "$mnt" 2>/dev/null || sudo umount -l "$mnt" 2>/dev/null ||
+            die "$mnt is mounted and will not unmount"
+    fi
+
+    sudo rm -f "$img"
+    sudo truncate -s "$NFS_LOOPBACK_IMG_SIZE" "$img" ||
+        die "could not create $img -- is there ${NFS_LOOPBACK_IMG_SIZE} free?"
+    sudo mkfs.xfs -q "$img" || die "mkfs.xfs failed on $img"
+    # mount -o loop attaches the loop device itself and umount detaches it, so
+    # teardown needs no losetup -d.
+    sudo mount -o loop "$img" "$mnt" ||
+        die "could not loop-mount $img at $mnt -- is the loop module available?"
+    # xfstests runs as root and chowns freely. After the mount, not before:
+    # the mount would hide a chmod applied to the underlying directory.
+    sudo chmod 777 "$mnt"
+    echo "  $mnt <- $img ($(findmnt -no FSTYPE "$mnt"), ${NFS_LOOPBACK_IMG_SIZE} max)"
+done
 
 # Replace only our own block, so an unrelated NFS setup on the machine
 # survives and re-running is safe.
