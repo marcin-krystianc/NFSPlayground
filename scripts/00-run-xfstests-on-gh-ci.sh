@@ -70,11 +70,21 @@ NFS_SCRATCH_FSID="${NFS_SCRATCH_FSID:-2}"
 # minimum.
 #
 # Empty means "as large as the disk allows", computed below once the space is
-# actually known. A hosted runner has 14GB of storage in total and neither
-# GitHub's docs nor the image readme say how much of it is free, so a
-# hardcoded default is a guess that costs a whole CI run to disprove.
+# actually known -- a hardcoded default is a guess that costs a whole CI run
+# to disprove. Do not size this from GitHub's published figures: the docs say
+# ubuntu-latest has 14GB of storage, and a measured runner reported / as
+# 145G ext4 with 84G available and no separate scratch disk.
 NFS_LOOPBACK_IMG_SIZE="${NFS_LOOPBACK_IMG_SIZE:-}"
-NFS_LOOPBACK_IMG_MAX="${NFS_LOOPBACK_IMG_MAX:-8G}"   # no point going bigger
+
+# The cap is set by the reflink CoW tests, which are the hungriest thing in
+# the suite. generic/154 writes blks=2000 blocks and rewrites nr=4 reflinked
+# copies of it; over NFS _get_block_size returns the 1MB wsize rather than
+# the server's 4k, so that is 2GB per file and ~8GB of distinct data once
+# every copy has been CoW'd. Well past that on purpose: the point of a cap at
+# all is only to keep generic/103 from taking the host down with it, so it
+# sits high enough to be effectively unconstrained (30G each of a measured
+# 84G leaves the runner ~24G, which the agent and the results artifact need).
+NFS_LOOPBACK_IMG_MAX="${NFS_LOOPBACK_IMG_MAX:-30G}"
 NFS_LOOPBACK_IMG_MIN="${NFS_LOOPBACK_IMG_MIN:-1G}"   # below this, give up
 NFS_LOOPBACK_DISK_MARGIN="${NFS_LOOPBACK_DISK_MARGIN:-2G}"  # for apt, the build, results/
 NFS_LOOPBACK_IMG_DIR="${NFS_LOOPBACK_IMG_DIR:-${NFS_LOOPBACK_BASE}/images}"
@@ -109,6 +119,19 @@ log()  { printf '\n==> %s\n' "$*"; }
 warn() { printf 'warning: %s\n' "$*" >&2; }
 die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
 
+# Everything privileged goes through $SUDO rather than a literal sudo, so this
+# runs both as a normal user on a runner and as root in a container, where
+# sudo is usually not installed at all. Cannot be a function named sudo: the
+# env-var forms below ("$SUDO" DEBIAN_FRONTEND=... apt-get) are not valid
+# calls to a shell function.
+if [ "$(id -u)" -eq 0 ]; then
+    SUDO=""
+elif command -v sudo >/dev/null; then
+    SUDO="sudo"
+else
+    die "not root and no sudo -- run as root or install sudo"
+fi
+
 check_args=("$@")
 [ ${#check_args[@]} -gt 0 ] || check_args=("${DEFAULT_CHECK_ARGS[@]}")
 
@@ -120,8 +143,8 @@ check_args=("$@")
 # ---------------------------------------------------------------------------
 if [ "$INSTALL_DEPS" = "1" ]; then
     log "installing packages"
-    sudo apt-get update -qq
-    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+    $SUDO apt-get update -qq
+    $SUDO DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
         --no-install-recommends \
         nfs-kernel-server nfs-common \
         build-essential autoconf automake libtool-bin pkg-config gettext \
@@ -139,11 +162,11 @@ command -v mkfs.xfs >/dev/null ||
 # these. The numeric-leading third name is xfstests' own: it checks that such
 # a username is handled (common/rc's _require_user 123456-fsgqa).
 log "creating the fsgqa test users"
-sudo groupadd -f fsgqa
+$SUDO groupadd -f fsgqa
 for u in fsgqa fsgqa2 123456-fsgqa; do
     id "$u" >/dev/null 2>&1 ||
-        sudo useradd -m -g fsgqa "$u" 2>/dev/null ||
-        sudo useradd -M -g fsgqa "$u" ||
+        $SUDO useradd -m -g fsgqa "$u" 2>/dev/null ||
+        $SUDO useradd -M -g fsgqa "$u" ||
         warn "could not create user $u -- tests needing it will be skipped"
 done
 
@@ -158,23 +181,23 @@ teardown() {
     log "tearing down"
     for m in "$TEST_MNT" "$SCRATCH_MNT"; do
         if mountpoint -q "$m" 2>/dev/null; then
-            sudo umount "$m" 2>/dev/null || sudo umount -l "$m" 2>/dev/null ||
+            $SUDO umount "$m" 2>/dev/null || $SUDO umount -l "$m" 2>/dev/null ||
                 warn "could not unmount $m"
         fi
     done
-    sudo sed -i '/# BEGIN nfs-test-env ci/,/# END nfs-test-env ci/d' \
+    $SUDO sed -i '/# BEGIN nfs-test-env ci/,/# END nfs-test-env ci/d' \
         /etc/exports 2>/dev/null || true
-    sudo exportfs -ra 2>/dev/null || true
+    $SUDO exportfs -ra 2>/dev/null || true
 
     # After unexporting, or nfsd still holds a reference and the umount is
     # EBUSY. umount detaches the loop device it set up.
     for name in test scratch; do
         mnt="${NFS_LOOPBACK_BASE}/${name}"
         if mountpoint -q "$mnt" 2>/dev/null; then
-            sudo umount "$mnt" 2>/dev/null || sudo umount -l "$mnt" 2>/dev/null ||
+            $SUDO umount "$mnt" 2>/dev/null || $SUDO umount -l "$mnt" 2>/dev/null ||
                 warn "could not unmount the backing filesystem $mnt"
         fi
-        sudo rm -f "${NFS_LOOPBACK_IMG_DIR}/${name}.img" 2>/dev/null || true
+        $SUDO rm -f "${NFS_LOOPBACK_IMG_DIR}/${name}.img" 2>/dev/null || true
     done
     return $rc
 }
@@ -184,7 +207,7 @@ trap teardown EXIT
 # The NFS server: the runner's own knfsd
 # ---------------------------------------------------------------------------
 log "loading nfsd"
-sudo modprobe nfsd || die "cannot load nfsd -- this runner cannot host knfsd"
+$SUDO modprobe nfsd || die "cannot load nfsd -- this runner cannot host knfsd"
 
 # The images are sparse but generic/103 and friends inflate them to their
 # full size, so what matters is the free space on whatever holds them. Report
@@ -207,15 +230,15 @@ if [ "$RECLAIM_DISK" = "1" ]; then
                 /usr/local/.ghcup /opt/hostedtoolcache /usr/local/share/powershell \
                 /usr/local/share/chromium /usr/local/lib/node_modules; do
         [ -e "$path" ] || continue
-        size="$(sudo du -sh "$path" 2>/dev/null | cut -f1)"
-        if sudo rm -rf "$path" 2>/dev/null; then
+        size="$($SUDO du -sh "$path" 2>/dev/null | cut -f1)"
+        if $SUDO rm -rf "$path" 2>/dev/null; then
             echo "  freed ${size:-?} from $path"
         else
             warn "could not remove $path"
         fi
     done
     if command -v docker >/dev/null; then
-        reclaimed="$(sudo docker system prune -af 2>/dev/null | tail -1)"
+        reclaimed="$($SUDO docker system prune -af 2>/dev/null | tail -1)"
         echo "  docker: ${reclaimed:-nothing to prune}"
     fi
 
@@ -226,7 +249,7 @@ if [ "$RECLAIM_DISK" = "1" ]; then
 fi
 
 log "creating the xfs backing filesystems under $NFS_LOOPBACK_BASE"
-sudo mkdir -p "$NFS_LOOPBACK_IMG_DIR"
+$SUDO mkdir -p "$NFS_LOOPBACK_IMG_DIR"
 
 # Both images can reach their full size at once (generic/103 fills one, the
 # reflink CoW tests fill the other), so the budget is 2 x size + a margin for
@@ -268,34 +291,34 @@ for name in test scratch; do
     img="${NFS_LOOPBACK_IMG_DIR}/${name}.img"
     mnt="${NFS_LOOPBACK_BASE}/${name}"
 
-    sudo mkdir -p "$mnt"
+    $SUDO mkdir -p "$mnt"
     # A leftover mount from an interrupted run would otherwise be silently
     # exported instead of the fresh filesystem.
     if mountpoint -q "$mnt" 2>/dev/null; then
-        sudo umount "$mnt" 2>/dev/null || sudo umount -l "$mnt" 2>/dev/null ||
+        $SUDO umount "$mnt" 2>/dev/null || $SUDO umount -l "$mnt" 2>/dev/null ||
             die "$mnt is mounted and will not unmount"
     fi
 
-    sudo rm -f "$img"
-    sudo truncate -s "$img_bytes" "$img" ||
+    $SUDO rm -f "$img"
+    $SUDO truncate -s "$img_bytes" "$img" ||
         die "could not create $img -- is there ${img_human} free?"
-    sudo mkfs.xfs -q "$img" || die "mkfs.xfs failed on $img"
+    $SUDO mkfs.xfs -q "$img" || die "mkfs.xfs failed on $img"
     # mount -o loop attaches the loop device itself and umount detaches it, so
     # teardown needs no losetup -d.
-    sudo mount -o loop "$img" "$mnt" ||
+    $SUDO mount -o loop "$img" "$mnt" ||
         die "could not loop-mount $img at $mnt -- is the loop module available?"
     # xfstests runs as root and chowns freely. After the mount, not before:
     # the mount would hide a chmod applied to the underlying directory.
-    sudo chmod 777 "$mnt"
+    $SUDO chmod 777 "$mnt"
     echo "  $mnt <- $img ($(findmnt -no FSTYPE "$mnt"), ${img_human} max)"
 done
 
 # Replace only our own block, so an unrelated NFS setup on the machine
 # survives and re-running is safe.
 log "writing /etc/exports"
-sudo sed -i '/# BEGIN nfs-test-env ci/,/# END nfs-test-env ci/d' \
+$SUDO sed -i '/# BEGIN nfs-test-env ci/,/# END nfs-test-env ci/d' \
     /etc/exports 2>/dev/null || true
-sudo tee -a /etc/exports >/dev/null <<EOF
+$SUDO tee -a /etc/exports >/dev/null <<EOF
 # BEGIN nfs-test-env ci -- managed by 00-run-xfstests-on-gh-ci.sh
 ${NFS_LOOPBACK_BASE}/test ${NFS_LOOPBACK_CLIENT}(rw,sync,no_subtree_check,no_root_squash,fsid=${NFS_TEST_FSID})
 ${NFS_LOOPBACK_BASE}/scratch ${NFS_LOOPBACK_CLIENT}(rw,sync,no_subtree_check,no_root_squash,fsid=${NFS_SCRATCH_FSID})
@@ -304,31 +327,57 @@ EOF
 
 # Start the server before exportfs -ra: on a fresh machine rpc.mountd is not
 # running yet, and exportfs alone leaves nothing serving.
+#
+# Two paths because there are two hosts. A runner has systemd and the
+# nfs-server unit does the right ordering for free. A container has no PID 1
+# to ask, so the daemons are started by hand -- the unit's own ExecStart
+# sequence, minus the parts systemd would do. Detected by asking systemd
+# whether it is actually running, not by looking for the systemctl binary:
+# the binary is present in plenty of images where nothing is listening on
+# /run/systemd/system.
 log "starting the NFS server"
-sudo systemctl enable --now nfs-server 2>/dev/null ||
-    sudo systemctl restart nfs-server ||
-    die "could not start nfs-server -- 'journalctl -u nfs-server'"
+if [ -d /run/systemd/system ] && command -v systemctl >/dev/null; then
+    $SUDO systemctl enable --now nfs-server 2>/dev/null ||
+        $SUDO systemctl restart nfs-server ||
+        die "could not start nfs-server -- 'journalctl -u nfs-server'"
+else
+    echo "  no systemd -- starting rpcbind, rpc.nfsd and rpc.mountd directly"
+    # rpcbind is still needed: NFSv4 does not use it, but rpc.mountd
+    # registers regardless and fails noisily without it.
+    if ! pidof rpcbind >/dev/null 2>&1; then
+        $SUDO rpcbind -w 2>/dev/null || warn "rpcbind did not start"
+    fi
+    # nfsd needs its own procfs pseudo-filesystem; the unit mounts this.
+    if ! mountpoint -q /proc/fs/nfsd 2>/dev/null; then
+        $SUDO mount -t nfsd nfsd /proc/fs/nfsd 2>/dev/null ||
+            warn "could not mount /proc/fs/nfsd"
+    fi
+    $SUDO rpc.nfsd 8 || die "rpc.nfsd failed -- is the container --privileged?"
+    $SUDO exportfs -ra || die "exportfs failed"
+    pidof rpc.mountd >/dev/null 2>&1 ||
+        $SUDO rpc.mountd || die "rpc.mountd failed"
+fi
 
 log "applying exports"
-sudo exportfs -ra
-sudo exportfs -v
+$SUDO exportfs -ra
+$SUDO exportfs -v
 
 # Prove the export serves before handing over. xfstests reports an unusable
 # TEST_DEV as a confusing _notrun much later, or as a mount failure with no
 # hint of which side is at fault.
 log "verifying the export mounts and is writable"
 probe="$(mktemp -d)"
-if ! sudo mount -t nfs -o "vers=${NFS_LOOPBACK_VERS}" \
+if ! $SUDO mount -t nfs -o "vers=${NFS_LOOPBACK_VERS}" \
         "127.0.0.1:${NFS_LOOPBACK_BASE}/test" "$probe"; then
     rmdir "$probe"
     die "cannot mount the test export -- see 'exportfs -v' and 'journalctl -u nfs-server'"
 fi
-if ! sudo touch "${probe}/.probe" 2>/dev/null; then
-    sudo umount "$probe"; rmdir "$probe"
+if ! $SUDO touch "${probe}/.probe" 2>/dev/null; then
+    $SUDO umount "$probe"; rmdir "$probe"
     die "the export mounted but is not writable"
 fi
-sudo rm -f "${probe}/.probe"
-sudo umount "$probe"
+$SUDO rm -f "${probe}/.probe"
+$SUDO umount "$probe"
 rmdir "$probe"
 
 # ---------------------------------------------------------------------------
@@ -342,7 +391,7 @@ else
         die "xfstests build failed -- see /tmp/xfstests-build.log"
 fi
 
-sudo mkdir -p "$TEST_MNT" "$SCRATCH_MNT"
+$SUDO mkdir -p "$TEST_MNT" "$SCRATCH_MNT"
 
 config="${XFSTESTS_DIR}/local.config"
 log "writing $config"
@@ -372,7 +421,7 @@ fi
 log "running xfstests: ${check_args[*]}"
 status=0
 set +e
-( cd "$XFSTESTS_DIR" && sudo ./check -nfs "${exclude[@]}" "${check_args[@]}" )
+( cd "$XFSTESTS_DIR" && $SUDO ./check -nfs "${exclude[@]}" "${check_args[@]}" )
 status=$?
 set -e
 
