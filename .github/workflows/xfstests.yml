@@ -29,10 +29,6 @@ on:
         required: false
         default: '-g quick'
 
-concurrency:
-  group: xfstests-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
   xfstests:
     runs-on: ubuntu-latest
