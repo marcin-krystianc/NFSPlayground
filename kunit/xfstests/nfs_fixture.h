@@ -58,6 +58,13 @@ bool xfs_exists(const char *path);
 /* vfs_getattr with AT_STATX_FORCE_SYNC: forces NFS revalidation. */
 int xfs_kstat(const char *path, struct kstat *st);
 int xfs_truncate(const char *path, loff_t length);
+/*
+ * ftruncate(2) rather than truncate(2): over NFSv4 the SETATTR carries the
+ * open file's stateid, which truncate-by-path cannot. generic/313 needs both.
+ */
+int xfs_ftruncate(struct file *f, loff_t length);
+/* READLINK: the target string itself, NUL-terminated; -ERANGE if it will not fit. */
+ssize_t xfs_readlink(const char *path, char *buf, size_t size);
 
 /* Whole-file convenience wrappers (open/loop/close inside). */
 int xfs_write_new_file(const char *path, const void *data, size_t len);
@@ -69,8 +76,14 @@ int xfs_wait_for_free_bytes(u64 bytes);
 int xfs_fsync_path(const char *path);
 int xfs_chmod(const char *path, umode_t mode);
 int xfs_chown(const char *path, uid_t uid, gid_t gid);
-/* SETATTR of atime/mtime; ns == UTIME_OMIT semantics are not needed here */
+/* SETATTR of atime/mtime, both set explicitly (nsec 0). */
 int xfs_utimes(const char *path, time64_t atime, time64_t mtime);
+/*
+ * The same SETATTR with the timespecs given verbatim, so a caller can pass
+ * UTIME_OMIT or UTIME_NOW in tv_nsec -- generic/221's case is atime set with
+ * mtime omitted.
+ */
+int xfs_utimes_raw(const char *path, struct timespec64 times[2]);
 
 /*
  * Run as another user: switches fsuid/euid/... AND drops capabilities so

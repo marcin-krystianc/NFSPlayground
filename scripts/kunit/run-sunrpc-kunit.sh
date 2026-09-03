@@ -50,7 +50,6 @@ TESTS=(
     "xfstests/generic/005:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
     "xfstests/generic/006:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
     "xfstests/generic/007:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
-    "xfstests/generic/010:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
     "xfstests/generic/011:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
     "xfstests/generic/013:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
     "xfstests/generic/014:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"

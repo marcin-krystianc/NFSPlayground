@@ -343,7 +343,7 @@ return 0 — every IPv6 case would pass while testing nothing.
 
 ## xfstests cases that ARE ported: generic/* over a loopback NFS mount
 
-The `kunit/xfstests/` tree holds ports of **46 xfstests generic cases**,
+The `kunit/xfstests/` tree holds ports of **45 xfstests generic cases**,
 each a KUnit suite named after its original (`xfstests/generic/001` ...),
 each running against a real NFS mount served by knfsd inside the same UML
 kernel. The deployment lives in `kunit/xfstests/nfs_fixture.{c,h}`: tmpfs
@@ -354,15 +354,23 @@ because `create_client()` needs it; grace is ended the `v4_end_grace` way.
 Bring-up is refcounted per suite, so every full run also exercises ~60
 consecutive nfsd restart and mount/unmount cycles.
 
-Ported: 001 002 005 006 007 010 011 013 014 020 023 028 029 030 035 037 069 070 074 075 087 088 089 109 123
+Ported: 001 002 005 006 007 011 013 014 020 023 028 029 030 035 037 069 070 074 075 087 088 089 109 123
 126 129 131 132 169 193 213 221 228 236 245 257 258 285 286 306 308 309
 313 314 360.
 
-The set is limited to cases upstream xfstests actually runs against NFS:
-a case that upstream reports `[not run]` on an NFSv4.2 mount is not
-ported, since there is no upstream result to mirror. Measured with
-`scripts/00-run-xfstests-on-vm-and-docker.sh` against knfsd in docker at
-`vers=4.2`.
+Two rules bound the set. A case upstream reports `[not run]` on an NFSv4.2
+mount is not ported, since there is no upstream result to mirror; measured
+with `scripts/00-run-xfstests-on-vm-and-docker.sh` against knfsd in docker
+at `vers=4.2`. And a case whose subject is a userspace library rather than
+the filesystem is not ported either -- generic/010 drives ndbm through
+`src/dbtest`, which has no in-kernel equivalent to mirror.
+
+Each port is meant to perform upstream's operations and assert upstream's
+outcome, at reduced scale where the original's magnitudes do not fit an
+in-kernel tmpfs export, and single-threaded where the original forks. Where
+that reduction loses the point of the test, the port says so in its header;
+where upstream keeps an NFS-specific golden image (`035.out.nfs`), the port
+follows it rather than the default one.
 
 The families: protocol-pin mirrors for ops NFS lacks (021 collapse, 058
 insert, 092 bare KEEP_SIZE, 024 renameat2 flags, 110 clone-on-tmpfs, 004

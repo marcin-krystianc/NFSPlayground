@@ -2,14 +2,28 @@
 /*
  * xfstests generic/035 over a loopback NFS mount: rename over an open target.
  *
- * Upstream's t_rename_overwrite renames one file over another that is
- * held open, then asserts the open target's link count dropped to 0. On
- * NFS that assertion is famously different: the client sillyrenames the
- * still-open target to a .nfsXXXX name, so its nlink stays 1 until the
- * last close, and only then does the deferred REMOVE drop it. This port
- * pins the NFS semantics end to end: nlink via the open file stays 1, a
- * .nfs entry appears in the directory, and after close + settling the
- * directory is back to exactly one name.
+ * Upstream's t_rename_overwrite opens the target, renames another name over
+ * it, then fstat()s the still-open file and requires nlink == 0. It is run
+ * twice: once on a pair of regular files, once on a pair of directories.
+ *
+ * xfstests keeps a separate golden image for NFS (tests/generic/035.out.nfs)
+ * because both halves differ here, and it says what to expect:
+ *
+ *	overwriting regular file:
+ *	nlink is 1, should be 0
+ *	overwriting directory:
+ *	t_rename_overwrite: fstat(3): Stale file handle
+ *
+ * The file case keeps a link because the client sillyrenames the open target
+ * to a .nfsXXXX name, so nlink stays 1 until the last close and only then
+ * does the deferred REMOVE drop it. The directory case cannot be
+ * sillyrenamed, so the rename really removes the target server-side and the
+ * filehandle held open goes stale -- which is why upstream's fstat fails
+ * rather than reporting a count.
+ *
+ * Both are pinned below: the file case end to end (nlink 1, a .nfs entry in
+ * the directory, and one name left after close and settling), and the
+ * directory case as ESTALE from the held directory.
  */
 
 #include <kunit/test.h>
@@ -66,6 +80,8 @@ static void g035_remove_tree(void *unused)
 {
 	xfs_unlink(G035_ROOT "/file1");
 	xfs_unlink(G035_ROOT "/file2");
+	xfs_rmdir(G035_ROOT "/dir1");
+	xfs_rmdir(G035_ROOT "/dir2");
 	xfs_rmdir_settled(G035_ROOT);
 }
 
@@ -125,6 +141,46 @@ static void rename_over_an_open_target_sillyrenames(struct kunit *test)
 	KUNIT_EXPECT_FALSE(test, xfs_exists(G035_ROOT "/file1"));
 }
 
+/*
+ * "overwriting directory:" -- t_rename_overwrite's second run. A directory
+ * cannot be sillyrenamed, so the rename removes the open target for real and
+ * the held filehandle is stale: upstream's fstat(3) fails here instead of
+ * printing a link count.
+ */
+static void rename_over_an_open_directory_goes_stale(struct kunit *test)
+{
+	struct kstat st = {};
+	struct file *held;
+	int err;
+
+	KUNIT_ASSERT_TRUE(test, xfstests_nfs_mounted());
+	KUNIT_ASSERT_EQ(test, xfs_mkdir(G035_ROOT), 0);
+	KUNIT_ASSERT_EQ(test,
+			kunit_add_action_or_reset(test, g035_remove_tree, NULL),
+			0);
+
+	KUNIT_ASSERT_EQ(test, xfs_mkdir(G035_ROOT "/dir1"), 0);
+	KUNIT_ASSERT_EQ(test, xfs_mkdir(G035_ROOT "/dir2"), 0);
+
+	held = filp_open(G035_ROOT "/dir2", O_RDONLY | O_DIRECTORY, 0);
+	KUNIT_ASSERT_FALSE(test, IS_ERR(held));
+
+	KUNIT_ASSERT_EQ(test,
+			xfs_rename(G035_ROOT "/dir1", G035_ROOT "/dir2"), 0);
+
+	err = vfs_getattr(&held->f_path, &st, STATX_BASIC_STATS,
+			  AT_STATX_FORCE_SYNC);
+	filp_close(held, NULL);
+
+	KUNIT_EXPECT_EQ_MSG(test, err, -ESTALE,
+			    "expected ESTALE from the overwritten directory, got %d (nlink %u)",
+			    err, err ? 0 : st.nlink);
+
+	/* the surviving name is the renamed source, and dir1 is gone */
+	KUNIT_EXPECT_TRUE(test, xfs_exists(G035_ROOT "/dir2"));
+	KUNIT_EXPECT_FALSE(test, xfs_exists(G035_ROOT "/dir1"));
+}
+
 static int g035_suite_init(struct kunit_suite *suite)
 {
 	return xfstests_nfs_get();
@@ -137,6 +193,7 @@ static void g035_suite_exit(struct kunit_suite *suite)
 
 static struct kunit_case g035_cases[] = {
 	KUNIT_CASE(rename_over_an_open_target_sillyrenames),
+	KUNIT_CASE(rename_over_an_open_directory_goes_stale),
 	{}
 };
 

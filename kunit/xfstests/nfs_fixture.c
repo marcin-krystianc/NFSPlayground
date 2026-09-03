@@ -157,6 +157,43 @@ int xfs_kstat(const char *path, struct kstat *st)
 	return err;
 }
 
+int xfs_ftruncate(struct file *f, loff_t length)
+{
+	/* ftruncate(2)'s body: SETATTR carrying the open file's stateid */
+	return do_ftruncate(f, length, 0);
+}
+
+ssize_t xfs_readlink(const char *path, char *buf, size_t size)
+{
+	DEFINE_DELAYED_CALL(done);
+	const char *target;
+	struct path p;
+	size_t len;
+	int err;
+
+	err = kern_path(path, 0, &p);
+	if (err)
+		return err;
+	/* vfs_readlink() wants a __user buffer; vfs_get_link() hands us the
+	 * string itself, which is what an in-kernel caller can compare.
+	 */
+	target = vfs_get_link(p.dentry, &done);
+	if (IS_ERR(target)) {
+		path_put(&p);
+		return PTR_ERR(target);
+	}
+	len = strlen(target);
+	if (len >= size) {
+		do_delayed_call(&done);
+		path_put(&p);
+		return -ERANGE;
+	}
+	memcpy(buf, target, len + 1);
+	do_delayed_call(&done);
+	path_put(&p);
+	return len;
+}
+
 int xfs_truncate(const char *path, loff_t length)
 {
 	struct path p;
@@ -258,21 +295,28 @@ int xfs_chown(const char *path, uid_t uid, gid_t gid)
 	return err;
 }
 
-int xfs_utimes(const char *path, time64_t atime, time64_t mtime)
+int xfs_utimes_raw(const char *path, struct timespec64 times[2])
 {
-	struct timespec64 times[2] = {
-		{ .tv_sec = atime, .tv_nsec = 0 },
-		{ .tv_sec = mtime, .tv_nsec = 0 },
-	};
 	struct path p;
 	int err;
 
 	err = kern_path(path, 0, &p);
 	if (err)
 		return err;
+	/* vfs_utimes() reads UTIME_OMIT/UTIME_NOW out of tv_nsec itself */
 	err = vfs_utimes(&p, times);
 	path_put(&p);
 	return err;
+}
+
+int xfs_utimes(const char *path, time64_t atime, time64_t mtime)
+{
+	struct timespec64 times[2] = {
+		{ .tv_sec = atime, .tv_nsec = 0 },
+		{ .tv_sec = mtime, .tv_nsec = 0 },
+	};
+
+	return xfs_utimes_raw(path, times);
 }
 
 /*
