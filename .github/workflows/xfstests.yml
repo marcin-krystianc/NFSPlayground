@@ -54,13 +54,16 @@ jobs:
         shell: bash
         env:
           CHECK_ARGS: ${{ inputs.check_args || '-g quick' }}
-          # A hosted runner has 14GB of storage and spends most of it on
-          # toolchains this suite never touches. Safe here because the runner
-          # is disposable; the script keeps it off by default for real machines.
-          RECLAIM_DISK: '1'
+          # Left off: a measured runner had / as 145G ext4 with 84G available,
+          # so there is nothing to reclaim. Set to 1 if the "disk space before
+          # setup" report in the log ever shows otherwise -- the script will
+          # then delete the preinstalled toolchains and report what each was
+          # worth. (GitHub documents 14GB of storage; that is not what the
+          # runner actually provides, so trust the log over the docs.)
+          RECLAIM_DISK: '0'
         run: |
           set -o pipefail
-          bash scripts/00-run-xfstests-on-gh-ci.sh $CHECK_ARGS 2>&1 \
+          bash scripts/00-run-xfstests-in-container.sh $CHECK_ARGS 2>&1 \
             | tee xfstests.log
 
       - name: Summarise
