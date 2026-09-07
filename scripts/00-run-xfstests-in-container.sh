@@ -110,6 +110,7 @@ docker run --rm --name "$CONTAINER_NAME" \
     -e "NFS_LOOPBACK_IMG_SIZE=${NFS_LOOPBACK_IMG_SIZE:-}" \
     -e "NFS_LOOPBACK_IMG_MAX=${NFS_LOOPBACK_IMG_MAX:-}" \
     -e "RECLAIM_DISK=${RECLAIM_DISK:-0}" \
+    -e "NFS_DELEGATIONS=${NFS_DELEGATIONS:-1}" \
     -w /repo \
     "$CONTAINER_IMAGE" \
     bash /repo/scripts/00-run-xfstests-on-gh-ci.sh "$@"

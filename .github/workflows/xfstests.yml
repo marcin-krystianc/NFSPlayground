@@ -31,7 +31,17 @@ on:
 
 jobs:
   xfstests:
+    name: xfstests (delegations ${{ matrix.delegations }})
     runs-on: ubuntu-latest
+    # Two runs of the same suite. With one client on loopback knfsd delegates
+    # nearly every file, so the client answers timestamp, lock and attribute
+    # questions itself; with delegations off every one of those reaches the
+    # server. Failures that differ between the two point at the delegated
+    # path in fs/nfs (the ctime and timestamp tests), the rest at knfsd.
+    strategy:
+      fail-fast: false
+      matrix:
+        delegations: ['on', 'off']
     # The default set measured ~14 minutes on a 6.8 Ubuntu box, plus a few
     # minutes for apt and the xfstests build. Budget is ~3x for a slower
     # runner; the step has its own timeout so one wedged test cannot eat the
@@ -57,6 +67,7 @@ jobs:
           # worth. (GitHub documents 14GB of storage; that is not what the
           # runner actually provides, so trust the log over the docs.)
           RECLAIM_DISK: '0'
+          NFS_DELEGATIONS: ${{ matrix.delegations == 'on' && '1' || '0' }}
         run: |
           set -o pipefail
           bash scripts/00-run-xfstests-in-container.sh $CHECK_ARGS 2>&1 \
@@ -118,7 +129,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: xfstests-results
+          name: xfstests-results-delegations-${{ matrix.delegations }}
           path: |
             xfstests.log
             xfstests/results/

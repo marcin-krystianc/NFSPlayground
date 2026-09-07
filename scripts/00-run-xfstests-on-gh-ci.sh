@@ -43,6 +43,16 @@ NFS_LOOPBACK_BASE="${NFS_LOOPBACK_BASE:-/srv/nfs-test-env}"
 NFS_LOOPBACK_CLIENT="${NFS_LOOPBACK_CLIENT:-127.0.0.1}"
 NFS_LOOPBACK_VERS="${NFS_LOOPBACK_VERS:-4.2}"
 
+# NFS_DELEGATIONS=0 disables knfsd delegations for the run by turning off
+# kernel file leases (fs.leases-enable), which delegations are built on.
+# With one client on loopback nearly every open is delegated, and the client
+# then answers timestamp, lock and attribute questions itself; with leases off
+# every one of those reaches the server. Both are real configurations, so CI
+# runs both. Global sysctl: the previous value is restored in teardown.
+NFS_DELEGATIONS="${NFS_DELEGATIONS:-1}"
+LEASES_SYSCTL=/proc/sys/fs/leases-enable
+saved_leases=""
+
 # Distinct so xfstests still sees two filesystems: it mkfs's and remounts
 # SCRATCH_DEV freely, so SCRATCH cannot be the filesystem TEST_DIR lives on.
 NFS_TEST_FSID="${NFS_TEST_FSID:-1}"
@@ -210,6 +220,10 @@ teardown() {
         fi
         $SUDO rm -f "${NFS_LOOPBACK_IMG_DIR}/${name}.img" 2>/dev/null || true
     done
+    if [ -n "$saved_leases" ]; then
+        $SUDO sh -c "echo $saved_leases > $LEASES_SYSCTL" 2>/dev/null ||
+            warn "could not restore fs.leases-enable=$saved_leases"
+    fi
     return $rc
 }
 trap teardown EXIT
@@ -353,6 +367,13 @@ EOF
 # whether it is actually running, not by looking for the systemctl binary:
 # the binary is present in plenty of images where nothing is listening on
 # /run/systemd/system.
+if [ "$NFS_DELEGATIONS" = "0" ]; then
+    log "disabling delegations (fs.leases-enable=0)"
+    saved_leases="$(cat $LEASES_SYSCTL)"
+    $SUDO sh -c "echo 0 > $LEASES_SYSCTL" ||
+        die "cannot write $LEASES_SYSCTL -- is the container --privileged?"
+fi
+
 log "starting the NFS server"
 if [ -d /run/systemd/system ] && command -v systemctl >/dev/null; then
     $SUDO systemctl enable --now nfs-server 2>/dev/null ||
@@ -432,6 +453,7 @@ log "under test"
 echo "  kernel:         $(uname -r)"
 echo "  nfs-utils:      $(dpkg-query -W -f='${Version}' nfs-common 2>/dev/null || echo unknown)"
 echo "  server-side fs: $(findmnt -no FSTYPE -T "${NFS_LOOPBACK_BASE}/test" 2>/dev/null || echo unknown)"
+echo "  delegations:    $([ "$(cat $LEASES_SYSCTL)" = 1 ] && echo on || echo off) (fs.leases-enable=$(cat $LEASES_SYSCTL))"
 
 exclude=()
 if [ -s "$EXCLUDE_FILE" ] && grep -qvE '^\s*(#|$)' "$EXCLUDE_FILE"; then
