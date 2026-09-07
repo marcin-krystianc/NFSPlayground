@@ -206,7 +206,13 @@ trap teardown EXIT
 # The NFS server: the runner's own knfsd
 # ---------------------------------------------------------------------------
 log "loading nfsd"
-$SUDO modprobe nfsd || die "cannot load nfsd -- this runner cannot host knfsd"
+# In the container the host has already loaded nfsd and the image has no
+# modprobe, so only call it when the filesystem type is not registered yet.
+if grep -qw nfsd /proc/filesystems; then
+    echo "  nfsd already available"
+else
+    $SUDO modprobe nfsd || die "cannot load nfsd -- this runner cannot host knfsd"
+fi
 
 # The images are sparse but generic/103 and friends inflate them to their
 # full size, so what matters is the free space on whatever holds them. Report
