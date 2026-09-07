@@ -43,7 +43,7 @@
 static void g213_remove_tree(void *unused)
 {
 	xfs_unlink(G213_FILE);
-	xfs_rmdir(G213_ROOT);
+	xfs_rmdir_settled(G213_ROOT);
 }
 
 /* "-c 'falloc ...' -c 'truncate ...'" on a fresh file, then the size */

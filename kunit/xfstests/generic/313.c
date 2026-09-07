@@ -39,7 +39,7 @@ static bool g313_after(const struct timespec64 *a, const struct timespec64 *b)
 static void g313_remove_tree(void *unused)
 {
 	xfs_unlink(G313_FILE);
-	xfs_rmdir(G313_ROOT);
+	xfs_rmdir_settled(G313_ROOT);
 }
 
 /* one truncate step, checked the way t_truncate_cmtime checks it */

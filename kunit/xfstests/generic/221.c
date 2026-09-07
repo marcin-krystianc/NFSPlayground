@@ -44,7 +44,7 @@ static bool g221_after(const struct timespec64 *a, const struct timespec64 *b)
 static void g221_remove_tree(void *unused)
 {
 	xfs_unlink(G221_FILE);
-	xfs_rmdir(G221_ROOT);
+	xfs_rmdir_settled(G221_ROOT);
 }
 
 static void utimes_with_mtime_omitted_still_moves_ctime(struct kunit *test)

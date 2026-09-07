@@ -58,7 +58,7 @@ static const struct g087_row {
 static void g087_remove_tree(void *unused)
 {
 	xfs_unlink(G087_FILE);
-	xfs_rmdir(G087_ROOT);
+	xfs_rmdir_settled(G087_ROOT);
 }
 
 /* fs_perms' two forms: utime(f, NULL) and utime(f, &times) */
