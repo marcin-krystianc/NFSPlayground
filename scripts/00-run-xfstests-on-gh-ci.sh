@@ -121,9 +121,8 @@ die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
 
 # Everything privileged goes through $SUDO rather than a literal sudo, so this
 # runs both as a normal user on a runner and as root in a container, where
-# sudo is usually not installed at all. Cannot be a function named sudo: the
-# env-var forms below ("$SUDO" DEBIAN_FRONTEND=... apt-get) are not valid
-# calls to a shell function.
+# sudo is usually not installed at all. Env vars go through "env" ($SUDO env
+# VAR=... cmd) because "$SUDO VAR=... cmd" is not a command when $SUDO is empty.
 if [ "$(id -u)" -eq 0 ]; then
     SUDO=""
 elif command -v sudo >/dev/null; then
@@ -144,7 +143,7 @@ check_args=("$@")
 if [ "$INSTALL_DEPS" = "1" ]; then
     log "installing packages"
     $SUDO apt-get update -qq
-    $SUDO DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+    $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
         --no-install-recommends \
         nfs-kernel-server nfs-common \
         build-essential autoconf automake libtool-bin pkg-config gettext \
