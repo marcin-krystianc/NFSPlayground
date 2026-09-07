@@ -158,7 +158,9 @@ if [ "$INSTALL_DEPS" = "1" ]; then
         nfs-kernel-server nfs-common \
         build-essential autoconf automake libtool-bin pkg-config gettext \
         uuid-dev libattr1-dev libacl1-dev libaio-dev libgdbm-dev \
-        xfslibs-dev xfsprogs e2fsprogs attr acl quota ||
+        xfslibs-dev xfsprogs e2fsprogs attr acl quota \
+        bc gawk psmisc procps python3 uuid-runtime fio dbench dump \
+        libcap-dev liburing-dev ||
         die "package install failed"
 fi
 
