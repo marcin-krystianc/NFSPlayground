@@ -17,10 +17,6 @@ on:
         required: false
         default: ''
 
-concurrency:
-  group: kunit-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
   kunit:
     runs-on: ubuntu-latest
