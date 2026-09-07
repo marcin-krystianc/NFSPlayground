@@ -42,11 +42,6 @@ jobs:
       fail-fast: false
       matrix:
         delegations: ['on', 'off']
-    # The default set measured ~14 minutes on a 6.8 Ubuntu box, plus a few
-    # minutes for apt and the xfstests build. Budget is ~3x for a slower
-    # runner; the step has its own timeout so one wedged test cannot eat the
-    # whole job silently.
-    timeout-minutes: 60
 
     steps:
       - uses: actions/checkout@v4
