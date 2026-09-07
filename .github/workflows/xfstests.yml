@@ -82,8 +82,38 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # results/ holds the .out.bad and .full files for every failure, which
-      # is the only way to diagnose one after the fact.
+      # Everything needed to diagnose a failure from the job log alone, so
+      # nobody has to download the artifact first: the full diff for each
+      # failed test, the tail of its .full log, and the NFS state the inner
+      # script dumped after check finished.
+      - name: Show failure details
+        if: always()
+        shell: bash
+        run: |
+          shopt -s nullglob
+          bad=(xfstests/results/*/*.out.bad)
+          if [ ${#bad[@]} -eq 0 ]; then
+            echo "no .out.bad files -- no test failed with an output mismatch"
+          fi
+          for f in "${bad[@]}"; do
+            t=${f#xfstests/results/}; t=${t%.out.bad}
+            echo "::group::${t} diff"
+            diff -u "xfstests/tests/${t}.out" "$f" || true
+            echo "::endgroup::"
+            if [ -f "xfstests/results/${t}.full" ]; then
+              echo "::group::${t}.full (last 200 lines)"
+              tail -n 200 "xfstests/results/${t}.full"
+              echo "::endgroup::"
+            fi
+          done
+          for f in xfstests/results/ci-diagnostics/*; do
+            echo "::group::$(basename "$f")"
+            cat "$f"
+            echo "::endgroup::"
+          done
+
+      # results/ holds the .out.bad and .full files for every failure plus
+      # ci-diagnostics/ from the inner script.
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v4

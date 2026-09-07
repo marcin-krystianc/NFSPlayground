@@ -446,6 +446,22 @@ set +e
 status=$?
 set -e
 
+# State that check's own results cannot show and that is gone once the
+# server is torn down: server-side kernel messages, the delegations and
+# locks knfsd holds, and the client mount options actually negotiated.
+# Lands in results/ so the workflow's artifact and log steps pick it up.
+diag="${XFSTESTS_DIR}/results/ci-diagnostics"
+log "collecting NFS diagnostics into $diag"
+$SUDO mkdir -p "$diag"
+$SUDO sh -c "dmesg -T 2>/dev/null | tail -n 300 > '$diag/dmesg.txt'" || true
+$SUDO sh -c "cat /proc/fs/nfsd/clients/*/info /proc/fs/nfsd/clients/*/states \
+    > '$diag/nfsd-clients.txt' 2>&1" || true
+$SUDO sh -c "cat /proc/locks > '$diag/proc-locks.txt'" || true
+$SUDO sh -c "nfsstat -s > '$diag/nfsstat-server.txt' 2>&1; \
+    nfsstat -c > '$diag/nfsstat-client.txt' 2>&1" || true
+$SUDO sh -c "findmnt -t nfs,nfs4 -o TARGET,SOURCE,OPTIONS > '$diag/mounts.txt' 2>&1" || true
+$SUDO sh -c "exportfs -v > '$diag/exports.txt' 2>&1" || true
+
 if [ "$status" -eq 0 ]; then
     log "xfstests passed"
 else
