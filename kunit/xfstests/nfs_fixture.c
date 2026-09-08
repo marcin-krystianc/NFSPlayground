@@ -76,6 +76,14 @@ MODULE_IMPORT_NS(EXPORTED_FOR_KUNIT_TESTING);
 int ip_map_parse(struct cache_detail *cd, char *mesg, int mlen);
 int svc_export_parse(struct cache_detail *cd, char *mesg, int mlen);
 int expkey_parse(struct cache_detail *cd, char *mesg, int mlen);
+/*
+ * Public via fs/nfsd/state.h (included above) through v6.12.57; became
+ * file-private on current mainline and un-staticed by the runner, same as
+ * the ip_map_parse family above. state.h no longer declares it either way,
+ * so this stays needed on both: redundant but harmless where it is still
+ * public, load-bearing where it is not.
+ */
+void nfsd4_end_grace(struct nfsd_net *nn);
 /* fs/open.c bodies; non-static there but not declared in a header */
 int chmod_common(const struct path *path, umode_t mode);
 int chown_common(const struct path *path, uid_t user, gid_t group);
