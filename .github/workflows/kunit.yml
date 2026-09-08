@@ -15,7 +15,7 @@ on:
       filter_glob:
         description: 'kunit.py filter_glob (suite.case globs, e.g. "xfstests/generic/0*"). Default runs only the addr_test family while the whole-run live-lock (see docs/kunit-sunrpc.md) is unresolved.'
         required: false
-        default: 'sunrpc-*'
+        default: ''
       extra_args:
         description: 'Extra kunit.py arguments (e.g. --raw_output)'
         required: false
