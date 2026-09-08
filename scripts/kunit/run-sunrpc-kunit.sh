@@ -38,7 +38,7 @@ TESTS=(
     "xdr_test:net/sunrpc:SUNRPC_XDR_KUNIT_TEST:SUNRPC:SunRPC XDR codec"
     "nfs4session_test:fs/nfs:NFS_V4_SESSION_KUNIT_TEST:NFS_V4:NFSv4.1 session slot tables"
     "inode_test:fs/nfs:NFS_INODE_KUNIT_TEST:NFS_FS:NFS inode attribute comparison"
-    "pnfs_test:fs/nfs:NFS_PNFS_KUNIT_TEST:NFS_V4_1:pNFS layout range arithmetic"
+    "pnfs_test:fs/nfs:NFS_PNFS_KUNIT_TEST:NFS_V4:pNFS layout range arithmetic"
     "pagelist_test:fs/nfs:NFS_PAGELIST_KUNIT_TEST:NFS_FS:NFS page request coalescing"
     "nfs4proc_test:fs/nfs:NFS_V4_PROC_KUNIT_TEST:NFS_V4:NFSv4 protocol decision logic"
     # The xfstests ports share one Kconfig symbol and the loopback NFS
@@ -92,14 +92,28 @@ TESTS=(
     "xfstests/generic/314:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
 )
 
-# NFS_V4 is needed by the session slot table suite and is not in the
-# stock .kunitconfig, which only enables CONFIG_NFS_FS.
-# NFS_V4_2/NFSD/TMPFS serve the generic/001 suite, which stands up knfsd
-# inside the UML kernel and mounts it back over loopback; the export lives
-# on tmpfs because ramfs has no export_operations.
-kunit_opts=(CONFIG_IPV6=y CONFIG_NFS_V4=y CONFIG_NFS_V4_1=y
+# NET/INET/FILE_LOCKING/MULTIUSER/NFS_FS/SUNRPC used to come for free from
+# net/sunrpc/.kunitconfig, which the pre-existing RPCSEC_GSS_KRB5_KUNIT_TEST
+# shipped upstream; both the file and that test are gone as of some point
+# after v6.12.57, so this is now the only place any of them is requested.
+# NFS_V4 is needed by the session slot table suite. NFS_V4_2/NFSD/TMPFS
+# serve the generic/001 suite, which stands up knfsd inside the UML kernel
+# and mounts it back over loopback; the export lives on tmpfs because
+# ramfs has no export_operations.
+kunit_opts=(CONFIG_NET=y CONFIG_INET=y CONFIG_FILE_LOCKING=y
+            CONFIG_MULTIUSER=y CONFIG_NFS_FS=y CONFIG_SUNRPC=y
+            CONFIG_IPV6=y CONFIG_NFS_V4=y
             CONFIG_NFS_V4_2=y CONFIG_NFSD=y CONFIG_NFSD_V4=y CONFIG_TMPFS=y
             CONFIG_TMPFS_XATTR=y)
+
+# NFS_V4_1 existed as its own Kconfig symbol through v6.12.57 (NFS_V4_2
+# depended on it); upstream later merged it into NFS_V4, so the symbol is
+# simply gone on current mainline. kunit.py aborts before building anything
+# if a requested option can't be selected -- not "missing coverage", a hard
+# stop -- so this is checked against the actual tree rather than assumed.
+if grep -qx 'config NFS_V4_1' "${LINUX_DIR}/fs/nfs/Kconfig"; then
+    kunit_opts+=(CONFIG_NFS_V4_1=y)
+fi
 
 # Some functions worth testing are file-private. The kernel's own answer to
 # that is VISIBLE_IF_KUNIT (include/kunit/visibility.h), which drops the
