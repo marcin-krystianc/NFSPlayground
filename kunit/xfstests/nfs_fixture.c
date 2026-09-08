@@ -839,6 +839,27 @@ static int xfs_bringup(void)
 				filp_close(rf, NULL);
 			}
 		}
+
+		/* Two CREATE attempts back to back: transient vs. persistent. */
+		{
+			int i;
+
+			for (i = 0; i < 2; i++) {
+				struct file *cf = filp_open(XFS_MNT "/diagprobe",
+							    O_WRONLY | O_CREAT | O_EXCL,
+							    0644);
+
+				if (IS_ERR(cf)) {
+					pr_info("DIAG create attempt %d failed: %ld\n",
+						i, PTR_ERR(cf));
+				} else {
+					pr_info("DIAG create attempt %d succeeded\n", i);
+					filp_close(cf, NULL);
+					xfs_unlink(XFS_MNT "/diagprobe");
+					break;
+				}
+			}
+		}
 	}
 
 	return 0;
