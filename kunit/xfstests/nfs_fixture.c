@@ -789,6 +789,36 @@ static int xfs_bringup(void)
 		return err;
 	}
 	xfs_env.client_mounted = true;
+
+	/* ponytail: temporary diagnostic, remove before merge. */
+	{
+		struct file *f;
+		char *buf = kzalloc(2048, GFP_KERNEL);
+		loff_t pos = 0;
+		ssize_t n;
+
+		if (buf) {
+			f = filp_open("/proc/net/rpc/nfsd.export/content", O_RDONLY, 0);
+			if (!IS_ERR(f)) {
+				n = kernel_read(f, buf, 2047, &pos);
+				pr_info("DIAG export cache (%zd): %s\n", n, buf);
+				filp_close(f, NULL);
+			} else {
+				pr_info("DIAG export cache open failed: %ld\n", PTR_ERR(f));
+			}
+			pos = 0;
+			f = filp_open("/proc/net/rpc/nfsd.fh/content", O_RDONLY, 0);
+			if (!IS_ERR(f)) {
+				n = kernel_read(f, buf, 2047, &pos);
+				pr_info("DIAG fh cache (%zd): %s\n", n, buf);
+				filp_close(f, NULL);
+			} else {
+				pr_info("DIAG fh cache open failed: %ld\n", PTR_ERR(f));
+			}
+			kfree(buf);
+		}
+	}
+
 	return 0;
 }
 
