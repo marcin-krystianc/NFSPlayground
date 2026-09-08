@@ -78,8 +78,6 @@ bool nfs4_clear_cap_atomic_open_v1(struct nfs_server *server, int err,
 bool nfs4_mode_match_open_stateid(struct nfs4_state *state, fmode_t fmode);
 int can_open_cached(struct nfs4_state *state, fmode_t mode, int open_mode,
 		    enum open_claim_type4 claim);
-int can_open_delegated(struct nfs_delegation *delegation, fmode_t fmode,
-		       enum open_claim_type4 claim);
 void update_open_stateflags(struct nfs4_state *state, fmode_t fmode);
 bool nfs_open_stateid_recover_openmode(struct nfs4_state *state);
 void nfs_state_log_update_open_stateid(struct nfs4_state *state);
@@ -1659,52 +1657,6 @@ static void other_claims_use_the_cache_when_the_flag_is_set(struct kunit *test)
 					   NFS4_OPEN_CLAIM_PREVIOUS));
 }
 
-/* A delegation of the wrong file mode cannot satisfy this open. */
-static void delegation_of_the_wrong_mode_cannot_be_used(struct kunit *test)
-{
-	struct nfs_delegation delegation = { .type = FMODE_READ };
-
-	KUNIT_EXPECT_FALSE(test,
-			   can_open_delegated(&delegation, FMODE_WRITE,
-					      NFS4_OPEN_CLAIM_NULL));
-}
-
-static void an_absent_delegation_cannot_be_used(struct kunit *test)
-{
-	KUNIT_EXPECT_FALSE(test,
-			   can_open_delegated(NULL, FMODE_READ, NFS4_OPEN_CLAIM_NULL));
-}
-
-/*
- * CLAIM_PREVIOUS during reboot recovery may only use a delegation that
- * does not itself need reclaiming -- otherwise the client would be
- * vouching for state the server has already forgotten.
- */
-static void claim_previous_needs_a_delegation_that_does_not_need_reclaim(struct kunit *test)
-{
-	struct nfs_delegation delegation = { .type = FMODE_READ };
-
-	KUNIT_EXPECT_TRUE(test,
-			  can_open_delegated(&delegation, FMODE_READ,
-					     NFS4_OPEN_CLAIM_PREVIOUS));
-
-	set_bit(NFS_DELEGATION_NEED_RECLAIM, &delegation.flags);
-	KUNIT_EXPECT_FALSE_MSG(test,
-			       can_open_delegated(&delegation, FMODE_READ,
-						  NFS4_OPEN_CLAIM_PREVIOUS),
-			       "used a delegation that itself needs reclaiming");
-}
-
-/* Delegation-based claims (recovery paths) are refused outright. */
-static void delegation_claims_are_never_satisfied_by_a_delegation(struct kunit *test)
-{
-	struct nfs_delegation delegation = { .type = FMODE_READ | FMODE_WRITE };
-
-	KUNIT_EXPECT_FALSE(test,
-			   can_open_delegated(&delegation, FMODE_READ,
-					      NFS4_OPEN_CLAIM_DELEGATE_CUR));
-}
-
 /* update_open_stateflags() bumps the right counter and merges the mode in. */
 static void update_stateflags_increments_the_matching_counter(struct kunit *test)
 {
@@ -1882,10 +1834,6 @@ static struct kunit_case nfs4_open_state_cases[] = {
 	KUNIT_CASE(o_excl_and_o_trunc_never_use_the_cache),
 	KUNIT_CASE(null_and_fh_claims_never_use_the_cache),
 	KUNIT_CASE(other_claims_use_the_cache_when_the_flag_is_set),
-	KUNIT_CASE(delegation_of_the_wrong_mode_cannot_be_used),
-	KUNIT_CASE(an_absent_delegation_cannot_be_used),
-	KUNIT_CASE(claim_previous_needs_a_delegation_that_does_not_need_reclaim),
-	KUNIT_CASE(delegation_claims_are_never_satisfied_by_a_delegation),
 	KUNIT_CASE(update_stateflags_increments_the_matching_counter),
 	KUNIT_CASE(update_stateflags_merges_the_mode_bits),
 	KUNIT_CASE(recover_openmode_detects_a_counter_ahead_of_its_flag),

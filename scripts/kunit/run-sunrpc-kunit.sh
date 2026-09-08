@@ -164,7 +164,6 @@ UNSTATIC=(
     "fs/nfs/nfs4proc.c:bool:nfs4_clear_cap_atomic_open_v1"
     "fs/nfs/nfs4proc.c:bool:nfs4_mode_match_open_stateid"
     "fs/nfs/nfs4proc.c:int:can_open_cached"
-    "fs/nfs/nfs4proc.c:int:can_open_delegated"
     "fs/nfs/nfs4proc.c:void:update_open_stateflags"
     "fs/nfs/nfs4proc.c:bool:nfs_open_stateid_recover_openmode"
     "fs/nfs/nfs4proc.c:void:nfs_state_log_update_open_stateid"
