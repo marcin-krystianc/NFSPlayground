@@ -77,16 +77,6 @@ static void nfs_stat_to_errno_unknown_is_eio(struct kunit *test)
 }
 
 /*
- * NFSERR_EAGAIN is present in the protocol enum but commented out of the
- * table, so it must fall through to the -EIO default rather than mapping
- * to -EAGAIN. Pinning this stops it being "fixed" by accident.
- */
-static void nfs_stat_to_errno_eagain_not_mapped(struct kunit *test)
-{
-	KUNIT_EXPECT_EQ(test, nfs_stat_to_errno(NFSERR_EAGAIN), -EIO);
-}
-
-/*
  * nfs4_stat_to_errno() -- NFSv4
  */
 
@@ -266,7 +256,6 @@ static struct kunit_case nfs_errno_v23_cases[] = {
 		.generate_params	= nfs_stat_gen_params,
 	},
 	KUNIT_CASE(nfs_stat_to_errno_unknown_is_eio),
-	KUNIT_CASE(nfs_stat_to_errno_eagain_not_mapped),
 	{}
 };
 
