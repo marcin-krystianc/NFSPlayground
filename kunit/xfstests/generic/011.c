@@ -3,16 +3,18 @@
  * xfstests generic/011 over a loopback NFS mount: dirstress.
  *
  * src/dirstress fills a directory with mixed entry types -- regular files,
- * subdirectories, self-targeted symlinks and char device nodes -- then
- * "scrambles" it with random renames, unlinks, rmdirs and re-creates
- * where individual operations are allowed to fail (renaming a directory
- * over a file, removing a name twice), and finally removes everything.
- * The pass criterion upstream is simply that dirstress exits 0.
+ * subdirectories and self-targeted symlinks -- then "scrambles" it with
+ * random renames, unlinks, rmdirs and re-creates where individual
+ * operations are allowed to fail (renaming a directory over a file,
+ * removing a name twice), and finally removes everything. The pass
+ * criterion upstream is simply that dirstress exits 0. Upstream also mixes
+ * in char device nodes; this port omits them, since exercising mknod needs
+ * do_mknodat(), file-private and not always reachable by name across
+ * kernel versions.
  *
  * Over NFS the scramble is the interesting part: RENAME storms across
  * entry types against the client dcache, REMOVE/RMDIR of names whose type
- * just changed, CREATE over freshly deleted names. NFSv4.2 carries every
- * type used here (device nodes are NF4CHR creates).
+ * just changed, CREATE over freshly deleted names.
  *
  * Deviations: single-threaded (upstream's TEST 2/3 rerun the same logic in
  * 5 forked processes for concurrency coverage); the port adds a final
@@ -60,16 +62,16 @@ static void g011_remove_tree(void *unused)
 	xfs_rmdir_settled(G011_ROOT);
 }
 
-/* create_entries(): one entry per name, type cycling by i % 4 */
+/* create_entries(): one entry per name, type cycling by i % 3 */
 static void g011_create_entries(struct kunit *test)
 {
 	char buf[64];
 	struct file *f;
-	int i, err;
+	int i;
 
 	for (i = 0; i < G011_NFILES; i++) {
 		g011_name(buf, i);
-		switch (i % 4) {
+		switch (i % 3) {
 		case 0:	/* regular file */
 			f = filp_open(buf, O_WRONLY | O_CREAT | O_EXCL, 0666);
 			KUNIT_ASSERT_FALSE_MSG(test, IS_ERR(f),
@@ -85,11 +87,6 @@ static void g011_create_entries(struct kunit *test)
 			KUNIT_ASSERT_EQ_MSG(test,
 					    xfs_symlink(buf, buf), 0,
 					    "symlink %s failed", buf);
-			break;
-		case 3:	/* char device node */
-			err = xfs_mknod_chr(buf);
-			KUNIT_ASSERT_EQ_MSG(test, err, 0,
-					    "mknod %s failed: %d", buf, err);
 			break;
 		}
 	}

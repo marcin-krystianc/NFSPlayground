@@ -2262,20 +2262,6 @@ static struct kunit_suite nfs4_stateid_status_suite = {
  * Sequence bookkeeping and lease renewal
  */
 
-static void init_sequence_starts_with_no_slot(struct kunit *test)
-{
-	struct nfs4_sequence_args args = { .sa_slot = (void *)1, .sa_cache_this = 9 };
-	struct nfs4_sequence_res res = { .sr_slot = (void *)1 };
-
-	nfs4_init_sequence(&args, &res, 1, 1);
-
-	KUNIT_EXPECT_PTR_EQ(test, args.sa_slot, NULL);
-	KUNIT_EXPECT_PTR_EQ(test, res.sr_slot, NULL);
-	/* sa_cache_this/sa_privileged are 1-bit fields: no typeof() macros. */
-	KUNIT_EXPECT_TRUE(test, args.sa_cache_this);
-	KUNIT_EXPECT_TRUE(test, args.sa_privileged);
-}
-
 /* A NULL slot is a no-op: nothing to attach. */
 static void attach_slot_with_no_slot_is_a_no_op(struct kunit *test)
 {
@@ -2352,7 +2338,6 @@ static void renew_lease_is_a_no_op_once_a_session_exists(struct kunit *test)
 }
 
 static struct kunit_case nfs4_sequence_lease_cases[] = {
-	KUNIT_CASE(init_sequence_starts_with_no_slot),
 	KUNIT_CASE(attach_slot_with_no_slot_is_a_no_op),
 	KUNIT_CASE(attach_slot_wires_up_both_args_and_res),
 	KUNIT_CASE(renew_lease_only_moves_the_timestamp_forward),

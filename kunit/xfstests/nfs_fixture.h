@@ -52,7 +52,6 @@ int xfs_unlink(const char *path);
 int xfs_rename(const char *from, const char *to);
 int xfs_link(const char *oldpath, const char *newpath);
 int xfs_symlink(const char *target, const char *linkpath);
-int xfs_mknod_chr(const char *path);
 bool xfs_exists(const char *path);
 
 /* vfs_getattr with AT_STATX_FORCE_SYNC: forces NFS revalidation. */

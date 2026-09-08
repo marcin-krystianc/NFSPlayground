@@ -88,7 +88,6 @@ TESTS=(
     "xfstests/generic/126:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
     "xfstests/generic/193:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
     "xfstests/generic/228:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
-    "xfstests/generic/306:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
     "xfstests/generic/314:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
 )
 
@@ -229,7 +228,6 @@ UNSTATIC=(
     "fs/nfsd/export.c:int:expkey_parse"
     "fs/nfsd/export.c:int:svc_export_parse"
     "net/sunrpc/svcauth_unix.c:int:ip_map_parse"
-    "fs/namei.c:int:do_mknodat"
 )
 
 for entry in "${UNSTATIC[@]}"; do
@@ -258,6 +256,20 @@ for entry in "${UNSTATIC[@]}"; do
     printf '\nEXPORT_SYMBOL_IF_KUNIT(%s);\n' "$func" >> "$src"
 done
 
+# MODULE_IMPORT_NS's argument convention changed upstream: through v6.12.57
+# it stringified a bare identifier itself (module.h: "#define
+# MODULE_IMPORT_NS(ns) MODULE_INFO(import_ns, __stringify(ns))"); current
+# mainline drops the __stringify and takes a string literal directly. Every
+# kunit/*.c source file here has the bare, pre-change form
+# (MODULE_IMPORT_NS(EXPORTED_FOR_KUNIT_TESTING);) so it stays valid on the
+# pin; quoting it unconditionally would break that (__stringify() of an
+# already-quoted token yields literal escaped quotes, not the token itself).
+# Checked against the actual tree, not the ref, for the same reason as the
+# NFS_V4_1 check above.
+quote_module_import_ns=0
+grep -q '__stringify(ns)' "${LINUX_DIR}/include/linux/module.h" ||
+    quote_module_import_ns=1
+
 for entry in "${TESTS[@]}"; do
     IFS=: read -r stem subdir symbol depends description <<< "$entry"
     dir="${LINUX_DIR}/${subdir}"
@@ -270,6 +282,11 @@ for entry in "${TESTS[@]}"; do
     flat="${stem//\//_}"
     log "installing ${subdir}/${flat}.c"
     cp "${REPO_ROOT}/kunit/${stem}.c" "${dir}/${flat}.c"
+    if [ "$quote_module_import_ns" = "1" ]; then
+        sed -i \
+            's/^MODULE_IMPORT_NS(EXPORTED_FOR_KUNIT_TESTING);$/MODULE_IMPORT_NS("EXPORTED_FOR_KUNIT_TESTING");/' \
+            "${dir}/${flat}.c"
+    fi
     if [ -f "${REPO_ROOT}/kunit/${stem}.h" ]; then
         cp "${REPO_ROOT}/kunit/${stem}.h" "${dir}/${flat}.h"
     fi

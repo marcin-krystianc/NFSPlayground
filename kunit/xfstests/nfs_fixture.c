@@ -76,8 +76,6 @@ MODULE_IMPORT_NS(EXPORTED_FOR_KUNIT_TESTING);
 int ip_map_parse(struct cache_detail *cd, char *mesg, int mlen);
 int svc_export_parse(struct cache_detail *cd, char *mesg, int mlen);
 int expkey_parse(struct cache_detail *cd, char *mesg, int mlen);
-/* fs/namei.c syscall body without a declaration in fs/internal.h */
-int do_mknodat(int dfd, struct filename *name, umode_t mode, unsigned int dev);
 /* fs/open.c bodies; non-static there but not declared in a header */
 int chmod_common(const struct path *path, umode_t mode);
 int chown_common(const struct path *path, uid_t user, gid_t group);
@@ -124,13 +122,6 @@ int xfs_symlink(const char *target, const char *linkpath)
 {
 	return do_symlinkat(getname_kernel(target), AT_FDCWD,
 			    getname_kernel(linkpath));
-}
-
-int xfs_mknod_chr(const char *path)
-{
-	/* an arbitrary char device identity; NFSv4 CREATE type NF4CHR */
-	return do_mknodat(AT_FDCWD, getname_kernel(path), S_IFCHR | 0666,
-			  new_encode_dev(MKDEV(1, 3)));
 }
 
 bool xfs_exists(const char *path)
