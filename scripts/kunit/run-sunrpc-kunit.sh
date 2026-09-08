@@ -92,15 +92,28 @@ TESTS=(
     "xfstests/generic/314:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
 )
 
-# NET/INET/FILE_LOCKING/MULTIUSER/NFS_FS/SUNRPC used to come for free from
-# net/sunrpc/.kunitconfig, which the pre-existing RPCSEC_GSS_KRB5_KUNIT_TEST
-# shipped upstream; both the file and that test are gone as of some point
-# after v6.12.57, so this is now the only place any of them is requested.
+# kunit.py is given --kunitconfig=net/sunrpc/.kunitconfig explicitly (below),
+# so its own stock-config fallback (tools/testing/kunit/configs/default.config,
+# which is where CONFIG_KUNIT and CONFIG_KUNIT_ALL_TESTS normally come from)
+# never applies -- that path's content, in full, is whatever this script and
+# the wiring loop below put there. KUNIT_ALL_TESTS is what makes each
+# generated `default KUNIT_ALL_TESTS` test stanza below self-select; KUNIT
+# itself gates the entire `if KUNIT ... endif` block those stanzas (and
+# CONFIG_KUNIT_UML_PCI) live inside in lib/kunit/Kconfig, so without it none
+# of them are so much as reachable, let alone selectable.
+#
+# NET/INET/FILE_LOCKING/MULTIUSER/NFS_FS/SUNRPC used to come for free too,
+# from the same file: it belonged to RPCSEC_GSS_KRB5_KUNIT_TEST, a
+# pre-existing suite this repo never touched. Both it and the file are gone
+# as of some point after v6.12.57, so this is now the only place any of
+# this -- KUNIT itself included -- is requested.
+#
 # NFS_V4 is needed by the session slot table suite. NFS_V4_2/NFSD/TMPFS
 # serve the generic/001 suite, which stands up knfsd inside the UML kernel
 # and mounts it back over loopback; the export lives on tmpfs because
 # ramfs has no export_operations.
-kunit_opts=(CONFIG_NET=y CONFIG_INET=y CONFIG_FILE_LOCKING=y
+kunit_opts=(CONFIG_KUNIT=y CONFIG_KUNIT_ALL_TESTS=y
+            CONFIG_NET=y CONFIG_INET=y CONFIG_FILE_LOCKING=y
             CONFIG_MULTIUSER=y CONFIG_NFS_FS=y CONFIG_SUNRPC=y
             CONFIG_IPV6=y CONFIG_NFS_V4=y
             CONFIG_NFS_V4_2=y CONFIG_NFSD=y CONFIG_NFSD_V4=y CONFIG_TMPFS=y
