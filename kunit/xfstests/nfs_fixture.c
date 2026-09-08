@@ -57,6 +57,7 @@
 #include <linux/sunrpc/svc_xprt.h>
 #include <linux/sunrpc/svcsock.h>
 #include <linux/sunrpc/cache.h>
+#include <linux/sunrpc/svcauth.h>	/* ponytail DIAG: auth_domain_find */
 #include <linux/statfs.h>
 #include <linux/xattr.h>
 #include <linux/filelock.h>
@@ -792,30 +793,51 @@ static int xfs_bringup(void)
 
 	/* ponytail: temporary diagnostic, remove before merge. */
 	{
-		struct file *f;
-		char *buf = kzalloc(2048, GFP_KERNEL);
-		loff_t pos = 0;
-		ssize_t n;
+		struct auth_domain *dom;
+		struct path p;
+		int perr;
 
-		if (buf) {
-			f = filp_open("/proc/net/rpc/nfsd.export/content", O_RDONLY, 0);
-			if (!IS_ERR(f)) {
-				n = kernel_read(f, buf, 2047, &pos);
-				pr_info("DIAG export cache (%zd): %s\n", n, buf);
-				filp_close(f, NULL);
+		dom = auth_domain_find(XFS_DOMAIN);
+		pr_info("DIAG auth_domain_find(%s) = %p\n", XFS_DOMAIN, dom);
+
+		perr = kern_path(XFS_EXPORT, 0, &p);
+		pr_info("DIAG server-side kern_path(%s) = %d\n", XFS_EXPORT, perr);
+		if (!perr)
+			path_put(&p);
+
+		perr = kern_path(XFS_MNT, 0, &p);
+		pr_info("DIAG client-side kern_path(%s) = %d\n", XFS_MNT, perr);
+		if (!perr) {
+			pr_info("DIAG XFS_MNT dentry op: %ps  inode op: %ps\n",
+				p.dentry->d_op, p.dentry->d_inode ?
+				p.dentry->d_inode->i_op : NULL);
+			path_put(&p);
+		}
+
+		/*
+		 * A real round trip: LOOKUP/GETATTR on the already-existing
+		 * root, vs. the CREATE that's failing. Isolates "no RPC gets
+		 * through at all" from "reads work, writes/creates don't".
+		 */
+		{
+			struct file *rf = filp_open(XFS_MNT, O_RDONLY | O_DIRECTORY, 0);
+
+			if (IS_ERR(rf)) {
+				pr_info("DIAG open(XFS_MNT, O_DIRECTORY) failed: %ld\n",
+					PTR_ERR(rf));
 			} else {
-				pr_info("DIAG export cache open failed: %ld\n", PTR_ERR(f));
+				struct kstat st;
+				int kerr = vfs_getattr(&rf->f_path, &st,
+						       STATX_BASIC_STATS, 0);
+
+				pr_info("DIAG open(XFS_MNT, O_DIRECTORY) ok; vfs_getattr = %d",
+					kerr);
+				if (!kerr)
+					pr_info("DIAG root ino=%llu mode=%o nlink=%u\n",
+						(unsigned long long)st.ino,
+						st.mode, st.nlink);
+				filp_close(rf, NULL);
 			}
-			pos = 0;
-			f = filp_open("/proc/net/rpc/nfsd.fh/content", O_RDONLY, 0);
-			if (!IS_ERR(f)) {
-				n = kernel_read(f, buf, 2047, &pos);
-				pr_info("DIAG fh cache (%zd): %s\n", n, buf);
-				filp_close(f, NULL);
-			} else {
-				pr_info("DIAG fh cache open failed: %ld\n", PTR_ERR(f));
-			}
-			kfree(buf);
 		}
 	}
 
