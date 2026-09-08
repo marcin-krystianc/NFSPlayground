@@ -60,8 +60,6 @@ int nfs_inode_finish_partial_attr_update(const struct nfs_fattr *fattr,
 					 const struct inode *inode);
 void nfs_ooo_record(struct nfs_inode *nfsi, struct nfs_fattr *fattr);
 void nfs_set_timestamps_to_ts(struct inode *inode, struct iattr *attr);
-int nfs_find_actor(struct inode *inode, void *opaque);
-int nfs_init_locked(struct inode *inode, void *opaque);
 bool nfs_getattr_readdirplus_enable(const struct inode *inode);
 int __nfs_revalidate_inode(struct nfs_server *server, struct inode *inode);
 void nfs_inode_init_regular(struct nfs_inode *nfsi);
@@ -700,24 +698,6 @@ static void invalidate_atime_sets_only_atime(struct kunit *test)
  */
 
 /*
- * A 64-bit NFS fileid has to be folded into ino_t, which on 32-bit is
- * narrower. The fold XORs the high half in rather than truncating, so
- * two fileids differing only above 32 bits still land on different
- * inode numbers.
- */
-static void fileid_to_ino_folds_high_bits(struct kunit *test)
-{
-	u64 a = 0x1122334400000000ULL;
-	u64 b = 0x8877665500000000ULL;
-
-	KUNIT_EXPECT_NE_MSG(test, nfs_fileid_to_ino_t(a),
-			    nfs_fileid_to_ino_t(b),
-			    "fileids differing only in the high word collided");
-	/* A fileid that already fits is passed through unchanged. */
-	KUNIT_EXPECT_EQ(test, nfs_fileid_to_ino_t(0x1234ULL), (ino_t)0x1234);
-}
-
-/*
  * nfs_get_valid_attrmask() turns "which parts of the cache are invalid"
  * into "which statx fields we can answer without asking the server". Type
  * and inode number are always answerable.
@@ -925,48 +905,6 @@ static int call_update_inode(struct nfs_inode_fixture *f,
 	return ret;
 }
 
-/* A reply for a different fileid is refused and marks the inode stale. */
-static void update_inode_rejects_changed_fileid(struct kunit *test)
-{
-	struct nfs_inode_fixture *f =
-		nfs_inode_fixture(test, NFS4_CHANGE_TYPE_IS_UNDEFINED, 0, 0);
-	struct nfs_fattr fattr;
-
-	fixture_add_iostats(test, f);
-	fixture_inode(f)->i_mode = S_IFREG | 0644;
-	f->nfsi.fileid = 1000;
-
-	memset(&fattr, 0, sizeof(fattr));
-	fattr.valid = NFS_ATTR_FATTR_FILEID;
-	fattr.fileid = 2000;
-
-	KUNIT_EXPECT_EQ_MSG(test, call_update_inode(f, &fattr), -ESTALE,
-			    "attributes for a different fileid were accepted");
-	KUNIT_EXPECT_TRUE(test, test_bit(NFS_INO_STALE, &f->nfsi.flags));
-}
-
-/*
- * Unless the mismatch is explained by the mounted-on fileid, which is the
- * legitimate case at a mountpoint crossing.
- */
-static void update_inode_allows_mounted_on_fileid(struct kunit *test)
-{
-	struct nfs_inode_fixture *f =
-		nfs_inode_fixture(test, NFS4_CHANGE_TYPE_IS_UNDEFINED, 0, 0);
-	struct nfs_fattr fattr;
-
-	fixture_inode(f)->i_mode = S_IFREG | 0644;
-	f->nfsi.fileid = 1000;
-
-	memset(&fattr, 0, sizeof(fattr));
-	fattr.valid = NFS_ATTR_FATTR_FILEID | NFS_ATTR_FATTR_MOUNTED_ON_FILEID;
-	fattr.fileid = 2000;
-	fattr.mounted_on_fileid = 1000;
-
-	KUNIT_EXPECT_EQ(test, call_update_inode(f, &fattr), 0);
-	KUNIT_EXPECT_FALSE(test, test_bit(NFS_INO_STALE, &f->nfsi.flags));
-}
-
 /* A reply carrying only a mounted-on fileid is ignored, not applied. */
 static void update_inode_ignores_mounted_on_fileid_only(struct kunit *test)
 {
@@ -975,7 +913,6 @@ static void update_inode_ignores_mounted_on_fileid_only(struct kunit *test)
 	struct nfs_fattr fattr;
 
 	fixture_inode(f)->i_mode = S_IFREG | 0644;
-	f->nfsi.fileid = 1000;
 
 	memset(&fattr, 0, sizeof(fattr));
 	fattr.valid = NFS_ATTR_FATTR_MOUNTED_ON_FILEID;
@@ -997,39 +934,14 @@ static void update_inode_rejects_changed_type(struct kunit *test)
 
 	fixture_add_iostats(test, f);
 	fixture_inode(f)->i_mode = S_IFREG | 0644;
-	f->nfsi.fileid = 1000;
 
 	memset(&fattr, 0, sizeof(fattr));
-	fattr.valid = NFS_ATTR_FATTR_FILEID | NFS_ATTR_FATTR_TYPE;
-	fattr.fileid = 1000;
+	fattr.valid = NFS_ATTR_FATTR_TYPE;
 	fattr.mode = S_IFDIR | 0755;
 
 	KUNIT_EXPECT_EQ_MSG(test, call_update_inode(f, &fattr), -ESTALE,
 			    "a regular file accepted directory attributes");
 	KUNIT_EXPECT_TRUE(test, test_bit(NFS_INO_STALE, &f->nfsi.flags));
-}
-
-/* The matching case is accepted and refreshes the revalidation timestamp. */
-static void update_inode_accepts_matching_identity(struct kunit *test)
-{
-	struct nfs_inode_fixture *f =
-		nfs_inode_fixture(test, NFS4_CHANGE_TYPE_IS_UNDEFINED, 0, 0);
-	struct nfs_fattr fattr;
-
-	fixture_inode(f)->i_mode = S_IFREG | 0644;
-	f->nfsi.fileid = 1000;
-	f->nfsi.read_cache_jiffies = 0;
-
-	memset(&fattr, 0, sizeof(fattr));
-	fattr.valid = NFS_ATTR_FATTR_FILEID | NFS_ATTR_FATTR_TYPE;
-	fattr.fileid = 1000;
-	fattr.mode = S_IFREG | 0644;
-	fattr.time_start = jiffies;
-
-	KUNIT_EXPECT_EQ(test, call_update_inode(f, &fattr), 0);
-	KUNIT_EXPECT_FALSE(test, test_bit(NFS_INO_STALE, &f->nfsi.flags));
-	KUNIT_EXPECT_EQ_MSG(test, f->nfsi.read_cache_jiffies, fattr.time_start,
-			    "revalidation timestamp was not refreshed");
 }
 
 /*
@@ -1262,30 +1174,6 @@ static void refresh_inode_ignores_empty_fattr(struct kunit *test)
 }
 
 /*
- * A newer reply is routed into nfs_update_inode(), so a fileid mismatch
- * is still caught here rather than slipping through the dispatcher.
- */
-static void refresh_inode_propagates_identity_rejection(struct kunit *test)
-{
-	struct nfs_inode_fixture *f =
-		nfs_inode_fixture(test, NFS4_CHANGE_TYPE_IS_TIME_METADATA,
-				  100, 0);
-	struct nfs_fattr fattr;
-
-	fixture_add_iostats(test, f);
-	fixture_inode(f)->i_mode = S_IFREG | 0644;
-	f->nfsi.fileid = 1000;
-
-	memset(&fattr, 0, sizeof(fattr));
-	fattr.valid = NFS_ATTR_FATTR_FILEID | NFS_ATTR_FATTR_CHANGE;
-	fattr.fileid = 2000;
-	fattr.change_attr = 500;	/* newer, so it will be applied */
-
-	KUNIT_EXPECT_EQ(test, nfs_refresh_inode(fixture_inode(f), &fattr),
-			-ESTALE);
-}
-
-/*
  * nfs_check_inode_attributes()
  *
  * Called when a reply is neither newer nor older than what the inode
@@ -1317,17 +1205,15 @@ static struct nfs_inode_fixture *check_attrs_fixture(struct kunit *test,
 	inode_set_mtime_to_ts(inode, ts);
 	inode_set_ctime_to_ts(inode, ts);
 	inode_set_atime_to_ts(inode, ts);
-	f->nfsi.fileid = 1000;
 	f->nfsi.cache_validity = 0;
 
 	/* A fattr that agrees with the inode in every respect. */
 	memset(fattr, 0, sizeof(*fattr));
-	fattr->valid = NFS_ATTR_FATTR_FILEID | NFS_ATTR_FATTR_TYPE |
+	fattr->valid = NFS_ATTR_FATTR_TYPE |
 		       NFS_ATTR_FATTR_CHANGE | NFS_ATTR_FATTR_MTIME |
 		       NFS_ATTR_FATTR_CTIME | NFS_ATTR_FATTR_SIZE |
 		       NFS_ATTR_FATTR_MODE | NFS_ATTR_FATTR_NLINK |
 		       NFS_ATTR_FATTR_ATIME;
-	fattr->fileid = 1000;
 	fattr->mode = CHECK_MODE;
 	fattr->change_attr = 100;
 	fattr->mtime = ts;
@@ -1472,17 +1358,6 @@ static void check_attrs_flags_changed_atime(struct kunit *test)
 			(unsigned long)NFS_INO_INVALID_ATIME);
 }
 
-/* The identity guards are enforced here too, not only in update_inode. */
-static void check_attrs_rejects_changed_fileid(struct kunit *test)
-{
-	struct nfs_fattr fattr;
-	struct nfs_inode_fixture *f = check_attrs_fixture(test, &fattr);
-
-	fattr.fileid = 2000;
-
-	KUNIT_EXPECT_EQ(test, call_check_attrs(f, &fattr), -ESTALE);
-}
-
 static void check_attrs_rejects_changed_type(struct kunit *test)
 {
 	struct nfs_fattr fattr;
@@ -1592,8 +1467,6 @@ static void init_update_fattr(struct nfs_inode_fixture *f,
 			      struct nfs_fattr *fattr)
 {
 	memset(fattr, 0, sizeof(*fattr));
-	fattr->valid = NFS_ATTR_FATTR_FILEID;
-	fattr->fileid = f->nfsi.fileid;
 	fattr->time_start = jiffies;
 }
 
@@ -1610,7 +1483,6 @@ static struct nfs_inode_fixture *update_fixture(struct kunit *test)
 	inode_set_mtime_to_ts(inode, ts);
 	inode_set_ctime_to_ts(inode, ts);
 	inode_set_atime_to_ts(inode, ts);
-	f->nfsi.fileid = 1000;
 	f->nfsi.cache_validity = 0;
 	fixture_set_nrpages(f, 1);
 	fixture_add_iostats(test, f);
@@ -2035,167 +1907,6 @@ static void finish_partial_update_declines_when_cache_is_clean(struct kunit *tes
 			0);
 }
 
-/*
- * Inode cache matching
- *
- * nfs_find_actor() is the predicate iget5_locked() uses to decide whether
- * a cached inode is the object a reply describes. Every one of its four
- * checks is a reason to reject a candidate, and a false positive here
- * hands back the wrong inode entirely -- so each rejection is tested on
- * its own.
- *
- * The callback is pure, so it can be driven directly without going
- * anywhere near the inode cache.
- */
-
-static void find_desc_init(struct nfs_find_desc *desc, struct nfs_fh *fh,
-			   struct nfs_fattr *fattr, u64 fileid, umode_t mode)
-{
-	memset(fh, 0, sizeof(*fh));
-	fh->size = 8;
-	memset(fh->data, 0xab, fh->size);
-
-	memset(fattr, 0, sizeof(*fattr));
-	fattr->fileid = fileid;
-	fattr->mode = mode;
-
-	desc->fh = fh;
-	desc->fattr = fattr;
-}
-
-/* A candidate agreeing on fileid, type and filehandle is a match. */
-static void find_actor_matches_identical_inode(struct kunit *test)
-{
-	struct nfs_inode_fixture *f =
-		nfs_inode_fixture(test, NFS4_CHANGE_TYPE_IS_UNDEFINED, 0, 0);
-	struct nfs_find_desc desc;
-	struct nfs_fattr fattr;
-	struct nfs_fh fh;
-
-	find_desc_init(&desc, &fh, &fattr, 1000, S_IFREG | 0644);
-	fixture_inode(f)->i_mode = S_IFREG | 0644;
-	f->nfsi.fileid = 1000;
-	nfs_copy_fh(&f->nfsi.fh, &fh);
-
-	KUNIT_EXPECT_EQ(test, nfs_find_actor(fixture_inode(f), &desc), 1);
-}
-
-static void find_actor_rejects_different_fileid(struct kunit *test)
-{
-	struct nfs_inode_fixture *f =
-		nfs_inode_fixture(test, NFS4_CHANGE_TYPE_IS_UNDEFINED, 0, 0);
-	struct nfs_find_desc desc;
-	struct nfs_fattr fattr;
-	struct nfs_fh fh;
-
-	find_desc_init(&desc, &fh, &fattr, 2000, S_IFREG | 0644);
-	fixture_inode(f)->i_mode = S_IFREG | 0644;
-	f->nfsi.fileid = 1000;
-	nfs_copy_fh(&f->nfsi.fh, &fh);
-
-	KUNIT_EXPECT_EQ_MSG(test, nfs_find_actor(fixture_inode(f), &desc), 0,
-			    "an inode with a different fileid was matched");
-}
-
-static void find_actor_rejects_different_type(struct kunit *test)
-{
-	struct nfs_inode_fixture *f =
-		nfs_inode_fixture(test, NFS4_CHANGE_TYPE_IS_UNDEFINED, 0, 0);
-	struct nfs_find_desc desc;
-	struct nfs_fattr fattr;
-	struct nfs_fh fh;
-
-	find_desc_init(&desc, &fh, &fattr, 1000, S_IFDIR | 0755);
-	fixture_inode(f)->i_mode = S_IFREG | 0644;
-	f->nfsi.fileid = 1000;
-	nfs_copy_fh(&f->nfsi.fh, &fh);
-
-	KUNIT_EXPECT_EQ_MSG(test, nfs_find_actor(fixture_inode(f), &desc), 0,
-			    "a regular file was matched against a directory");
-}
-
-/*
- * Two different files on the server can share a fileid across
- * filesystems, so the filehandle is the real identity and must be
- * compared even when everything else agrees.
- */
-static void find_actor_rejects_different_filehandle(struct kunit *test)
-{
-	struct nfs_inode_fixture *f =
-		nfs_inode_fixture(test, NFS4_CHANGE_TYPE_IS_UNDEFINED, 0, 0);
-	struct nfs_find_desc desc;
-	struct nfs_fattr fattr;
-	struct nfs_fh fh;
-
-	find_desc_init(&desc, &fh, &fattr, 1000, S_IFREG | 0644);
-	fixture_inode(f)->i_mode = S_IFREG | 0644;
-	f->nfsi.fileid = 1000;
-
-	/* Same length, different contents. */
-	nfs_copy_fh(&f->nfsi.fh, &fh);
-	f->nfsi.fh.data[0] = 0x00;
-
-	KUNIT_EXPECT_EQ_MSG(test, nfs_find_actor(fixture_inode(f), &desc), 0,
-			    "inodes with different filehandles were matched");
-}
-
-/* A stale inode must never be handed back, however well it matches. */
-static void find_actor_rejects_stale_inode(struct kunit *test)
-{
-	struct nfs_inode_fixture *f =
-		nfs_inode_fixture(test, NFS4_CHANGE_TYPE_IS_UNDEFINED, 0, 0);
-	struct nfs_find_desc desc;
-	struct nfs_fattr fattr;
-	struct nfs_fh fh;
-
-	find_desc_init(&desc, &fh, &fattr, 1000, S_IFREG | 0644);
-	fixture_inode(f)->i_mode = S_IFREG | 0644;
-	f->nfsi.fileid = 1000;
-	nfs_copy_fh(&f->nfsi.fh, &fh);
-	set_bit(NFS_INO_STALE, &f->nfsi.flags);
-
-	KUNIT_EXPECT_EQ_MSG(test, nfs_find_actor(fixture_inode(f), &desc), 0,
-			    "a stale inode was reused");
-}
-
-/* nfs_init_locked() seeds a freshly allocated inode from the reply. */
-static void init_locked_seeds_identity(struct kunit *test)
-{
-	struct nfs_inode_fixture *f =
-		nfs_inode_fixture(test, NFS4_CHANGE_TYPE_IS_UNDEFINED, 0, 0);
-	struct nfs_find_desc desc;
-	struct nfs_fattr fattr;
-	struct nfs_fh fh;
-
-	find_desc_init(&desc, &fh, &fattr, 4321, S_IFDIR | 0755);
-
-	KUNIT_ASSERT_EQ(test, nfs_init_locked(fixture_inode(f), &desc), 0);
-
-	KUNIT_EXPECT_EQ(test, f->nfsi.fileid, 4321ULL);
-	KUNIT_EXPECT_EQ(test, fixture_inode(f)->i_mode,
-			(umode_t)(S_IFDIR | 0755));
-	KUNIT_EXPECT_EQ(test, nfs_compare_fh(&f->nfsi.fh, &fh), 0);
-}
-
-/*
- * An inode seeded by nfs_init_locked() must then be recognised by
- * nfs_find_actor() using the same descriptor. If these two disagreed the
- * cache would miss on every lookup and allocate endlessly.
- */
-static void init_locked_result_is_findable(struct kunit *test)
-{
-	struct nfs_inode_fixture *f =
-		nfs_inode_fixture(test, NFS4_CHANGE_TYPE_IS_UNDEFINED, 0, 0);
-	struct nfs_find_desc desc;
-	struct nfs_fattr fattr;
-	struct nfs_fh fh;
-
-	find_desc_init(&desc, &fh, &fattr, 4321, S_IFREG | 0644);
-
-	KUNIT_ASSERT_EQ(test, nfs_init_locked(fixture_inode(f), &desc), 0);
-	KUNIT_EXPECT_EQ_MSG(test, nfs_find_actor(fixture_inode(f), &desc), 1,
-			    "an inode just seeded from a reply did not match it");
-}
 
 /*
  * readdirplus heuristics
@@ -2264,15 +1975,13 @@ static void readdirplus_disabled_with_short_attr_timeout(struct kunit *test)
 
 static int getattr_result;
 static int getattr_calls;
-static u64 getattr_fileid;
 
 static int stub_getattr(struct nfs_server *server, struct nfs_fh *fh,
 			struct nfs_fattr *fattr, struct inode *inode)
 {
 	getattr_calls++;
 	if (getattr_result == 0) {
-		fattr->valid = NFS_ATTR_FATTR_FILEID | NFS_ATTR_FATTR_TYPE;
-		fattr->fileid = getattr_fileid;
+		fattr->valid = NFS_ATTR_FATTR_TYPE;
 		fattr->mode = inode->i_mode;
 		fattr->time_start = jiffies;
 	}
@@ -2286,7 +1995,6 @@ static struct nfs_inode_fixture *revalidate_fixture(struct kunit *test,
 
 	getattr_result = result;
 	getattr_calls = 0;
-	getattr_fileid = f->nfsi.fileid;
 	f->rpc_ops.getattr = stub_getattr;
 
 	return f;
@@ -3704,7 +3412,6 @@ static struct kunit_suite nfs_zap_suite = {
 };
 
 static struct kunit_case nfs_helper_cases[] = {
-	KUNIT_CASE(fileid_to_ino_folds_high_bits),
 	KUNIT_CASE(valid_attrmask_reports_everything_when_cache_is_good),
 	KUNIT_CASE(valid_attrmask_drops_invalidated_fields),
 	KUNIT_CASE(valid_attrmask_pairs_uid_and_gid),
@@ -3735,11 +3442,8 @@ static struct kunit_suite nfs_alloc_suite = {
 };
 
 static struct kunit_case nfs_update_inode_cases[] = {
-	KUNIT_CASE(update_inode_rejects_changed_fileid),
-	KUNIT_CASE(update_inode_allows_mounted_on_fileid),
 	KUNIT_CASE(update_inode_ignores_mounted_on_fileid_only),
 	KUNIT_CASE(update_inode_rejects_changed_type),
-	KUNIT_CASE(update_inode_accepts_matching_identity),
 	{}
 };
 
@@ -3768,7 +3472,6 @@ static struct kunit_suite nfs_wcc_suite = {
 
 static struct kunit_case nfs_refresh_cases[] = {
 	KUNIT_CASE(refresh_inode_ignores_empty_fattr),
-	KUNIT_CASE(refresh_inode_propagates_identity_rejection),
 	{}
 };
 
@@ -3787,7 +3490,6 @@ static struct kunit_case nfs_check_attrs_cases[] = {
 	KUNIT_CASE(check_attrs_maps_owner_change_to_other),
 	KUNIT_CASE(check_attrs_flags_changed_nlink),
 	KUNIT_CASE(check_attrs_flags_changed_atime),
-	KUNIT_CASE(check_attrs_rejects_changed_fileid),
 	KUNIT_CASE(check_attrs_rejects_changed_type),
 	KUNIT_CASE(check_attrs_skips_everything_when_delegated),
 	{}
@@ -3866,22 +3568,6 @@ static struct kunit_case nfs_partial_cases[] = {
 static struct kunit_suite nfs_partial_suite = {
 	.name		= "nfs-inode-partial-update",
 	.test_cases	= nfs_partial_cases,
-};
-
-static struct kunit_case nfs_find_actor_cases[] = {
-	KUNIT_CASE(find_actor_matches_identical_inode),
-	KUNIT_CASE(find_actor_rejects_different_fileid),
-	KUNIT_CASE(find_actor_rejects_different_type),
-	KUNIT_CASE(find_actor_rejects_different_filehandle),
-	KUNIT_CASE(find_actor_rejects_stale_inode),
-	KUNIT_CASE(init_locked_seeds_identity),
-	KUNIT_CASE(init_locked_result_is_findable),
-	{}
-};
-
-static struct kunit_suite nfs_find_actor_suite = {
-	.name		= "nfs-inode-cache-match",
-	.test_cases	= nfs_find_actor_cases,
 };
 
 static struct kunit_case nfs_readdirplus_cases[] = {
@@ -4068,7 +3754,6 @@ kunit_test_suites(&nfs_attr_cmp_suite,
 		  &nfs_setattr_suite,
 		  &nfs_timestamps_suite,
 		  &nfs_partial_suite,
-		  &nfs_find_actor_suite,
 		  &nfs_readdirplus_suite,
 		  &nfs_revalidate_suite,
 		  &nfs_revalidate_gate_suite,
