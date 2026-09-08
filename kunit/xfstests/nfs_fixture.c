@@ -54,6 +54,8 @@
 #include <linux/rtnetlink.h>
 #include <net/net_namespace.h>
 #include <linux/sunrpc/svc.h>
+#include <linux/sunrpc/svc_xprt.h>
+#include <linux/sunrpc/svcsock.h>
 #include <linux/sunrpc/cache.h>
 #include <linux/statfs.h>
 #include <linux/xattr.h>
@@ -655,12 +657,42 @@ static int xfs_start_nfsd(struct net *net)
 	mutex_lock(&nfsd_mutex);
 	/*
 	 * v4 only: v2/v3 would pull in lockd and rpcbind registration,
-	 * neither of which exists here. nfsd_startup_net() then creates the
-	 * default TCP+UDP listeners on port 2049 itself (nfsd_init_socks).
+	 * neither of which exists here. Cleared before anything else touches
+	 * nn, on purpose: nfsd_create_serv() below calls
+	 * nfsd_reset_versions(), which only resets to the (v2/v3-enabled)
+	 * defaults when NO version has been touched yet -- so this must run
+	 * first, or it is a no-op and v3 gets registered anyway.
 	 */
 	nfsd_vers(nn, 2, NFSD_CLEAR);
 	nfsd_vers(nn, 3, NFSD_CLEAR);
-	err = nfsd_svc(1, nthreads, net, current_cred(), NULL);
+	/*
+	 * Through v6.12.57, nfsd_startup_net() created the default TCP+UDP
+	 * listeners on port 2049 itself (nfsd_init_socks()). That auto-create
+	 * is gone on current mainline: nfsd_startup_net() now requires
+	 * sv_permsocks already non-empty and fails with "no listeners
+	 * configured" otherwise, so the listeners are created explicitly
+	 * here instead, mirroring fs/nfsd/nfsctl.c's __write_ports_addxprt()
+	 * (nfsd_create_serv() then svc_xprt_create() per transport). Safe on
+	 * both: nfsd_create_serv() is idempotent, and nfsd_svc() below still
+	 * finds sv_permsocks already populated on a kernel that would have
+	 * created it internally anyway, so nfsd_init_socks()'s own check
+	 * (where it still exists) just no-ops.
+	 */
+	err = nfsd_create_serv(net);
+	/*
+	 * svc_xprt_create() returns the local xprt port (e.g. 2049) on
+	 * success, not 0 -- gated on >= 0, not on truthiness, or a
+	 * successful create reads as failure here and everything past it
+	 * silently never runs.
+	 */
+	if (err >= 0)
+		err = svc_xprt_create(nn->nfsd_serv, "udp", net, PF_INET,
+				      2049, SVC_SOCK_DEFAULTS, current_cred());
+	if (err >= 0)
+		err = svc_xprt_create(nn->nfsd_serv, "tcp", net, PF_INET,
+				      2049, SVC_SOCK_DEFAULTS, current_cred());
+	if (err >= 0)
+		err = nfsd_svc(1, nthreads, net, current_cred(), NULL);
 	mutex_unlock(&nfsd_mutex);
 	if (err < 0)
 		return err;
