@@ -15,13 +15,22 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SRC_DIR="${SRC_DIR:-${REPO_ROOT}}"
 
 # --- pins ---------------------------------------------------------------
-# Bump these deliberately; both are verified after fetching.
+# Bump LINUX_REF_PINNED and LINUX_SHA together, deliberately.
 
 # The baseline VAST NFS 4.5.x forks from. Not a guess: vastnfs scripts/BASE
 # says v6.12.57, and scripts/sync-from-linux.sh refuses any other checkout.
-# It is a stable tag, so mainline (torvalds) does not contain it.
+# It is a stable tag, so mainline (torvalds) does not contain it -- this
+# repo's URL is the "stable" tree instead, a superset with both the vX.Y.Z
+# tags and a master tracking mainline, so kunit CI's matrix (see
+# .github/workflows/kunit.yml) can request either by ref alone.
+#
+# LINUX_REF is overridable; the SHA pin below is only checked when it's
+# still this default, since a moving ref (master) has no fixed SHA.
+# ponytail: switching LINUX_REF against an already-cloned ./linux does not
+# re-fetch or re-checkout it (see fetch_linux) -- `rm -rf ./linux` first.
 LINUX_URL="https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git"
-LINUX_REF="v6.12.57"
+LINUX_REF_PINNED="v6.12.57"
+LINUX_REF="${LINUX_REF:-$LINUX_REF_PINNED}"
 LINUX_SHA="8a243ecde1f6447b8e237f2c1c67c0bb67d16d67"
 # Only the subtrees VAST replaces. A full mainline clone is ~8 GB; this is
 # ~270 MB of git data and a ~24 MB working tree.
@@ -76,13 +85,18 @@ fetch_linux() {
         git -C "$dir" sparse-checkout set "${LINUX_PATHS[@]}"
     fi
 
-    [ "$(git -C "$dir" rev-parse HEAD)" = "$LINUX_SHA" ] ||
-        die "linux: HEAD is not ${LINUX_SHA}"
+    local head_sha
+    head_sha="$(git -C "$dir" rev-parse HEAD)"
+    if [ "$LINUX_REF" = "$LINUX_REF_PINNED" ]; then
+        [ "$head_sha" = "$LINUX_SHA" ] || die "linux: HEAD is not ${LINUX_SHA}"
+    else
+        warn "linux: ${LINUX_REF} is a floating ref, not the pinned ${LINUX_REF_PINNED} -- not verified"
+    fi
 
     if [ "${LINUX_FULL:-0}" = "1" ]; then
-        log "linux: ${LINUX_REF} ${LINUX_SHA:0:12} ok, full tree"
+        log "linux: ${LINUX_REF} ${head_sha:0:12} ok, full tree"
     else
-        log "linux: ${LINUX_REF} ${LINUX_SHA:0:12} ok, $(git -C "$dir" sparse-checkout list | wc -l) paths"
+        log "linux: ${LINUX_REF} ${head_sha:0:12} ok, $(git -C "$dir" sparse-checkout list | wc -l) paths"
     fi
 }
 

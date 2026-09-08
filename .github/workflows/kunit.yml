@@ -23,7 +23,14 @@ on:
 
 jobs:
   kunit:
+    name: kunit (linux ${{ matrix.linux_ref }})
     runs-on: ubuntu-latest
+    # master can fail before any test runs: run-sunrpc-kunit.sh exposes
+    # static kernel functions by name, and upstream can rename one.
+    strategy:
+      fail-fast: false
+      matrix:
+        linux_ref: [v6.12.57, master]
 
     steps:
       - uses: actions/checkout@v4
@@ -42,15 +49,20 @@ jobs:
       # and the default sparse checkout (fs/nfs, net/sunrpc and friends) has
       # no scripts/, arch/um, init/, kernel/, mm/ or lib/. Roughly 1.7 GB,
       # re-fetched on every run since the tree is not cached.
+      #
       - name: Fetch the kernel tree
+        env:
+          LINUX_REF: ${{ matrix.linux_ref }}
         run: LINUX_FULL=1 bash scripts/fetch-sources.sh linux
 
-      # CONFIG_UBSAN=n is deliberate. With UBSAN on, this kernel reports two
-      # misaligned accesses in kernel/exit.c:774, which are pre-existing in
+      # CONFIG_UBSAN=n is deliberate. With UBSAN on, the pinned kernel reports
+      # two misaligned accesses in kernel/exit.c:774, pre-existing in
       # v6.12.57 under UML and unrelated to anything in kunit/. kunit.py
       # attributes them to whichever test happened to be running, so they
-      # surface as two failures that move around between runs. The kernel is
-      # pinned, so this only needs revisiting when the pin is bumped.
+      # surface as two failures that move around between runs. Applied to
+      # both matrix legs uniformly: whether the same misalignment still
+      # exists on current mainline is not tracked, and UBSAN's own findings
+      # are not what either leg is testing for.
       #
       # --json needs the `=` form: its value is optional (nargs='?'), so
       # `--json path` leaves --json empty and path is taken as the positional
@@ -89,7 +101,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: kunit-results
+          name: kunit-results-${{ matrix.linux_ref }}
           path: |
             kunit.log
             kunit-results.json
