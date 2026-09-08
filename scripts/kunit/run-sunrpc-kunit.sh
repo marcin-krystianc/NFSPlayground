@@ -226,6 +226,10 @@ UNSTATIC=(
     "fs/nfsd/export.c:int:expkey_parse"
     "fs/nfsd/export.c:int:svc_export_parse"
     "net/sunrpc/svcauth_unix.c:int:ip_map_parse"
+    # Public via fs/nfsd/state.h through v6.12.57; became file-private on
+    # current mainline. Listed unconditionally: on a tree where it is still
+    # public the substitution below simply finds nothing static to drop.
+    "fs/nfsd/nfs4state.c:void:nfsd4_end_grace"
 )
 
 for entry in "${UNSTATIC[@]}"; do
@@ -268,6 +272,28 @@ quote_module_import_ns=0
 grep -q '__stringify(ns)' "${LINUX_DIR}/include/linux/module.h" ||
     quote_module_import_ns=1
 
+# fs/namei.c's do_*() syscall bodies were renamed filename_*() upstream
+# after v6.12.57 -- same file, same signatures, still declared in
+# fs/internal.h (which the fixture already includes), just under the new
+# name. The xfstests fixture calls six of them under the old names; each
+# is checked against the actual tree and renamed in the copy only if
+# needed, so a tree with a partial migration is still handled correctly.
+NAMEI_RENAMES=(
+    do_mkdirat:filename_mkdirat
+    do_rmdir:filename_rmdir
+    do_unlinkat:filename_unlinkat
+    do_renameat2:filename_renameat2
+    do_linkat:filename_linkat
+    do_symlinkat:filename_symlinkat
+)
+namei_sed_args=()
+for pair in "${NAMEI_RENAMES[@]}"; do
+    old="${pair%%:*}"
+    new="${pair#*:}"
+    grep -qw "$old" "${LINUX_DIR}/fs/namei.c" ||
+        namei_sed_args+=(-e "s/\\b${old}\\b/${new}/g")
+done
+
 for entry in "${TESTS[@]}"; do
     IFS=: read -r stem subdir symbol depends description <<< "$entry"
     dir="${LINUX_DIR}/${subdir}"
@@ -284,6 +310,9 @@ for entry in "${TESTS[@]}"; do
         sed -i \
             's/^MODULE_IMPORT_NS(EXPORTED_FOR_KUNIT_TESTING);$/MODULE_IMPORT_NS("EXPORTED_FOR_KUNIT_TESTING");/' \
             "${dir}/${flat}.c"
+    fi
+    if [ "$stem" = "xfstests/nfs_fixture" ] && [ ${#namei_sed_args[@]} -gt 0 ]; then
+        sed -i "${namei_sed_args[@]}" "${dir}/${flat}.c"
     fi
     if [ -f "${REPO_ROOT}/kunit/${stem}.h" ]; then
         cp "${REPO_ROOT}/kunit/${stem}.h" "${dir}/${flat}.h"
