@@ -80,7 +80,7 @@ jobs:
       - name: Run the KUnit suites
         shell: bash
         env:
-          FILTER_GLOB: ${{ inputs.filter_glob || 'sunrpc-addr-*' }}
+          FILTER_GLOB: ${{ inputs.filter_glob || '*' }}
           EXTRA_ARGS: ${{ inputs.extra_args }}
         run: |
           set -o pipefail
