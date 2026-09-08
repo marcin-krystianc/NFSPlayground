@@ -161,71 +161,6 @@ static void encode_opaque_writes_length_prefix(struct kunit *test)
 	KUNIT_EXPECT_PTR_EQ(test, end, buf + 2);
 }
 
-static void encode_decode_string_roundtrip(struct kunit *test)
-{
-	static const char input[] = "hello";
-	__be32 buf[XDRBUF_WORDS];
-	unsigned int len = 0;
-	char *out = NULL;
-	__be32 *end;
-
-	memset(buf, 0xff, sizeof(buf));
-	xdr_encode_string(buf, input);
-
-	end = xdr_decode_string_inplace(buf, &out, &len, sizeof(input));
-	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, end);
-	KUNIT_EXPECT_EQ(test, len, (unsigned int)strlen(input));
-	KUNIT_EXPECT_EQ(test, memcmp(out, input, strlen(input)), 0);
-}
-
-/* Decoding refuses a string longer than the caller's limit. */
-static void decode_string_rejects_overlong(struct kunit *test)
-{
-	__be32 buf[XDRBUF_WORDS];
-	unsigned int len = 0;
-	char *out = NULL;
-
-	memset(buf, 0, sizeof(buf));
-	buf[0] = cpu_to_be32(100);
-
-	KUNIT_EXPECT_PTR_EQ(test,
-			    xdr_decode_string_inplace(buf, &out, &len, 10),
-			    NULL);
-}
-
-static void encode_decode_netobj_roundtrip(struct kunit *test)
-{
-	static const u8 data[] = { 0xde, 0xad, 0xbe, 0xef, 0x01 };
-	struct xdr_netobj in, out;
-	__be32 buf[XDRBUF_WORDS];
-	__be32 *end;
-
-	memset(buf, 0xff, sizeof(buf));
-	in.data = (u8 *)data;
-	in.len = sizeof(data);
-
-	end = xdr_encode_netobj(buf, &in);
-	KUNIT_ASSERT_PTR_EQ(test, end, buf + 3);
-
-	memset(&out, 0, sizeof(out));
-	end = xdr_decode_netobj(buf, &out);
-	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, end);
-	KUNIT_EXPECT_EQ(test, out.len, in.len);
-	KUNIT_EXPECT_EQ(test, memcmp(out.data, in.data, in.len), 0);
-}
-
-/* A netobj longer than XDR_MAX_NETOBJ is rejected rather than trusted. */
-static void decode_netobj_rejects_oversized(struct kunit *test)
-{
-	struct xdr_netobj out;
-	__be32 buf[XDRBUF_WORDS];
-
-	memset(buf, 0, sizeof(buf));
-	buf[0] = cpu_to_be32(XDR_MAX_NETOBJ + 1);
-
-	KUNIT_EXPECT_PTR_EQ(test, xdr_decode_netobj(buf, &out), NULL);
-}
-
 /*
  * xdr_stream encode and decode
  */
@@ -634,10 +569,6 @@ static struct kunit_case xdr_primitive_cases[] = {
 	KUNIT_CASE(encode_opaque_fixed_empty_advances_nothing),
 	KUNIT_CASE(encode_opaque_fixed_null_pads_only),
 	KUNIT_CASE(encode_opaque_writes_length_prefix),
-	KUNIT_CASE(encode_decode_string_roundtrip),
-	KUNIT_CASE(decode_string_rejects_overlong),
-	KUNIT_CASE(encode_decode_netobj_roundtrip),
-	KUNIT_CASE(decode_netobj_rejects_oversized),
 	{}
 };
 

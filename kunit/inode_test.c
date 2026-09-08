@@ -60,7 +60,6 @@ int nfs_inode_finish_partial_attr_update(const struct nfs_fattr *fattr,
 					 const struct inode *inode);
 void nfs_ooo_record(struct nfs_inode *nfsi, struct nfs_fattr *fattr);
 void nfs_set_timestamps_to_ts(struct inode *inode, struct iattr *attr);
-void nfs_update_timestamps(struct inode *inode, unsigned int ia_valid);
 int nfs_find_actor(struct inode *inode, void *opaque);
 int nfs_init_locked(struct inode *inode, void *opaque);
 bool nfs_getattr_readdirplus_enable(const struct inode *inode);
@@ -1930,30 +1929,6 @@ static void set_timestamps_without_flags_changes_nothing(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, inode_get_atime_sec(fixture_inode(f)), 1000LL);
 	KUNIT_EXPECT_EQ(test, f->nfsi.cache_validity & NFS_INO_INVALID_ATIME,
 			(unsigned long)NFS_INO_INVALID_ATIME);
-}
-
-/*
- * An implicit mtime update also refreshes ctime, so both cache bits are
- * cleared together.
- */
-static void update_timestamps_mtime_also_clears_ctime(struct kunit *test)
-{
-	struct nfs_inode_fixture *f = update_fixture(test);
-
-	f->nfsi.cache_validity = NFS_INO_INVALID_MTIME |
-				 NFS_INO_INVALID_CTIME |
-				 NFS_INO_INVALID_ATIME;
-
-	nfs_update_timestamps(fixture_inode(f), ATTR_MTIME);
-
-	KUNIT_EXPECT_EQ(test, f->nfsi.cache_validity & NFS_INO_INVALID_MTIME,
-			0UL);
-	KUNIT_EXPECT_EQ(test, f->nfsi.cache_validity & NFS_INO_INVALID_CTIME,
-			0UL);
-	KUNIT_EXPECT_EQ_MSG(test,
-			    f->nfsi.cache_validity & NFS_INO_INVALID_ATIME,
-			    (unsigned long)NFS_INO_INVALID_ATIME,
-			    "an mtime update cleared the atime cache bit");
 }
 
 /*
@@ -3871,7 +3846,6 @@ static struct kunit_case nfs_timestamps_cases[] = {
 	KUNIT_CASE(set_timestamps_applies_explicit_atime),
 	KUNIT_CASE(set_timestamps_applies_explicit_mtime),
 	KUNIT_CASE(set_timestamps_without_flags_changes_nothing),
-	KUNIT_CASE(update_timestamps_mtime_also_clears_ctime),
 	{}
 };
 

@@ -146,7 +146,6 @@ UNSTATIC=(
     "fs/nfs/inode.c:int:nfs_update_inode"
     "fs/nfs/inode.c:void:nfs_wcc_update_inode"
     "fs/nfs/inode.c:int:nfs_check_inode_attributes"
-    "fs/nfs/inode.c:void:nfs_update_timestamps"
     "fs/nfs/inode.c:int:nfs_find_actor"
     "fs/nfs/inode.c:int:nfs_init_locked"
     "fs/nfs/inode.c:bool:nfs_getattr_readdirplus_enable"
