@@ -860,6 +860,22 @@ static int xfs_bringup(void)
 				}
 			}
 		}
+
+		/* The exact real probe call: same path, same flags. */
+		{
+			struct file *pf = filp_open(XFS_MNT "/probe",
+						    O_WRONLY | O_CREAT | O_TRUNC,
+						    0644);
+
+			if (IS_ERR(pf)) {
+				pr_info("DIAG exact-probe create failed: %ld\n",
+					PTR_ERR(pf));
+			} else {
+				pr_info("DIAG exact-probe create succeeded\n");
+				filp_close(pf, NULL);
+				xfs_unlink(XFS_MNT "/probe");
+			}
+		}
 	}
 
 	return 0;
