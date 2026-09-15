@@ -694,6 +694,60 @@ run produces no totals line at all. When that happens, re-run; if a specific
 result is needed, a filtered run (`kunit.py ... "xfstests/generic/04*"`)
 completes reliably.
 
+### generic/258 fails against current mainline (not fixed, not a kunit artefact)
+
+`xfstests/generic/258.c` sets a file's atime/mtime to a value before the
+epoch (`-315593940`, Jan 1 1960) and checks it survives both through the
+client and read cold from the server's own copy. It **passes 27/27 with
+everything else against the pinned `v6.12.57`** and **fails only against
+current mainline** (checked on 7.3-rc3/7.3-rc4).
+
+Root cause: mainline added an NFSv4.2 client optimization -- delegated
+timestamps -- absent from `v6.12.57`. When the client holds a write
+delegation, `utimes()` is sent as a `SETATTR` carrying
+`FATTR4_WORD2_TIME_DELEG_ACCESS`/`_MODIFY` instead of the plain
+`TIME_ACCESS_SET`/`TIME_MODIFY_SET` bits, and the client updates its own
+cached attributes optimistically without waiting for the server. Server-side,
+`nfsd4_setattr()` -> `vet_deleg_attrs()` -> `nfsd4_vet_deleg_time()`
+(`fs/nfsd/nfs4state.c`) enforces the protocol's forward-only rule for
+delegated timestamps ("when the time presented is before the original time,
+the update is ignored") by silently stripping `ATTR_ATIME`/`ATTR_MTIME` from
+the `SETATTR` and still returning `NFS4_OK`. Since 1960 is before the file's
+just-set creation-time timestamp, the update is always in the past relative
+to "original," so it's always dropped. The client's own view stays correct
+(it never re-verifies against the server for an attribute it believes it
+owns via delegation); the server's real inode is untouched. Confirmed by
+instrumenting `nfsd4_setattr()`/`nfsd_setattr()` directly: the SETATTR
+compound arrives with `bmval2=0x300000` (bits 20+21, exactly
+`TIME_DELEG_ACCESS`+`TIME_DELEG_MODIFY`), and `nfsd_setattr()` -- the
+function that actually calls `notify_change()` on the real inode -- is never
+reached.
+
+**This is real upstream kernel behavior, reachable from real xfstests, not
+a kunit-only artefact** -- it was reproduced by hand against a genuine
+mainline-built (Ubuntu mainline-PPA `7.3.0-070300rc3`) kernel's inbox
+`nfs`/`nfsd` modules, served over a real (docker-bridge) NFS mount, with no
+VAST NFS or kunit/UML involved. But it did **not** reproduce reliably there:
+a full `scripts/00-run-xfstests-on-vm-and-docker.sh generic/258` run passed
+outright (verified server-side via the real test's own `_test_cycle_mount`
+remount), while several manual repros of the same open+write+utimes sequence
+failed the same way our port does, and one attempt just hung. The kunit
+loopback fixture removes the race entirely -- client and server share one
+kernel with no network latency, so `OPEN` and the following `SETATTR` are
+as close to synchronous as this mechanism gets, and it fails every time. A
+real network apparently introduces enough jitter in when the delegation is
+actually in hand that it goes either way. Not resolved: the exact trigger
+(what decides whether the client has committed to using the delegation
+before the `SETATTR` goes out) wasn't pinned down beyond "a real timing
+race no in-kernel loopback has."
+
+Status: **left failing**, not patched around. A discussed-but-unimplemented
+fix for the kunit port specifically: give `generic/258` its own private
+client mount at `vers=4.1` (delegated timestamps are gated behind
+`minorversion > 1` in `fs/nfs/nfs4proc.c`'s `_nfs4_server_capabilities()`),
+leaving the shared `vers=4.2` fixture mount untouched for everything else
+that needs 4.2 features.
+
 ### A note on green results and kernel logs
 
 generic/032's background syncer originally called `sync_filesystem()` without
