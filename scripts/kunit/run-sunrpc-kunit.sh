@@ -314,6 +314,20 @@ for entry in "${TESTS[@]}"; do
     if [ "$stem" = "xfstests/nfs_fixture" ] && [ ${#namei_sed_args[@]} -gt 0 ]; then
         sed -i "${namei_sed_args[@]}" "${dir}/${flat}.c"
     fi
+    # KUnit runs each test case's body in its own fresh kthread, which does
+    # not share suite_init()'s fs_struct/root -- see xfstests_nfs_case_init()
+    # in nfs_fixture.c and "The per-test-case thread" in docs/kunit-sunrpc.md.
+    # Every xfstests port (everything but nfs_fixture itself, which defines
+    # no suite) needs its kunit_suite wired to rebind before each case.
+    case "$stem" in
+    xfstests/nfs_fixture) ;;
+    xfstests/*)
+        grep -q '\.init\s*=' "${dir}/${flat}.c" ||
+            sed -i \
+                's/^\(\s*\)\.test_cases\(\s*\)=/\1.init\2= xfstests_nfs_case_init,\n\1.test_cases\2=/' \
+                "${dir}/${flat}.c"
+        ;;
+    esac
     if [ -f "${REPO_ROOT}/kunit/${stem}.h" ]; then
         cp "${REPO_ROOT}/kunit/${stem}.h" "${dir}/${flat}.h"
     fi

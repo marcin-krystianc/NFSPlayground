@@ -57,11 +57,11 @@
 #include <linux/sunrpc/svc_xprt.h>
 #include <linux/sunrpc/svcsock.h>
 #include <linux/sunrpc/cache.h>
-#include <linux/sunrpc/svcauth.h>	/* ponytail DIAG: auth_domain_find */
 #include <linux/statfs.h>
 #include <linux/xattr.h>
 #include <linux/filelock.h>
 #include <linux/cred.h>
+#include <linux/fs_struct.h>	/* set_fs_root/set_fs_pwd, see xfstests_nfs_case_init() */
 #include <linux/capability.h>
 #include <linux/uidgid.h>
 
@@ -453,6 +453,9 @@ int xfs_posix_lock(struct file *f, unsigned char type, loff_t start,
 static DEFINE_MUTEX(xfs_fixture_lock);
 static int xfs_fixture_refs;
 static char xfs_export_mount_opts[64] = XFS_EXPORT_OPTS_DEFAULT;
+/* The bring-up thread's root, captured by xfs_bringup(); see
+ * xfstests_nfs_case_init(). */
+static struct path xfs_bringup_root;
 
 void xfstests_nfs_export_opts(const char *opts)
 {
@@ -791,93 +794,31 @@ static int xfs_bringup(void)
 	}
 	xfs_env.client_mounted = true;
 
-	/* ponytail: temporary diagnostic, remove before merge. */
-	{
-		struct auth_domain *dom;
-		struct path p;
-		int perr;
+	/*
+	 * KUnit runs each test case's body in its own fresh kthread
+	 * (lib/kunit/try_catch.c), spawned fresh per case and *not* sharing
+	 * this thread's fs_struct/root. On current mainline that kthread's
+	 * root never saw the mkdir/mount calls above, so the very first path
+	 * lookup a test makes under XFS_MNT fails with ENOENT before ever
+	 * reaching NFS code -- see docs/kunit-sunrpc.md. Every suite wires
+	 * xfstests_nfs_case_init() in as .init (run-sunrpc-kunit.sh adds it
+	 * automatically) so each fresh test-case thread rebinds to this
+	 * thread's root before the test body runs.
+	 */
+	if (xfs_bringup_root.dentry)
+		path_put(&xfs_bringup_root);
+	xfs_bringup_root = current->fs->root;
+	path_get(&xfs_bringup_root);
 
-		dom = auth_domain_find(XFS_DOMAIN);
-		pr_info("DIAG auth_domain_find(%s) = %p\n", XFS_DOMAIN, dom);
+	return 0;
+}
 
-		perr = kern_path(XFS_EXPORT, 0, &p);
-		pr_info("DIAG server-side kern_path(%s) = %d\n", XFS_EXPORT, perr);
-		if (!perr)
-			path_put(&p);
-
-		perr = kern_path(XFS_MNT, 0, &p);
-		pr_info("DIAG client-side kern_path(%s) = %d\n", XFS_MNT, perr);
-		if (!perr) {
-			pr_info("DIAG XFS_MNT dentry op: %ps  inode op: %ps\n",
-				p.dentry->d_op, p.dentry->d_inode ?
-				p.dentry->d_inode->i_op : NULL);
-			path_put(&p);
-		}
-
-		/*
-		 * A real round trip: LOOKUP/GETATTR on the already-existing
-		 * root, vs. the CREATE that's failing. Isolates "no RPC gets
-		 * through at all" from "reads work, writes/creates don't".
-		 */
-		{
-			struct file *rf = filp_open(XFS_MNT, O_RDONLY | O_DIRECTORY, 0);
-
-			if (IS_ERR(rf)) {
-				pr_info("DIAG open(XFS_MNT, O_DIRECTORY) failed: %ld\n",
-					PTR_ERR(rf));
-			} else {
-				struct kstat st;
-				int kerr = vfs_getattr(&rf->f_path, &st,
-						       STATX_BASIC_STATS, 0);
-
-				pr_info("DIAG open(XFS_MNT, O_DIRECTORY) ok; vfs_getattr = %d",
-					kerr);
-				if (!kerr)
-					pr_info("DIAG root ino=%llu mode=%o nlink=%u\n",
-						(unsigned long long)st.ino,
-						st.mode, st.nlink);
-				filp_close(rf, NULL);
-			}
-		}
-
-		/* Two CREATE attempts back to back: transient vs. persistent. */
-		{
-			int i;
-
-			for (i = 0; i < 2; i++) {
-				struct file *cf = filp_open(XFS_MNT "/diagprobe",
-							    O_WRONLY | O_CREAT | O_EXCL,
-							    0644);
-
-				if (IS_ERR(cf)) {
-					pr_info("DIAG create attempt %d failed: %ld\n",
-						i, PTR_ERR(cf));
-				} else {
-					pr_info("DIAG create attempt %d succeeded\n", i);
-					filp_close(cf, NULL);
-					xfs_unlink(XFS_MNT "/diagprobe");
-					break;
-				}
-			}
-		}
-
-		/* The exact real probe call: same path, same flags. */
-		{
-			struct file *pf = filp_open(XFS_MNT "/probe",
-						    O_WRONLY | O_CREAT | O_TRUNC,
-						    0644);
-
-			if (IS_ERR(pf)) {
-				pr_info("DIAG exact-probe create failed: %ld\n",
-					PTR_ERR(pf));
-			} else {
-				pr_info("DIAG exact-probe create succeeded\n");
-				filp_close(pf, NULL);
-				xfs_unlink(XFS_MNT "/probe");
-			}
-		}
+int xfstests_nfs_case_init(struct kunit *test)
+{
+	if (xfs_bringup_root.dentry) {
+		set_fs_root(current->fs, &xfs_bringup_root);
+		set_fs_pwd(current->fs, &xfs_bringup_root);
 	}
-
 	return 0;
 }
 
@@ -913,6 +854,10 @@ static void xfs_teardown(void)
 	/* a suite-specific export size applies to one bring-up only */
 	strscpy(xfs_export_mount_opts, XFS_EXPORT_OPTS_DEFAULT,
 		sizeof(xfs_export_mount_opts));
+	if (xfs_bringup_root.dentry) {
+		path_put(&xfs_bringup_root);
+		xfs_bringup_root = (struct path) { };
+	}
 }
 
 int xfs_remount_client(bool ro)

@@ -25,6 +25,17 @@ void xfstests_nfs_put(void);
 bool xfstests_nfs_mounted(void);
 
 /*
+ * Per-test-case fixup: KUnit runs each test case's body in its own fresh
+ * kthread (lib/kunit/try_catch.c), which does not share suite_init()'s
+ * fs_struct/root -- on current mainline that leaves the fresh thread unable
+ * to see anything xfstests_nfs_get()'s bring-up mounted, so its first path
+ * lookup under XFS_MNT fails with ENOENT before ever reaching NFS. Wired in
+ * as every suite's .init by run-sunrpc-kunit.sh; see docs/kunit-sunrpc.md.
+ */
+struct kunit;
+int xfstests_nfs_case_init(struct kunit *test);
+
+/*
  * Override the tmpfs export's mount options for the NEXT bring-up (the
  * fixture re-mounts per suite). The ENOSPC ports use this to get a small
  * filesystem; everyone else gets the default. Reset to the default at
