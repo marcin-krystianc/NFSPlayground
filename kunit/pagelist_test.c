@@ -595,6 +595,21 @@ static unsigned int coalesce(struct coalesce_fixture *f)
 	return nfs_coalesce_size(&f->prev, &f->req, &f->desc);
 }
 
+/*
+ * Points the fixture's inode at its lock context the way the real lock
+ * acquisition path does: locks_get_lock_context() (fs/locks.c) sets
+ * IOP_FLCTX after publishing i_flctx, and locks_inode_context() -- on
+ * kernels that have the flag, unlike the v6.12.57 pin -- refuses to trust
+ * i_flctx without it.
+ */
+static void coalesce_fixture_set_flctx(struct coalesce_fixture *f)
+{
+	f->inode.i_flctx = &f->flctx;
+#ifdef IOP_FLCTX
+	f->inode.i_opflags |= IOP_FLCTX;
+#endif
+}
+
 /* The baseline the other tests perturb, and a check that it really passes. */
 static void matching_requests_reach_pg_test(struct kunit *test)
 {
@@ -669,7 +684,7 @@ static void empty_lock_lists_ignore_lockowners(struct kunit *test)
 {
 	struct coalesce_fixture *f = coalesce_fixture(test);
 
-	f->inode.i_flctx = &f->flctx;
+	coalesce_fixture_set_flctx(f);
 	f->lock_req.lockowner = (fl_owner_t)&f->lock_req;
 
 	KUNIT_EXPECT_EQ_MSG(test, coalesce(f), PG_TEST_SENTINEL,
@@ -680,7 +695,7 @@ static void posix_lock_makes_lockowner_matter(struct kunit *test)
 {
 	struct coalesce_fixture *f = coalesce_fixture(test);
 
-	f->inode.i_flctx = &f->flctx;
+	coalesce_fixture_set_flctx(f);
 	list_add(&f->a_lock, &f->flctx.flc_posix);
 	f->lock_req.lockowner = (fl_owner_t)&f->lock_req;
 
@@ -692,7 +707,7 @@ static void flock_lock_makes_lockowner_matter(struct kunit *test)
 {
 	struct coalesce_fixture *f = coalesce_fixture(test);
 
-	f->inode.i_flctx = &f->flctx;
+	coalesce_fixture_set_flctx(f);
 	list_add(&f->a_lock, &f->flctx.flc_flock);
 	f->lock_req.lockowner = (fl_owner_t)&f->lock_req;
 
@@ -705,7 +720,7 @@ static void matching_lockowner_coalesces_despite_locks(struct kunit *test)
 {
 	struct coalesce_fixture *f = coalesce_fixture(test);
 
-	f->inode.i_flctx = &f->flctx;
+	coalesce_fixture_set_flctx(f);
 	list_add(&f->a_lock, &f->flctx.flc_posix);
 
 	KUNIT_EXPECT_EQ_MSG(test, coalesce(f), PG_TEST_SENTINEL,
@@ -720,7 +735,7 @@ static void lease_alone_does_not_make_lockowner_matter(struct kunit *test)
 {
 	struct coalesce_fixture *f = coalesce_fixture(test);
 
-	f->inode.i_flctx = &f->flctx;
+	coalesce_fixture_set_flctx(f);
 	list_add(&f->a_lock, &f->flctx.flc_lease);
 	f->lock_req.lockowner = (fl_owner_t)&f->lock_req;
 
