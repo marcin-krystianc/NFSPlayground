@@ -30,15 +30,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 0f659ff362ea / 2f681ba4b352 bisect the host-signal livelock
-        # documented in "A confirmed host-signal livelock on v6.12.57" in
-        # docs/kunit-sunrpc.md: 2f681ba4b352 ("um: move thread info into
-        # task") is the commit whose own message says it removes the race;
-        # 0f659ff362ea is its immediate parent, one commit earlier on
-        # mainline, still carrying the old to_irq_stack()/from_irq_stack()
-        # code. If the diagnosis is right, the parent leg should be able to
-        # hang the same way v6.12.57 does and the child leg should not.
-        linux_ref: [v6.12.57, 0f659ff362eac69777c4c191b7e5ccb19d76c67d, 2f681ba4b352cdd5658ed2a96062375a12839755, v6.18.52, v7.2.6, master]
+        linux_ref: [v6.12.57, v6.18.52, v7.2.6, master]
 
     steps:
       - uses: actions/checkout@v4
