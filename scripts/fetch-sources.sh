@@ -59,19 +59,23 @@ warn_if_case_insensitive_fs() {
     rm -f "$probe"
 }
 
-# A plain full clone. `checkout` then takes any ref shape (tag, branch, or
-# a bare commit SHA -- e.g. to bisect a fix, see docs/kunit-sunrpc.md)
-# uniformly, since the whole history is already local.
+# Shallow (one commit, not the whole history) but not sparse (the whole
+# tree at that commit, not just the NFS subtrees) -- kunit.py needs a
+# complete tree to run kbuild. `fetch --depth 1 <ref>` takes any ref shape
+# (tag, branch, or a bare commit SHA -- e.g. to bisect a fix, see
+# docs/kunit-sunrpc.md) uniformly, unlike `clone --branch`, which rejects a
+# bare SHA.
 fetch_linux() {
     local dir="${SRC_DIR}/linux"
 
     if [ ! -d "$dir/.git" ]; then
-        log "cloning linux (full)"
-        git clone --quiet "$LINUX_URL" "$dir"
+        log "cloning linux"
+        git init --quiet "$dir"
+        git -C "$dir" remote add origin "$LINUX_URL"
     fi
 
     log "checking out linux ${LINUX_REF}"
-    git -C "$dir" fetch --quiet origin "$LINUX_REF"
+    git -C "$dir" fetch --quiet --depth 1 origin "$LINUX_REF"
     git -C "$dir" checkout --quiet FETCH_HEAD
 
     local head_sha
