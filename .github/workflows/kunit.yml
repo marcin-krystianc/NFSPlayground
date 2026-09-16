@@ -53,15 +53,12 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential bc bison flex libelf-dev libssl-dev
 
-      # LINUX_FULL=1 is required, not an optimisation: kunit.py runs kbuild,
-      # and the default sparse checkout (fs/nfs, net/sunrpc and friends) has
-      # no scripts/, arch/um, init/, kernel/, mm/ or lib/. Roughly 1.7 GB,
-      # re-fetched on every run since the tree is not cached.
-      #
+      # fetch-sources.sh does a full clone. Roughly 1.7 GB, re-fetched on
+      # every run since the tree is not cached.
       - name: Fetch the kernel tree
         env:
           LINUX_REF: ${{ matrix.linux_ref }}
-        run: LINUX_FULL=1 bash scripts/fetch-sources.sh linux
+        run: bash scripts/fetch-sources.sh linux
 
       # CONFIG_UBSAN=n is deliberate. With UBSAN on, the pinned kernel reports
       # two misaligned accesses in kernel/exit.c:774, pre-existing in
