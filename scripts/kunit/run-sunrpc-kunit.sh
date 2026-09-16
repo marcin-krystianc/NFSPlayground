@@ -1,10 +1,9 @@
 #!/bin/bash
 # Run the SunRPC KUnit suites under UML.
 #
-# kunit.py needs a complete kernel tree, which the default sparse checkout
-# is not. Fetch one first with:
+# kunit.py needs a complete kernel tree. Fetch one first with:
 #
-#     LINUX_FULL=1 scripts/fetch-sources.sh linux
+#     scripts/fetch-sources.sh linux
 #
 # ./linux is gitignored, so kunit/addr_test.c lives in this repo and is
 # copied into the tree here, along with the Kconfig/Makefile/.kunitconfig
@@ -25,7 +24,7 @@ die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
 
 [ -f "${LINUX_DIR}/Makefile" ] || die "${LINUX_DIR} is not a kernel tree"
 [ -f "${LINUX_DIR}/init/main.c" ] ||
-    die "${LINUX_DIR} looks sparse; run: LINUX_FULL=1 scripts/fetch-sources.sh linux"
+    die "${LINUX_DIR} looks incomplete; run: scripts/fetch-sources.sh linux"
 [ -x "${LINUX_DIR}/tools/testing/kunit/kunit.py" ] ||
     die "kunit.py missing from ${LINUX_DIR}/tools/testing/kunit"
 

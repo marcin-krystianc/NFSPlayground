@@ -26,18 +26,13 @@ SRC_DIR="${SRC_DIR:-${REPO_ROOT}}"
 #
 # LINUX_REF is overridable; the SHA pin below is only checked when it's
 # still this default, since a moving ref (master) has no fixed SHA.
-# ponytail: switching LINUX_REF against an already-cloned ./linux does not
-# re-fetch or re-checkout it (see fetch_linux) -- `rm -rf ./linux` first.
+# fetch_linux() re-fetches and re-checks-out LINUX_REF on every run, even
+# against an already-cloned ./linux, so switching it does not require
+# `rm -rf ./linux` first.
 LINUX_URL="https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git"
 LINUX_REF_PINNED="v6.12.57"
 LINUX_REF="${LINUX_REF:-$LINUX_REF_PINNED}"
 LINUX_SHA="8a243ecde1f6447b8e237f2c1c67c0bb67d16d67"
-# Only the subtrees VAST replaces. A full mainline clone is ~8 GB; this is
-# ~270 MB of git data and a ~24 MB working tree.
-LINUX_PATHS=(fs/nfs fs/nfsd fs/lockd fs/nfs_common
-             net/sunrpc include/linux/nfs include/linux/sunrpc
-             tools/testing/kunit tools/testing/selftests/net
-             tools/testing/selftests/filelock)
 
 VASTNFS_VERSION="4.5.8"
 VASTNFS_BASE_URL="https://vast-nfs.s3.amazonaws.com"
@@ -64,40 +59,32 @@ warn_if_case_insensitive_fs() {
     rm -f "$probe"
 }
 
-# Blobless + shallow + sparse: only the NFS subtrees, at one tag.
-#
-# Set LINUX_FULL=1 to check out the whole tree instead. Needed to build a
-# kernel, which the sparse checkout cannot do -- see scripts/kunit/. It
-# fetches the remaining blobs for the pinned tag, adding roughly 1-1.5 GB.
+# A plain full clone. `checkout` then takes any ref shape (tag, branch, or
+# a bare commit SHA -- e.g. to bisect a fix, see docs/kunit-sunrpc.md)
+# uniformly, since the whole history is already local.
 fetch_linux() {
     local dir="${SRC_DIR}/linux"
 
     if [ ! -d "$dir/.git" ]; then
-        log "cloning linux ${LINUX_REF} (blobless, sparse)"
-        git clone --quiet --filter=blob:none --sparse \
-            --depth 1 --branch "$LINUX_REF" "$LINUX_URL" "$dir"
+        log "cloning linux (full)"
+        git clone --quiet "$LINUX_URL" "$dir"
     fi
 
-    if [ "${LINUX_FULL:-0}" = "1" ]; then
-        log "expanding linux to the full tree (fetches remaining blobs)"
-        git -C "$dir" sparse-checkout disable
-    else
-        git -C "$dir" sparse-checkout set "${LINUX_PATHS[@]}"
-    fi
+    log "checking out linux ${LINUX_REF}"
+    git -C "$dir" fetch --quiet origin "$LINUX_REF"
+    git -C "$dir" checkout --quiet FETCH_HEAD
 
     local head_sha
     head_sha="$(git -C "$dir" rev-parse HEAD)"
     if [ "$LINUX_REF" = "$LINUX_REF_PINNED" ]; then
         [ "$head_sha" = "$LINUX_SHA" ] || die "linux: HEAD is not ${LINUX_SHA}"
+    elif [ "$LINUX_REF" = "$head_sha" ]; then
+        : # An exact commit SHA, not a moving ref -- nothing to warn about.
     else
         warn "linux: ${LINUX_REF} is a floating ref, not the pinned ${LINUX_REF_PINNED} -- not verified"
     fi
 
-    if [ "${LINUX_FULL:-0}" = "1" ]; then
-        log "linux: ${LINUX_REF} ${head_sha:0:12} ok, full tree"
-    else
-        log "linux: ${LINUX_REF} ${head_sha:0:12} ok, $(git -C "$dir" sparse-checkout list | wc -l) paths"
-    fi
+    log "linux: ${LINUX_REF} ${head_sha:0:12} ok, full tree"
 }
 
 # Source tarball only; VAST publishes no public git repository.
