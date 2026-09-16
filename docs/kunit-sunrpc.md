@@ -658,41 +658,74 @@ The five that are out, individually:
   by 012, 029 and 030. Porting them would add four near-identical suites and
   no coverage, so they are declined rather than padded in.
 
-### An intermittent whole-run live-lock (pre-existing, unresolved)
+### A confirmed host-signal livelock on v6.12.57 (upstream bug, already fixed)
 
-A full run sometimes never finishes. The UML process spins at ~99% CPU
-indefinitely and no further KTAP output appears. Established so far:
+A full run sometimes never finishes. Two distinct symptoms were observed
+under gdb on the VM, both on the `v6.12.57` pin:
 
-- It always stalls **after every xfstests suite has passed**, somewhere in the
-  pure-logic SunRPC suites that follow (observed stopping after
-  `sunrpc-rtt-init`, after `sunrpc-addr-uaddr`, and after
-  `sunrpc-rtt-ntimeo` on three different runs). Those suites are integer
-  arithmetic and string parsing with no I/O, so they are almost certainly the
-  victim rather than the cause -- something is holding the single CPU and they
-  never get scheduled.
-- **Every suite passes in isolation**, including the ones it stalls in:
-  `sunrpc-rtt-*` alone runs in 0.068s, `xfstests/generic/032` alone in 1.2s,
-  the whole `xfstests/generic/04*` band in 4.5s.
-- **It is not caused by the 031-034/039/040/041/047/048 additions.** Removing
-  all nine registrations *and* deleting their sources and `fs/Makefile` lines
-  reproduces the hang on a 71-suite run.
-- **It is not memory pressure.** `--kernel_args mem=2G` does not fix it.
-- The host is not the problem: 10 CPUs, load 1.00 from the single spinning
-  UML, ~2.7 GB available.
-- It is intermittent -- the same runner completed full 806-test runs several
-  times the same day.
+- A transient stall of tens of seconds -- the UML tracer process asleep in
+  `sigsuspend()`, its ptraced child stuck in `ptrace_stop`, waiting on each
+  other -- that resolves on its own and the run completes normally. This is
+  most likely what earlier observations of the hang actually caught.
+- A **permanent** livelock: the UML process pinned at ~99% CPU with no
+  further KTAP output, reproduced and confirmed with `gdb -p <pid> -batch -ex
+  bt` taken several seconds apart, landing at the exact same PC every time --
+  not just the same function, the identical instruction. The frame was inside
+  `hard_handler()` / `to_irq_stack()` in `arch/um/os-Linux/signal.c` and
+  `arch/um/kernel/irq.c`.
 
-The leading hypothesis, untested, is an accumulating leak in the fixture's
-nfsd start/stop path: a full run now performs ~80 consecutive
-`nfsd_svc()` bring-ups and mount/unmount cycles, and a leaked kernel thread
-spinning after some cycle count would produce exactly this signature. That is
-a guess, not a finding, and it is recorded as one. Diagnosing it properly
-needs a console on the wedged UML to see what the runnable task is.
+`to_irq_stack()`/`from_irq_stack()` is UML's mechanism for copying the
+current task's `thread_info` onto a separate signal (IRQ) stack, guarded by a
+lock-free `pending_mask` retry loop. Its own comment in `irq.c` on the
+`v6.12.57` pin admits the danger: "What happens when two signals race each
+other? UML doesn't block signals with sigprocmask, SA_DEFER, or sa_mask, so a
+second signal could arrive while a previous one is still setting up the
+thread_info." Under the right timing -- many suites in one run means many
+timer ticks and ptrace child-stop signals landing close together -- that race
+can leave `hard_handler()`'s `do { ... } while (pending)` loop spinning
+forever, unable to make forward progress.
 
-Practical impact: **CI can report a hang rather than a failure**, and a hung
-run produces no totals line at all. When that happens, re-run; if a specific
-result is needed, a filtered run (`kunit.py ... "xfstests/generic/04*"`)
-completes reliably.
+This mechanism does not exist on later kernels: diffing
+`arch/um/os-Linux/signal.c` and `arch/um/kernel/irq.c` between `v6.12.57` and
+`v6.18` shows `to_irq_stack()`/`from_irq_stack()` and the `pending_mask`
+dance removed outright, replaced by direct dispatch to `handlers[sig]`, with
+`SIGCHLD` also promoted to a first-class signal in that table (previously
+absent from it). Upstream commit
+[`2f681ba4b352`](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/commit/?id=2f681ba4b352cdd5658ed2a96062375a12839755)
+("um: move thread info into task", Benjamin Berg, 2024-11-12) is that
+rewrite: it selects
+`THREAD_INFO_IN_TASK` for UML, using the existing `cpu_tasks[]` tracking
+instead of a per-signal-stack copy of `thread_info`, and its own commit
+message says so directly -- "Also remove the signal handler code that
+copies the thread information into the IRQ stack. It is obsolete now, which
+also means that the mentioned race condition cannot happen anymore." It
+landed on mainline after the `v6.12.57` point release and reached `v6.18`;
+it was not backported to the `v6.12.x` stable branch. That accounts for the
+CI matrix result: **only the `v6.12.57` leg hangs; `v6.18.52`, `v7.2.6`, and
+`master` do not.**
+
+Established from earlier observation, still true and consistent with the
+above -- a livelock rather than a leak, since it can strike after any suite
+that generates enough signal traffic, not specifically after xfstests:
+
+- It stalls somewhere in the suites that follow the xfstests block, observed
+  after `sunrpc-rtt-init`, after `sunrpc-addr-uaddr`, and after
+  `sunrpc-rtt-ntimeo` on different runs. Every suite passes in isolation.
+- It is not caused by any of this repo's kunit ports, and not memory
+  pressure (`--kernel_args mem=2G` does not fix it) -- both consistent with
+  the bug living entirely in UML's own host-signal plumbing, outside
+  anything under test here.
+- It is intermittent, matching a timing race rather than a deterministic
+  trigger.
+
+Nothing in this repo can fix a host-signal race in the pinned kernel's own
+`arch/um` code without patching the vendored kernel tree itself, which is a
+separate decision from testing NFS/SunRPC behavior. Practical mitigation
+applied instead: `.github/workflows/kunit.yml` sets `timeout-minutes: 20` on
+the job, so a livelocked `v6.12.57` run fails fast and visibly instead of
+consuming GitHub Actions' default 360-minute budget. When a run times out,
+re-run; if a specific result is needed, a filtered run (`kunit.py ...
+"xfstests/generic/04*"`) completes reliably.
 
 ### A note on green results and kernel logs
 
