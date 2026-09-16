@@ -30,7 +30,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        linux_ref: [v6.12.57, master]
+        linux_ref: [v6.12.57, v6.18.52, v7.2.6, master]
 
     steps:
       - uses: actions/checkout@v4
