@@ -22,8 +22,7 @@ evidence. [The numbers and the named gaps](docs/kunit-nfs.md#status) are in
 the docs.
 
 - **[docs/kunit-nfs.md](docs/kunit-nfs.md)** — start here: what it is, how
-  to run it, what is and isn't covered, and the three things that will
-  confuse you on a first run.
+  to run it, what is and isn't covered.
 - [docs/kunit-nfs-reference.md](docs/kunit-nfs-reference.md) — implementation
   notes: fixture mechanics, which seams make each area reachable, the
   constraints on what can be tested this way. Read before changing a test.

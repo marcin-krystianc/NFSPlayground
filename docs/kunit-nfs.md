@@ -62,26 +62,6 @@ scripts/kunit/run-sunrpc-kunit.sh --raw_output
 
 Build dependencies beyond a normal toolchain: `flex bison bc gawk libelf-dev libssl-dev`.
 
-## Three things that will confuse you
-
-**Spurious failures with UBSAN on.** The stock config enables UBSAN, which
-reports a misaligned access in `kernel/exit.c` that has nothing to do with
-NFS. KUnit blames whichever test happened to be running, so the "failure"
-moves between runs. Add `--kconfig_add CONFIG_UBSAN=n` for a clean run, or
-check the raw output for an `EXPECTATION FAILED` line — a UBSAN stack trace
-without one is the artefact, not a real failure.
-
-**A full run on `v6.12.57` can hang forever.** That is an upstream UML bug:
-a race in the host-signal handling that predates anything here, fixed
-upstream by commit `2f681ba4b352` and never backported to the 6.12 stable
-series. `patches/um-thread-info-in-task-v6.12.57.patch` backports it, and
-CI runs one job with the patch applied and one without. Later kernels in
-the CI matrix (`v6.18.52`, `v7.2.6`, `master`) are unaffected.
-
-**A green result says nothing about the kernel log.** Nothing fails a suite
-for emitting WARNs, and the default `kunit.py` output does not show kernel
-log lines at all.
-
 ## CI
 
 `.github/workflows/kunit.yml` runs two jobs:
