@@ -25,6 +25,11 @@ jobs:
   kunit:
     name: kunit (linux ${{ matrix.linux_ref }})
     runs-on: ubuntu-latest
+    # A full run should no longer live-lock with the fix applied; this
+    # bounds the job in case that assumption stops holding, instead of
+    # consuming the runner's default multi-hour budget.
+    timeout-minutes: 30
+
     # master can fail before any test runs: run-sunrpc-kunit.sh exposes
     # static kernel functions by name, and upstream can rename one.
     strategy:
