@@ -20,11 +20,6 @@ on:
         description: 'Extra kunit.py arguments (e.g. --raw_output)'
         required: false
         default: ''
-      apply_um_livelock_fix:
-        description: 'For the kunit-v6.12.57-patched job only: apply patches/um-thread-info-in-task-v6.12.57.patch (a backport of upstream 2f681ba4b352, "um: move thread info into task", which fixes the UML host-signal live-lock -- see docs/kunit-sunrpc.md) before building. Set to false to build that job''s v6.12.57 leg unpatched, e.g. to re-confirm the live-lock still reproduces upstream.'
-        type: boolean
-        required: false
-        default: true
 
 jobs:
   kunit:
@@ -140,7 +135,6 @@ jobs:
         run: bash scripts/fetch-sources.sh linux
 
       - name: Apply the UML host-signal live-lock fix
-        if: ${{ inputs.apply_um_livelock_fix != false }}
         run: |
           git -C linux apply --check patches/um-thread-info-in-task-v6.12.57.patch
           git -C linux apply patches/um-thread-info-in-task-v6.12.57.patch
