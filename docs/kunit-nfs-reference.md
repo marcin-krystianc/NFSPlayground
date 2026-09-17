@@ -11,7 +11,7 @@ client. See [kunit-nfs.md](kunit-nfs.md#status) for the numbers.
 
 ## Runner mechanics
 
-`scripts/kunit/run-sunrpc-kunit.sh` copies each file listed in its `TESTS`
+`scripts/kunit/run-nfs-kunit.sh` copies each file listed in its `TESTS`
 array from `kunit/` into its target directory under the kernel tree
 (`net/sunrpc/`, `fs/nfs_common/` or `fs/nfs/`) and adds the Kconfig,
 Makefile and `.kunitconfig` wiring for it. `./linux` is gitignored, so the
@@ -174,7 +174,7 @@ is not.
 
 `xfstests_nfs_case_init()` (`kunit/xfstests/nfs_fixture.c`) rebinds each
 fresh case thread to the bring-up thread's root before the test body runs.
-Every xfstests suite needs it wired in as `.init`; `run-sunrpc-kunit.sh`
+Every xfstests suite needs it wired in as `.init`; `run-nfs-kunit.sh`
 adds that automatically, so a new port gets it without doing anything. The
 exception is `nfs_fixture` itself, which defines no suite.
 

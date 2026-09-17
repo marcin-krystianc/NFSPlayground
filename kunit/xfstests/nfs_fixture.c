@@ -16,7 +16,7 @@
  *    EXCHANGE_ID -- without it the first client connection panics knfsd
  *  - feeds the three sunrpc caches rpc.mountd would write (auth.unix.ip,
  *    nfsd.export, nfsd.fh) by calling their parse functions directly,
- *    un-staticed by scripts/kunit/run-sunrpc-kunit.sh
+ *    un-staticed by scripts/kunit/run-nfs-kunit.sh
  *  - starts one knfsd thread, v4-only (no lockd, no rpcbind), and ends
  *    the 90-second v4 grace period the way /proc/fs/nfsd/v4_end_grace does
  *
@@ -801,7 +801,7 @@ static int xfs_bringup(void)
 	 * root never saw the mkdir/mount calls above, so the very first path
 	 * lookup a test makes under XFS_MNT fails with ENOENT before ever
 	 * reaching NFS code -- see docs/kunit-nfs-reference.md. Every suite wires
-	 * xfstests_nfs_case_init() in as .init (run-sunrpc-kunit.sh adds it
+	 * xfstests_nfs_case_init() in as .init (run-nfs-kunit.sh adds it
 	 * automatically) so each fresh test-case thread rebinds to this
 	 * thread's root before the test body runs.
 	 */

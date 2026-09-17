@@ -31,7 +31,7 @@
 
 MODULE_IMPORT_NS(EXPORTED_FOR_KUNIT_TESTING);
 
-/* Private to pagelist.c; un-staticed by scripts/kunit/run-sunrpc-kunit.sh. */
+/* Private to pagelist.c; un-staticed by scripts/kunit/run-nfs-kunit.sh. */
 bool nfs_page_is_contiguous(const struct nfs_page *prev,
 			    const struct nfs_page *req);
 bool nfs_match_lock_context(const struct nfs_lock_context *l1,

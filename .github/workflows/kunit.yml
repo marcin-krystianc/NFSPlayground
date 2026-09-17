@@ -1,7 +1,7 @@
 name: NFS KUnit
 
 # Runs the NFS/SunRPC KUnit suites in kunit/ under User Mode Linux, via
-# scripts/kunit/run-sunrpc-kunit.sh. No VM and no kernel install: kunit.py
+# scripts/kunit/run-nfs-kunit.sh. No VM and no kernel install: kunit.py
 # builds an ARCH=um kernel and runs it as an ordinary process.
 
 on:
@@ -30,7 +30,7 @@ jobs:
     # of consuming the runner's default multi-hour budget.
     timeout-minutes: 30
 
-    # master can fail before any test runs: run-sunrpc-kunit.sh exposes
+    # master can fail before any test runs: run-nfs-kunit.sh exposes
     # static kernel functions by name, and upstream can rename one.
     strategy:
       fail-fast: false
@@ -84,7 +84,7 @@ jobs:
           EXTRA_ARGS: ${{ inputs.extra_args }}
         run: |
           set -o pipefail
-          bash scripts/kunit/run-sunrpc-kunit.sh \
+          bash scripts/kunit/run-nfs-kunit.sh \
             --kconfig_add CONFIG_UBSAN=n \
             --json="${GITHUB_WORKSPACE}/kunit-results.json" \
             "$FILTER_GLOB" \
@@ -153,7 +153,7 @@ jobs:
           EXTRA_ARGS: ${{ inputs.extra_args }}
         run: |
           set -o pipefail
-          bash scripts/kunit/run-sunrpc-kunit.sh \
+          bash scripts/kunit/run-nfs-kunit.sh \
             --kconfig_add CONFIG_UBSAN=n \
             --json="${GITHUB_WORKSPACE}/kunit-results.json" \
             "$FILTER_GLOB" \

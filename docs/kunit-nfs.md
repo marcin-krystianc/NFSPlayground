@@ -50,14 +50,14 @@ Known gaps worth naming:
 
 ```sh
 scripts/fetch-sources.sh linux    # once: ~1.6 GB
-scripts/kunit/run-sunrpc-kunit.sh
+scripts/kunit/run-nfs-kunit.sh
 ```
 
 Extra arguments pass through to `kunit.py`, so a narrower run is:
 
 ```sh
-scripts/kunit/run-sunrpc-kunit.sh "xfstests/generic/0*"
-scripts/kunit/run-sunrpc-kunit.sh --raw_output
+scripts/kunit/run-nfs-kunit.sh "xfstests/generic/0*"
+scripts/kunit/run-nfs-kunit.sh --raw_output
 ```
 
 Build dependencies beyond a normal toolchain: `flex bison bc gawk libelf-dev libssl-dev`.

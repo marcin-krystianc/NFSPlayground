@@ -39,7 +39,7 @@
 
 MODULE_IMPORT_NS(EXPORTED_FOR_KUNIT_TESTING);
 
-/* Private to nfs4proc.c; un-staticed by scripts/kunit/run-sunrpc-kunit.sh. */
+/* Private to nfs4proc.c; un-staticed by scripts/kunit/run-nfs-kunit.sh. */
 int nfs4_map_errors(int err);
 long nfs4_update_delay(long *timeout);
 u32 nfs4_fmode_to_share_access(fmode_t fmode);

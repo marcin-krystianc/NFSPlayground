@@ -29,10 +29,10 @@ the docs.
 
 ```sh
 scripts/fetch-sources.sh linux       # once
-scripts/kunit/run-sunrpc-kunit.sh
+scripts/kunit/run-nfs-kunit.sh
 ```
 
-Test sources are in `kunit/`; `scripts/kunit/run-sunrpc-kunit.sh` wires them
+Test sources are in `kunit/`; `scripts/kunit/run-nfs-kunit.sh` wires them
 into a fetched kernel tree and drives `kunit.py`.
 
 ## 2. VAST NFS investigation
@@ -65,17 +65,3 @@ without VAST hardware, and how it behaves under failure.
 `xfstests/`, `pynfs/` and `nfs-utils/` are git submodules. `linux/` and the
 extracted `vastnfs-*/` tree are gitignored and fetched on demand by
 `scripts/fetch-sources.sh`.
-
-## CI
-
-- `.github/workflows/kunit.yml` — the KUnit suites under UML, across a
-  matrix of kernel refs, plus one job running `v6.12.57` with the UML
-  livelock patch applied.
-- `.github/workflows/xfstests.yml` — real xfstests against a loopback NFS
-  mount using the runner's own client and server. It cannot test a different
-  kernel, so it says nothing about VAST's modules.
-
-## Notes
-
-- The actual list of `remoteports` in use (the real VAST C-Nodes) cannot be
-  observed without root access on the client.

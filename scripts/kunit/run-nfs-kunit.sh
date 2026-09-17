@@ -1,17 +1,17 @@
 #!/bin/bash
-# Run the SunRPC KUnit suites under UML.
+# Run the NFS/SunRPC KUnit suites under UML.
 #
 # kunit.py needs a complete kernel tree. Fetch one first with:
 #
 #     scripts/fetch-sources.sh linux
 #
-# ./linux is gitignored, so kunit/addr_test.c lives in this repo and is
-# copied into the tree here, along with the Kconfig/Makefile/.kunitconfig
-# wiring. Every edit is grep-guarded, so re-running is safe and a
-# re-fetched tree is re-wired automatically.
+# ./linux is gitignored, so the test sources live in this repo under kunit/
+# and are copied into the tree here, along with the
+# Kconfig/Makefile/.kunitconfig wiring. Every edit is grep-guarded, so
+# re-running is safe and a re-fetched tree is re-wired automatically.
 #
-# Usage: scripts/kunit/run-sunrpc-kunit.sh [extra kunit.py args...]
-#        scripts/kunit/run-sunrpc-kunit.sh --raw_output
+# Usage: scripts/kunit/run-nfs-kunit.sh [extra kunit.py args...]
+#        scripts/kunit/run-nfs-kunit.sh --raw_output
 
 set -euo pipefail
 
