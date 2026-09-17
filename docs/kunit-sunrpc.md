@@ -24,7 +24,7 @@ libssl-dev`.
 
 **Expect two reported failures.** They are not test failures: UBSAN emits
 an unrelated report that KUnit attributes to whichever test is running.
-See [The UBSAN artefact](#the-ubsan-artefact-and-a-correction) before
+See [The UBSAN artefact](#the-ubsan-artefact) before
 chasing one. Adding `--kconfig_add CONFIG_UBSAN=n` gives a clean run, at
 the cost of UBSAN coverage.
 
@@ -156,13 +156,12 @@ false and `truncate_cleanup_folio()` never reaches
 `a_ops->invalidate_folio`. That is why no filesystem-specific operations
 are needed.
 
-Two earlier attempts panicked, and both were the fixture's fault rather
-than a limitation:
+Two fixture states will panic rather than run cleanly:
 
-1. Setting `nrpages` by hand on an empty mapping. The code believed there
-   was data to flush, reached `filemap_write_and_wait_range()` and
-   dereferenced a NULL `a_ops`.
-2. Adding real folios but leaving `a_ops` NULL, which crashed in
+1. Setting `nrpages` by hand on an empty mapping. The code believes there
+   is data to flush, reaches `filemap_write_and_wait_range()` and
+   dereferences a NULL `a_ops`.
+2. Adding real folios but leaving `a_ops` NULL, which crashes in
    `filemap_free_folio()` during truncation.
 
 The rule both illustrate: **a fixture may leave things out, but it must
@@ -171,14 +170,14 @@ code tests for is fine; a count that contradicts the structure it
 describes, or an absent vtable the code dereferences unconditionally, is
 not.
 
-`nfs_wait_bit_killable()` looked untestable because it calls
-`schedule()`. It is not: `schedule()` only blocks when the task state is
-something other than `TASK_RUNNING`, and the wait_bit machinery sets that
-state *before* invoking the action function. Called directly from a test
-the state is still `TASK_RUNNING`, so `schedule()` yields and returns.
-That leaves the signal handling reachable, which is the half worth
-testing. `TIF_SIGPENDING` is set and cleared around each call so nothing
-leaks into the rest of the run.
+`nfs_wait_bit_killable()` calls `schedule()`, which at first glance makes
+it look unreachable from a test. `schedule()` only blocks when the task
+state is something other than `TASK_RUNNING`, and the wait_bit machinery
+sets that state *before* invoking the action function. Called directly
+from a test the state is still `TASK_RUNNING`, so `schedule()` yields and
+returns immediately. That leaves the signal handling reachable, which is
+the half worth testing. `TIF_SIGPENDING` is set and cleared around each
+call so nothing leaks into the rest of the run.
 
 `get_nfs_open_context()` is guarded by `refcount_inc_not_zero()`, so a
 context already being torn down is refused rather than resurrected;
@@ -255,7 +254,7 @@ One finding worth recording: a zero-length layout range does **not**
 intersect itself, but **does** intersect any range that strictly straddles
 its offset, because the predicate is `start2 < end1 && start1 < end2`. The
 test asserts that behaviour rather than the intuitive "empty intersects
-nothing", which is what it was originally written to expect.
+nothing."
 
 `nfs_inode_attrs_cmp()` decides whether attributes in an RPC reply are
 newer than what the inode holds. RPC replies can be reordered, so a stale
@@ -283,11 +282,10 @@ Two things, and they are the general answer for `fs/nfs`:
 
 The limit is what the function *does*, not which file it lives in, and it
 is looser than it first appears. `nfs_zap_mapping()` and
-`nfs_set_cache_invalid()` were initially written off here as needing a
-working page cache. They do not: both only read `mapping->nrpages` as a
-count, so a zeroed `struct address_space` with that one field set is
-enough. `nfs_have_delegated_attributes()` looked like another blocker and
-turned out to be a seam, since it dispatches through
+`nfs_set_cache_invalid()` do not need a working page cache: both only read
+`mapping->nrpages` as a count, so a zeroed `struct address_space` with
+that one field set is enough. `nfs_have_delegated_attributes()` is
+reachable the same way: it dispatches through
 `NFS_PROTO(inode)->have_delegation` — a function pointer, so a three-line
 stub replaces the whole delegation subsystem.
 
@@ -423,56 +421,55 @@ failing "wrong" expectation and verified before being encoded:
     tests, and are the only ports that exercise it: mutating
     `nfs4_file_flush()` to return early fails both on the first case that
     writes anything, while 012 (same layouts, with fsync) still passes.
-  Getting that mutation to bite took three attempts, and each failure was
-  informative: `nfs_getattr()` flushes when STATX_CTIME/MTIME are asked
-  for (inode.c:982), `nfs_file_read()` flushes before invalidating a
-  mapping, and the v4 mount's `.flush` is `nfs4_file_flush()`
-  (nfs4file.c:111) -- not `nfs_file_flush()` (file.c:140), which serves
-  v2/v3 only. Hence the strict ordering in those ports (server check
-  first after close, size and client reads afterwards) and the permanent
-  per-case log line reporting whether the server had the data before the
-  close.
+  Confirming that mutation is caught required accounting for three paths
+  that flush independently of the port's own checks: `nfs_getattr()`
+  flushes when STATX_CTIME/MTIME are asked for (inode.c:982),
+  `nfs_file_read()` flushes before invalidating a mapping, and the v4
+  mount's `.flush` is `nfs4_file_flush()` (nfs4file.c:111) -- not
+  `nfs_file_flush()` (file.c:140), which serves v2/v3 only. Hence the
+  strict ordering in those ports (server check first after close, size
+  and client reads afterwards) and the permanent per-case log line
+  reporting whether the server had the data before the close.
 
 The 020-030 band is now complete.
 
-An earlier version of this section claimed 029 and 030 were both impossible,
-because `vm_mmap()` needs `current->mm` and a KUnit case runs in a kernel
-thread which has none. **That was wrong, and it was wrong by not looking**:
+029 and 030 both need `vm_mmap()`, which normally requires `current->mm` --
+absent in the kernel thread a KUnit case runs in. That is not a blocker:
 KUnit ships `kunit_vm_mmap()` (`lib/kunit/user_alloc.c`), which allocates an
 mm, runs `arch_pick_mmap_layout()` on it, attaches it with
 `kthread_use_mm()`, and tracks the mapping as a test resource -- `mm_alloc()`
-is even already `EXPORT_SYMBOL_IF_KUNIT` for the purpose, and the helper is
-built into `lib/kunit` unconditionally. So **mmap is available to every
-port**, and 029 and 030 are both in. Writes into a mapping go through
+is already `EXPORT_SYMBOL_IF_KUNIT` for the purpose, and the helper is built
+into `lib/kunit` unconditionally. So **mmap is available to every port**,
+and 029 and 030 are both in. Writes into a mapping go through
 `copy_to_user()`, which is the correct way to touch user addresses with a
 borrowed mm (a bare dereference happens to work on UML but not under SMAP or
 PAN).
 
-**030** was then also recorded as out, for a smaller and more specific
-reason: it drives `mremap` around its truncates, and `mremap` exists only as
-a syscall entry point (`SYSCALL_DEFINE5(mremap, ...)`) with only static
-helpers. `nm` on `.kunit/vmlinux` confirms it -- `__do_sys_mremap`,
+**030** additionally drives `mremap` around its truncates, and `mremap`
+exists only as a syscall entry point (`SYSCALL_DEFINE5(mremap, ...)`) with
+only static helpers. `nm` on `.kunit/vmlinux` confirms it -- `__do_sys_mremap`,
 `__se_sys_mremap` and `sys_mremap` are all local symbols (`t`, not `T`), so
 nothing outside `mm/mremap.c` can call it, and there is no `vm_mmap()`
 equivalent.
 
-**That reason was real but the conclusion was still wrong, because the
-mremap calls do nothing.** `mremap` rounds both lengths up to a page, and
-030's file is 5017k, which is 1254.25 pages. `PAGE_ALIGN(5017k)` and
-`PAGE_ALIGN(5020k)` are both 5020k, so every `mremap -m 5020k` / `mremap
-5017k` in upstream 030 takes the `old_len == new_len` path and returns the
-same address without touching a VMA. What they resize is xfs_io's own record
-of the mapping length, which is what lets its next `mwrite` clear its own
-bounds check. A 5017k mapping already covers the whole range 030 writes to.
+**That access limit turns out not to matter, because the mremap calls in
+030 do nothing.** `mremap` rounds both lengths up to a page, and 030's file
+is 5017k, which is 1254.25 pages. `PAGE_ALIGN(5017k)` and `PAGE_ALIGN(5020k)`
+are both 5020k, so every `mremap -m 5020k` / `mremap 5017k` in upstream 030
+takes the `old_len == new_len` path and returns the same address without
+touching a VMA. What they resize is xfs_io's own record of the mapping
+length, which is what lets its next `mwrite` clear its own bounds check. A
+5017k mapping already covers the whole range 030 writes to.
 
-This was established by doing it the wrong way first: a forwarding wrapper
-was appended to `mm/mremap.c`, the grow and shrink were performed through it,
-and an assertion that a write past the shrunk mapping must now fail was added
-to prove the shrink had landed. It did not fail -- the tail was still mapped.
-The wrapper and the kernel edit were removed; a kernel change to call a
-function that provably does nothing is worse than no test. `kunit/xfstests/
-generic/030.c` asserts the rounding directly instead, so if the premise ever
-stops holding the test says so rather than silently drifting.
+This was confirmed directly: a forwarding wrapper appended to
+`mm/mremap.c` let the grow and shrink run through it, with an assertion
+that a write past the shrunk mapping must fail if the shrink actually
+landed. It did not fail -- the tail was still mapped, confirming the
+`old_len == new_len` no-op path. The wrapper and the kernel edit were
+removed afterward; a kernel change to call a function that provably does
+nothing is worse than no test. `kunit/xfstests/generic/030.c` asserts the
+rounding directly instead, so if the premise ever stops holding the test
+says so rather than silently drifting.
 
 What 030 does add is a second layout over 029's code path: unaligned mapped
 writes inside the last page of a ~5 MB file, versus 029's page-multiple 5 KB
@@ -485,10 +482,9 @@ mutations run against both give a split answer:
 | drop `nfs_folio_length()`'s partial-last-folio clamp (internal.h) | catches | **misses** |
 
 The clamp mutation is caught by 029 because its third case is 5121 bytes, and
-is invisible to 030 -- including to the mid-test check described below. I
-predicted twice that 030 would catch it and was wrong both times, so the
-measurement stands without a third guessed mechanism. **030 is not a strictly
-stronger 029.**
+is invisible to 030 -- including to the mid-test check described below.
+**030 is not a strictly stronger 029**; the two catch different mutations
+and neither subsumes the other.
 
 030's one genuine improvement on upstream is where it looks. Upstream dumps
 the file only at the end, by which point its final `mwrite Y` has overwritten
@@ -665,8 +661,9 @@ under gdb on the VM, both on the `v6.12.57` pin:
 
 - A transient stall of tens of seconds -- the UML tracer process asleep in
   `sigsuspend()`, its ptraced child stuck in `ptrace_stop`, waiting on each
-  other -- that resolves on its own and the run completes normally. This is
-  most likely what earlier observations of the hang actually caught.
+  other -- that resolves on its own and the run completes normally. This
+  is the likely explanation for hang reports that turned out to be
+  transient.
 - A **permanent** livelock: the UML process pinned at ~99% CPU with no
   further KTAP output, reproduced and confirmed with `gdb -p <pid> -batch -ex
   bt` taken several seconds apart, landing at the exact same PC every time --
@@ -704,9 +701,9 @@ it was not backported to the `v6.12.x` stable branch. That accounts for the
 CI matrix result: **only the `v6.12.57` leg hangs; `v6.18.52`, `v7.2.6`, and
 `master` do not.**
 
-Established from earlier observation, still true and consistent with the
-above -- a livelock rather than a leak, since it can strike after any suite
-that generates enough signal traffic, not specifically after xfstests:
+Consistent with the above: this is a livelock rather than a leak, since it
+can strike after any suite that generates enough signal traffic, not
+specifically after xfstests:
 
 - It stalls somewhere in the suites that follow the xfstests block, observed
   after `sunrpc-rtt-init`, after `sunrpc-addr-uaddr`, and after
@@ -745,18 +742,17 @@ was being read for another reason. The same run also confirmed the syncer is
 genuinely concurrent with the writer: 134 sync loops interleaved with the
 10 write iterations.
 
-Two debugging notes from this batch, both costing several rounds:
+Two properties of the ports are worth recording because they are easy to
+misdiagnose as test bugs:
 `nfs_update_folio()` rounds a write's dirty range back up to the page
 boundary, so the "drop the last byte" mutation is absorbed entirely for
 page-aligned writes -- which is why it fails the unaligned ports and not
-012/027. And 025 spent three rounds chasing a phantom "partially applied
-exchange" that was really its own cleanup leaking a directory: removing the
-"tree" layout's child leaves a sillyrename entry pending, so a plain rmdir
-returns ENOTEMPTY. The fix is `xfs_rmdir_settled()` plus an assertion at the
-cleanup itself, so the next such leak is reported where it happens rather
-than three combinations later. Worth noting the failure mode: mid-hunt I
-"corrected" a expectation that was right all along to match a measurement
-that was an artifact of that leak.
+012/027. And 025's cleanup could present as a "partially applied exchange"
+that was in fact its own directory leak: removing the "tree" layout's
+child leaves a sillyrename entry pending, so a plain rmdir returns
+ENOTEMPTY. The fix is `xfs_rmdir_settled()` plus an assertion at the
+cleanup itself, so such a leak is reported where it happens rather than
+surfacing as a misleading failure in an unrelated later case.
 
 Validation on the full set: three one-line kernel mutations -- the client
 write path dropping a byte (17 failures across the data ports), rename
@@ -805,11 +801,11 @@ in XDR's 4-byte alignment rule. Neither is a port. Both are the unit-level
 layer beneath a system-level concern, which is how every file here was
 chosen.
 
-## A correction: fs/nfs is not wholly untestable
+## fs/nfs is not wholly untestable
 
-An earlier version of this document, and the planning behind it, claimed
-that `fs/nfs` is not unit-testable because it is entangled with the VFS.
-That is true of most of it and false as a blanket statement.
+`fs/nfs` is entangled with the VFS, which makes most of it unreachable
+from KUnit -- but that is not a blanket statement about the whole
+directory.
 
 Of the 64 `.c` files in `fs/nfs`, several reference no inode, dentry, page
 or file at all — among them `fs_context.c` (mount option parsing, 1684
@@ -819,8 +815,8 @@ and `mount_clnt.c` (539).
 `kunit/nfs4session_test.c` exists to settle the point concretely. NFSv4.1
 session slot tables are bitmap allocation plus a control loop, need no I/O
 and no server, and their whole API is exported through
-`fs/nfs/nfs4session.h`. They are also squarely inside "NFSv4 state", which
-the same earlier claim listed as untestable.
+`fs/nfs/nfs4session.h`. They also sit squarely inside "NFSv4 state," which
+is otherwise a plausible category to write off as untestable.
 
 What remains genuinely out of reach for KUnit is narrower than first
 stated: anything requiring a mounted filesystem, a socket, an RPC round
@@ -828,7 +824,7 @@ trip, or a live server. `fs_context.c`'s parsers are reachable too, though
 they are `static` and would need `VISIBLE_IF_KUNIT` plus a constructed
 `struct fs_context`.
 
-## The UBSAN artefact, and a correction
+## The UBSAN artefact
 
 With the stock `.kunitconfig` a run reports **215 passed, 2 failed**. With
 `CONFIG_UBSAN=n` it reports **217 passed, 0 failed**:
@@ -854,14 +850,13 @@ shifts with binary layout: in the original 59-test baseline it appeared as
 `map NFSv2/v3 status.NFS_OK`. The report is emitted three times per run,
 producing two attributed failures.
 
-**This corrects an earlier claim in this document.** It previously recorded
 `64-fold("012345")` and `Encrypt empty plaintext with
-aes128-cts-hmac-sha256-128` as "two pre-existing upstream failures" at
-`v6.12.57`. That was wrong. Both were this artefact; upstream's
-`gss_krb5_test.c` passes in full. The mistake was reporting a red result
-without checking whether it was an assertion failure or unrelated log
-noise — the raw output shows a stack trace rather than an
-`EXPECTATION FAILED` line, which is what distinguishes the two.
+aes128-cts-hmac-sha256-128` are not pre-existing upstream failures at
+`v6.12.57`: both are this artefact, and upstream's `gss_krb5_test.c`
+passes in full. Distinguishing the two requires checking the raw output
+for an `EXPECTATION FAILED` line rather than treating any red result as
+an assertion failure — a UBSAN stack trace with no such line is this
+artefact, not a test failure.
 
 Whether the misaligned `task_struct` access is a genuine UML bug or a
 false positive has not been investigated. It is unrelated to NFS.

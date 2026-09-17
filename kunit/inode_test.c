@@ -3037,10 +3037,12 @@ static void vmtruncate_leaves_mtime_alone_without_delegation(struct kunit *test)
 /*
  * Real page-cache truncation
  *
- * The earlier attempt to reach this by setting nrpages by hand paniced,
- * and deserved to: it described pages that did not exist. The honest way
- * is to put an actual folio in the page cache, which makes nrpages
- * non-zero as a consequence rather than as a claim.
+ * These tests populate the mapping with actual folios via
+ * filemap_add_folio(), rather than setting mapping->nrpages directly.
+ * nrpages must reflect real entries in the mapping: the truncation and
+ * invalidation paths dereference mapping->a_ops unconditionally once they
+ * believe pages are present, so a nonzero count with no backing folios is
+ * not a valid fixture state.
  *
  * A plain folio carries no private data, so folio_needs_release() is
  * false and truncate_cleanup_folio() never reaches
@@ -3159,13 +3161,14 @@ static void invalidate_mapping_discards_cached_pages(struct kunit *test)
 }
 
 /*
- * There is deliberately no test here for nrpages > 0. Setting the count
- * without real folios behind it is a state the kernel cannot produce:
- * nfs_invalidate_mapping() then believes there is data to flush, reaches
- * filemap_write_and_wait_range() and dereferences mapping->a_ops, which a
- * fixture has no way to populate meaningfully. It panics, and rightly so.
- * Testing past this point needs genuine page-cache state, which is the
- * real boundary for this file.
+ * There is deliberately no test here for nrpages > 0 without backing
+ * folios. That count is not a state the kernel can produce: with nrpages
+ * nonzero, nfs_invalidate_mapping() believes there is data to flush and
+ * reaches filemap_write_and_wait_range(), which dereferences
+ * mapping->a_ops unconditionally. A fixture cannot populate that field
+ * meaningfully without real folios in the mapping. Testing past this
+ * point requires genuine page-cache state, which is the coverage
+ * boundary for this file.
  */
 
 /*
