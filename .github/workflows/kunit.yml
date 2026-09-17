@@ -115,7 +115,7 @@ jobs:
   # stays unpatched, so this job is the one place that continuously
   # confirms the patch still applies to the pinned tag and still lets a
   # full, unfiltered run finish without hanging.
-  kunit-v6.12.57-patched:
+  kunit-v6-12-57-patched:
     name: kunit (linux v6.12.57, live-lock fix backported)
     runs-on: ubuntu-latest
     # A full run should no longer live-lock with the fix applied; this
