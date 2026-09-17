@@ -22,11 +22,11 @@ Extra arguments pass through to `kunit.py`, e.g. `--raw_output`.
 Build deps beyond a normal toolchain: `flex bison bc gawk libelf-dev
 libssl-dev`.
 
-**Expect two reported failures.** They are not test failures: UBSAN emits
-an unrelated report that KUnit attributes to whichever test is running.
-See [The UBSAN artefact](#the-ubsan-artefact) before
-chasing one. Adding `--kconfig_add CONFIG_UBSAN=n` gives a clean run, at
-the cost of UBSAN coverage.
+**Expect spurious failures with UBSAN on.** UBSAN emits an unrelated report
+that KUnit attributes to whichever test is running. See
+[The UBSAN artefact](#the-ubsan-artefact) before chasing one;
+`--kconfig_add CONFIG_UBSAN=n` gives a clean run at the cost of UBSAN
+coverage.
 
 ## What is tested
 
@@ -47,176 +47,6 @@ Three areas, in increasing order of how much of the stack they touch:
   see ["xfstests cases that ARE ported"](#xfstests-cases-that-are-ported-generic-over-a-loopback-nfs-mount)
   below.
 
-The rest of this section covers the first two; the xfstests ports have
-their own section further down.
-
-`net/sunrpc/addr.c` is 354 lines of string ↔ `sockaddr` conversion with
-four exported entry points. `rpc_pton()` is the primitive every
-address-bearing NFS mount option is parsed through, including each address
-in VAST's `remoteports=`/`localports=` lists.
-
-`net/sunrpc/timer.c` is 123 lines implementing the RPC round-trip time and
-variance estimator, three exported functions of integer arithmetic. It
-decides retransmission timeouts for RPC over datagram transports.
-
-`fs/nfs_common/common.c` is 201 lines of NFS status to errno translation,
-three exported table lookups. They decide which errno an application
-ultimately sees for a given server response, so a wrong entry is a silent,
-protocol-visible bug.
-
-`net/sunrpc/xdr.c` and the inline helpers in `include/linux/sunrpc/xdr.h`
-implement the wire format every NFS operation travels over. XDR's defining
-rule is that objects are padded out to a 4-byte boundary and the padding is
-zero-filled (RFC 4506), which is where its classic bugs live.
-
-`kunit/addr_test.c` covers `net/sunrpc/addr.c`:
-
-| Suite | Covers |
-|---|---|
-| `sunrpc-addr-pton` | parsing valid IPv4/IPv6, rejecting malformed input, the `salen` and `INET_ADDRSTRLEN` guards, IPv6 scope ids |
-| `sunrpc-addr-ntop` | formatting, unsupported address families, scope-id suffix rules |
-| `sunrpc-addr-roundtrip` | `sockaddr → string → sockaddr` and `sockaddr → uaddr → sockaddr` preserve address and port |
-| `sunrpc-addr-uaddr` | RFC 5665 `h.h.h.h.p1.p2` form, both directions, plus malformed input |
-
-`kunit/nfs_common_test.c` covers `fs/nfs_common/common.c`, the NFS status
-to errno translation shared by client and server:
-
-| Suite | Covers |
-|---|---|
-| `nfs-errno-v23` | `nfs_stat_to_errno()` table entries, the `-EIO` default, and that `NFSERR_EAGAIN` is deliberately *not* mapped |
-| `nfs-errno-v4` | `nfs4_stat_to_errno()` for both tables, plus all four edges of the `10000 < stat <= 10100` pass-through window |
-| `nfs-errno-localio` | `nfs_localio_errno_to_nfs4_stat()` reverse mappings, the `NFS4ERR_SERVERFAULT` default, and table precedence |
-| `nfs-errno-roundtrip` | status round trips, and the deliberate `NFS4ERR_SERVERFAULT` asymmetry |
-
-`kunit/xdr_test.c` covers the XDR codec:
-
-| Suite | Covers |
-|---|---|
-| `sunrpc-xdr-align` | `xdr_align_size()`, `xdr_pad_size()`, `XDR_QUADLEN()`, and that object plus pad always fills whole XDR units |
-| `sunrpc-xdr-primitives` | opaque/string/netobj encode and decode, zero-filled padding, length-prefix layout, and the `XDR_MAX_NETOBJ` and caller-limit rejections |
-| `sunrpc-xdr-stream` | `xdr_stream` round trips for u32, u64, bool, fixed and variable opaques, uint32 arrays, and present/absent discriminators |
-| `sunrpc-xdr-overflow` | decoding past the end returns `-EBADMSG`, `xdr_inline_decode()` returns NULL, and encoding past capacity returns `-EMSGSIZE` |
-| `sunrpc-xdr-subsegment` | `xdr_buf_subsegment()` window arithmetic including both bounds edges, and `xdr_buf_trim()` clamping at empty |
-
-`kunit/nfs4session_test.c` covers the NFSv4.1 session slot table in
-`fs/nfs/nfs4session.c`:
-
-| Suite | Covers |
-|---|---|
-| `nfs4-slot-alloc` | slots issued lowest-first without repeats, `-EBUSY` on exhaustion, freed slots reused |
-| `nfs4-slot-accounting` | `highest_used_slotid` recomputed rather than decremented when the top slot is freed, `NFS4_NO_SLOT` when idle, `-E2BIG` lookups, target slotid updates |
-
-This file needs `CONFIG_NFS_V4=y` and `CONFIG_NFS_V4_1=y`, neither of which
-is in the stock `.kunitconfig`; the runner adds both.
-
-`kunit/inode_test.c` covers attribute-freshness comparison in
-`fs/nfs/inode.c`:
-
-| Suite | Covers |
-|---|---|
-| `nfs-inode-attr-cmp` | `nfs_inode_attrs_cmp()` across all three `change_attr_type` modes: monotonic (newer / unchanged / stale), strict monotonic (where equal counts as stale), undefined and missing change attributes returning "not sure", and the generation counter overriding the change attribute |
-| `nfs-inode-cache-invalid` | `nfs_zap_mapping()` and `nfs_set_cache_invalid()`: the data-cache flag is skipped when no pages are cached and set when they are, validity flags accumulate rather than replace, and `NFS_INO_REVAL_FORCED` is never stored |
-| `nfs-inode-cache-expiry` | `nfs_attribute_timeout()` jiffies window, a zero timeout expiring immediately, `nfs_check_cache_invalid()` honouring explicit flags, and a delegation suppressing expiry entirely |
-| `nfs-inode-out-of-order` | `nfs_ooo_merge()` gap recording, merging of abutting ranges in both directions, disjoint ranges kept apart, empty ranges collapsing, and gap-table overflow falling back to `NFS_INO_DATA_INVAL_DEFER` with the table released |
-| `nfs-inode-zap-caches` | `nfs_zap_caches()` invalidating data for regular files but withholding it for special files, and `nfs_invalidate_atime()` touching only the atime bit |
-| `nfs-inode-helpers` | `nfs_fileid_to_ino_t()` folding rather than truncating 64-bit fileids, `nfs_get_valid_attrmask()` mapping cache validity to answerable statx fields, `nfs_file_has_writers()`, and `nfs_zap_acl_cache()` dispatching through its protocol hook |
-| `nfs-inode-alloc` | `nfs_alloc_fattr()` starting invalid, `nfs_fattr_init()`/`nfs_fattr_set_barrier()` advancing the generation counter, `nfs_alloc_fhandle()` starting empty |
-| `nfs-inode-update` | `nfs_update_inode()`'s identity guards: a changed fileid or changed file type is refused with `-ESTALE` and marks the inode stale, a mounted-on fileid explains an apparent mismatch, and a matching reply refreshes the revalidation timestamp |
-| `nfs-inode-wcc` | `nfs_wcc_update_inode()` weak cache consistency: change attribute, mtime, ctime and size are each adopted only when the reply's "before" value matches what the inode holds, discarded when it does not, and size additionally withheld while writebacks are pending |
-| `nfs-inode-refresh` | `nfs_refresh_inode()` treating an empty fattr as a no-op and propagating `-ESTALE` from the identity guards below it |
-| `nfs-inode-check-attrs` | `nfs_check_inode_attributes()` flagging the right cache bit per changed attribute (size, mtime, change, mode, owner, nlink, atime), comparing only permission bits of the mode, enforcing the identity guards, and skipping everything under a delegation |
-| `nfs-inode-post-op` | `nfs_post_op_update_inode()` invalidating directory data but not regular-file data, and setting an attribute barrier |
-| `nfs-inode-update-body` | the application half of `nfs_update_inode()`: mtime/ctime/atime, size (including refusing to shrink under pending writebacks while still allowing growth), mode taking only permission bits, owner, nlink, and space-used converted to 512-byte blocks |
-| `nfs-inode-setattr` | `nfs_setattr_update_inode()` applying mode and ownership, invalidating the access cache on chown, and installing an attribute barrier |
-| `nfs-inode-timestamps` | `nfs_set_timestamps_to_ts()` storing explicit utimes values and clearing the matching cache bits, and `nfs_update_timestamps()` clearing ctime alongside mtime but leaving atime alone |
-| `nfs-inode-partial-update` | `nfs_ooo_record()` capturing a change gap only when both halves are present, and `nfs_inode_finish_partial_attr_update()` accepting an unmoved change attribute while declining when the change attribute is itself invalid or nothing is outstanding |
-| `nfs-inode-cache-match` | `nfs_find_actor()`, the predicate `iget5_locked()` uses to match a cached inode: each of its four rejection reasons (fileid, type, filehandle, staleness) tested separately, plus `nfs_init_locked()` seeding an inode that the same descriptor then matches |
-| `nfs-inode-readdirplus` | `nfs_getattr_readdirplus_enable()` requiring server support, no pending writebacks, and an attribute timeout long enough for the extra data to still be useful |
-| `nfs-inode-revalidate` | `__nfs_revalidate_inode()` error handling with a stubbed `getattr`: `-ESTALE` marking a regular file stale but only zapping a directory's caches, `-ETIMEDOUT` absorbed under `NFS_MOUNT_SOFTREVAL` and propagated without it, other errors passed through, and a known-stale inode short-circuited without a round trip |
-| `nfs-inode-revalidate-gate` | `nfs_revalidate_inode()` skipping the round trip when the cache is valid, issuing one when the requested flag is invalid, reporting `-ESTALE` without querying, and `nfs_mapping_need_revalidate_inode()` |
-| `nfs-inode-sync` | `nfs_sync_inode()` and `nfs_commit_inode()` on a clean inode, commit-counter balance across repeated calls, and `nfs_sync_mapping()` short-circuiting with no cached pages |
-| `nfs-inode-lifetime` | `nfs_drop_inode()` dropping a stale inode even when the generic rules would keep it, `nfs_fattr_fixup_delegated()` stripping server timestamps under a delegation but keeping ones the client has already marked invalid, and `nfs_file_has_buffered_writers()` excluding O_DIRECT files |
-| `nfs-inode-lock-context` | `nfs_init_lock_context()` starting referenced and idle, and `__nfs_find_lock_context()` matching on the current task's file table while skipping contexts owned by another |
-| `nfs-inode-open-context` | `get_nfs_open_context()` refusing a context whose count has reached zero, `nfs_inode_attach_open_context()` linking to the inode and invalidating data only when out-of-order gaps are outstanding, and `nfs_find_open_context()` matching on credential, exact access mode and open state |
-| `nfs-inode-ooo-state` | `nfs_ooo_test()` distinguishing a deferred invalidation and recorded gaps from an allocated-but-empty gap table, and `nfs_clear_inode()` dropping ACL validity |
-| `nfs-inode-wait-bit` | `nfs_wait_bit_killable()` signal semantics per wait mode: interruptible aborts on any signal, uninterruptible ignores signals entirely, killable ignores a non-fatal one, and an exiting task returns `-EINTR` before scheduling at all |
-| `nfs-inode-pagecache` | `nfs_vmtruncate()` shrinking, clearing size invalidity, dropping data invalidity and out-of-order gaps only when truncating to zero, refreshing mtime under a delegation but not without one, and rejecting negative or over-limit sizes; `nfs_invalidate_mapping()` with nothing cached |
-
-`nfs_vmtruncate()` is covered for its bookkeeping but **not** for its
-namesake. Every branch of the size check, the validity flags and the
-delegated-mtime update is exercised, but `truncate_pagecache()` is only
-ever called on an empty mapping, so no page is ever actually dropped.
-The function's own logic is tested; the truncation it performs is not.
-
-### Testing the page cache for real
-
-These tests put actual folios in the page cache and check that truncation
-and invalidation remove them, rather than only exercising the
-empty-mapping fast paths. Three pieces make that possible:
-
-- `address_space_init_once()` is exported, and sets up the xarray, the
-  `i_mmap` root and the locks.
-- `filemap_add_folio()` inserts a real folio, so `nrpages` becomes
-  non-zero as a *consequence* rather than as a claim.
-- `mapping->a_ops` must point somewhere. The page cache dereferences it
-  unconditionally in places -- `filemap_free_folio()` reads
-  `a_ops->free_folio` before testing it -- so the kernel's own
-  `empty_aops`, the all-NULL table `inode_init_always()` installs, is
-  used.
-
-A plain folio carries no private data, so `folio_needs_release()` is
-false and `truncate_cleanup_folio()` never reaches
-`a_ops->invalidate_folio`. That is why no filesystem-specific operations
-are needed.
-
-Two fixture states will panic rather than run cleanly:
-
-1. Setting `nrpages` by hand on an empty mapping. The code believes there
-   is data to flush, reaches `filemap_write_and_wait_range()` and
-   dereferences a NULL `a_ops`.
-2. Adding real folios but leaving `a_ops` NULL, which crashes in
-   `filemap_free_folio()` during truncation.
-
-The rule both illustrate: **a fixture may leave things out, but it must
-not describe a state the kernel cannot produce.** A zeroed pointer the
-code tests for is fine; a count that contradicts the structure it
-describes, or an absent vtable the code dereferences unconditionally, is
-not.
-
-`nfs_wait_bit_killable()` calls `schedule()`, which at first glance makes
-it look unreachable from a test. `schedule()` only blocks when the task
-state is something other than `TASK_RUNNING`, and the wait_bit machinery
-sets that state *before* invoking the action function. Called directly
-from a test the state is still `TASK_RUNNING`, so `schedule()` yields and
-returns immediately. That leaves the signal handling reachable, which is
-the half worth testing. `TIF_SIGPENDING` is set and cleared around each
-call so nothing leaks into the rest of the run.
-
-`get_nfs_open_context()` is guarded by `refcount_inc_not_zero()`, so a
-context already being torn down is refused rather than resurrected;
-getting that wrong would hand out a freed context. The open-context tests
-need a dentry, but only for its `d_inode` and `d_sb` pointers, so a
-zeroed struct with those two fields set is enough.
-
-`nfs_fattr_fixup_delegated()` has the subtler rule of the three: a
-delegation makes the client's timestamps authoritative, so server values
-are discarded -- but only for times whose caches are still believed
-valid. A timestamp the client has already marked invalid survives,
-because the delegation is not a substitute for knowledge the client has
-admitted it lost.
-
-`nfs-inode-sync` is deliberately shallow and worth flagging as such. Each
-step of `nfs_sync_inode()` has a cheap exit when nothing is outstanding:
-`inode_dio_wait()` returns immediately with `i_dio_count` at zero,
-`filemap_write_and_wait()` skips writeback when `nrpages` is zero, and the
-commit loop terminates at once on an empty commit list. That makes the
-clean path reachable, and these tests pin it -- a regressed guard would
-hang here rather than return.
-
-What remains genuinely unreachable is the case that matters: actually
-flushing dirty pages needs real page-cache state, and no amount of
-struct-filling substitutes for it.
-
 ### Talking to a "server" without one
 
 `__nfs_revalidate_inode()` reaches the wire through
@@ -230,15 +60,13 @@ directory than a regular file, are one-line branches that a functional
 test would have to work hard to reach.
 
 The same vtable is the seam behind the delegation and ACL stubs elsewhere
-in this file. It is worth stating plainly: in `fs/nfs`, protocol
-operations are indirect calls, so "needs a server" is almost never the
-real obstacle.
+in this file: in `fs/nfs`, protocol operations are indirect calls, so
+"needs a server" is almost never the real obstacle.
 
-`nfs_find_actor()` is worth singling out: a false positive there hands back
-the wrong inode entirely, and the filehandle check is what catches two
-different files that happen to share a fileid across filesystems. The
-callback is pure, so it can be driven directly without involving the inode
-cache at all.
+`nfs_find_actor()`: a false positive there hands back the wrong inode
+entirely, and the filehandle check is what catches two different files that
+happen to share a fileid across filesystems. The callback is pure, so it can
+be driven directly without involving the inode cache.
 
 The `nfs-inode-check-attrs` cases all start from an inode and a reply that
 agree in every respect and then perturb exactly one attribute, so a
@@ -263,17 +91,10 @@ both directions per attribute rather than only the happy path.
 These are `static inline` in a private header, so unlike `inode.c` nothing
 needs un-staticing — the test only has to live in `fs/nfs` to include it.
 
-One finding worth recording: a zero-length layout range does **not**
-intersect itself, but **does** intersect any range that strictly straddles
-its offset, because the predicate is `start2 < end1 && start1 < end2`. The
-test asserts that behaviour rather than the intuitive "empty intersects
-nothing."
-
-`nfs_inode_attrs_cmp()` decides whether attributes in an RPC reply are
-newer than what the inode holds. RPC replies can be reordered, so a stale
-reply overwriting fresh attributes is cache corruption that is very hard to
-reproduce deliberately — exactly the kind of thing worth pinning in a unit
-test rather than hoping an integration run trips over it.
+A zero-length layout range does **not** intersect itself, but **does**
+intersect any range that strictly straddles its offset, because the
+predicate is `start2 < end1 && start1 < end2`. The test asserts that rather
+than the intuitive "empty intersects nothing."
 
 ### What it costs to test a file like inode.c
 
@@ -301,11 +122,6 @@ that one field set is enough. `nfs_have_delegated_attributes()` is
 reachable the same way: it dispatches through
 `NFS_PROTO(inode)->have_delegation` — a function pointer, so a three-line
 stub replaces the whole delegation subsystem.
-
-The fixture grew from three structs to six (adding `nfs_client`,
-`nfs_rpc_ops` and `address_space`) and gained a `spin_lock_init()`. That is
-the entire cost of moving from pure comparison logic to functions that take
-inode locks and consult the page cache.
 
 What genuinely remains out of reach is narrower still: functions that
 *issue RPCs* or *wait*, where there is no seam to stub and no substitute
@@ -354,7 +170,7 @@ return 0 — every IPv6 case would pass while testing nothing.
 
 ## xfstests cases that ARE ported: generic/* over a loopback NFS mount
 
-The `kunit/xfstests/` tree holds ports of **44 xfstests generic cases**,
+The `kunit/xfstests/` tree holds ports of **43 xfstests generic cases**,
 each a KUnit suite named after its original (`xfstests/generic/001` ...),
 each running against a real NFS mount served by knfsd inside the same UML
 kernel. The deployment lives in `kunit/xfstests/nfs_fixture.{c,h}`: tmpfs
@@ -366,7 +182,7 @@ Bring-up is refcounted per suite, so every full run also exercises ~60
 consecutive nfsd restart and mount/unmount cycles.
 
 Ported: 001 002 005 006 007 011 013 014 020 023 028 029 030 035 037 069 070 074 075 087 088 089 109 123
-126 129 131 132 169 193 213 221 228 236 245 257 285 286 306 308 309
+126 129 131 132 169 193 213 221 228 236 245 257 285 286 308 309
 313 314 360.
 
 Two rules bound the set. A case upstream reports `[not run]` on an NFSv4.2
@@ -383,68 +199,35 @@ that reduction loses the point of the test, the port says so in its header;
 where upstream keeps an NFS-specific golden image (`035.out.nfs`), the port
 follows it rather than the default one.
 
-The families: protocol-pin mirrors for ops NFS lacks (021 collapse, 058
-insert, 092 bare KEEP_SIZE, 024 renameat2 flags, 110 clone-on-tmpfs, 004
-O_TMPFILE); namespace semantics (023, 035 sillyrename-on-rename-over, 089
-mtab link/rename churn, 109, 245, 294, 309, 360); data integrity (001
-chain copier, 075 mini-fsx with a shadow model, 069 O_APPEND, 071, 074,
-129, 132, 169, 213 ALLOCATE boundaries, 255 punch matrix, 286 seek-driven
-sparse copy, 308 1TB offsets); ENOSPC on a 16MB export (015, 102, 204,
-273, 275, 320); timestamps (221, 236, 313); xattrs -- RFC
-8276 works end to end here -- (020, 037, 062, 070 model-checked storm,
-097); permissions via in-kernel credential switching with dropped
-capabilities (087, 088, 123, 126, 193, 314 SGID inheritance); plus POSIX
-locks as NFSv4 LOCK state (131), SEEK RPCs (285/286), READDIR cookie
-stability (257), RLIMIT_FSIZE (228) and device nodes on RO mounts (306).
+The families: namespace semantics (023 rename matrix, 028 path resolution
+across renames, 035 sillyrename-on-rename-over, 089 mtab link/rename churn,
+109, 245, 309, 360 long symlink target); data integrity (001 chain copier,
+014 truncfile, 075 mini-fsx with a shadow model, 029/030 mapped writes,
+069 O_APPEND, 074, 129, 132, 169, 213 ALLOCATE boundaries, 286 seek-driven
+sparse copy, 308 1TB offsets); timestamps (221, 236, 313); xattrs -- RFC
+8276 works end to end here -- (020, 037, 070 model-checked storm);
+permissions via in-kernel credential switching with dropped capabilities
+(087, 088, 123, 126, 193, 314 SGID inheritance); plus POSIX locks as NFSv4
+LOCK state (131), SEEK RPCs (285/286), READDIR cookie stability (257),
+RLIMIT_FSIZE (228), symlink ELOOP limits (005) and the directory-stress
+pair (011/013).
 
 NFS-specific semantics the porting surfaced and pinned, each found as a
 failing "wrong" expectation and verified before being encoded:
 
-- RENAME_NOREPLACE is two-layer: EEXIST from the VFS's exclusive lookup
-  when the target exists (works over NFS with no protocol support), EINVAL
-  from nfs_rename once past it (024).
-- EEXIST-vs-EROFS on a read-only mount depends on the dcache: primed
-  names give EEXIST, cold lookups take nfs_lookup's exclusive-create
-  shortcut, never ask the server, and yield EROFS (294).
 - A same-size truncate is optimised away by the client -- no SETATTR, no
   ctime/mtime update -- diverging from local filesystems (313).
 - Renaming over an open target sillyrenames it: nlink stays 1 and a .nfs
   entry appears until the last close (035); removal storms can leave
   transient .nfs entries, hence the fixture's settled rmdir (011/013).
-- Space freed by REMOVE returns eventually, not immediately (server-side
-  file caching): the ENOSPC ports wait, bounded (015/102/204).
-- statfs over NFS reports f_bsize as the 128K transfer size, not the
-  filesystem block size -- unit bugs in tests are easy (015/102/204).
 - In-kernel opens lack force_o_largefile(): without O_LARGEFILE the 2GiB
   MAX_NON_LFS limit applies (308).
-- xattr gets are served from the client's xattr cache; only a server-side
-  check (through the export directory) proves the SETXATTR wire value
-  (097 -- added after a truncation mutation went uncaught).
-- `common/punch`'s engine is shared by four collapse tests that differ
-  only in flags: 021 plain, 022 `-d` (no fsync), 012 `-k`, 016 `-d -k`.
-  All four are now ported, because the flags are not cosmetic:
-  - `-k` keeps the scratch file between the 17 layouts, so each is built
-    on the previous one's result. That is the whole difference between 012
-    and 021, and upstream's golden files differ because of it. 012.c and
-    016.c are cumulative to match, and assert the carryover positively
-    (an offset a layout never wrote must still hold earlier data) --
-    a shadow-model test would otherwise pass either way.
-  - `-d` drops the fsync, so the layouts reach the server only via
-    writeback. 016.c/022.c therefore double as close-to-open consistency
-    tests, and are the only ports that exercise it: mutating
-    `nfs4_file_flush()` to return early fails both on the first case that
-    writes anything, while 012 (same layouts, with fsync) still passes.
-  Confirming that mutation is caught required accounting for three paths
-  that flush independently of the port's own checks: `nfs_getattr()`
-  flushes when STATX_CTIME/MTIME are asked for (inode.c:982),
-  `nfs_file_read()` flushes before invalidating a mapping, and the v4
-  mount's `.flush` is `nfs4_file_flush()` (nfs4file.c:111) -- not
-  `nfs_file_flush()` (file.c:140), which serves v2/v3 only. Hence the
-  strict ordering in those ports (server check first after close, size
-  and client reads afterwards) and the permanent per-case log line
-  reporting whether the server had the data before the close.
-
-The 020-030 band is now complete.
+- xattr gets are served from the client's xattr cache, so only a
+  server-side check through the export directory proves the SETXATTR wire
+  value (020/037/070).
+- A write's dirty range is rounded back up to the page boundary by
+  `nfs_update_folio()`, so a "drop the last byte" mutation is absorbed
+  entirely for page-aligned writes and only the unaligned ports catch it.
 
 029 and 030 both need `vm_mmap()`, which normally requires `current->mm` --
 absent in the kernel thread a KUnit case runs in. That is not a blocker:
@@ -458,36 +241,27 @@ and 029 and 030 are both in. Writes into a mapping go through
 borrowed mm (a bare dereference happens to work on UML but not under SMAP or
 PAN).
 
-**030** additionally drives `mremap` around its truncates, and `mremap`
-exists only as a syscall entry point (`SYSCALL_DEFINE5(mremap, ...)`) with
-only static helpers. `nm` on `.kunit/vmlinux` confirms it -- `__do_sys_mremap`,
-`__se_sys_mremap` and `sys_mremap` are all local symbols (`t`, not `T`), so
-nothing outside `mm/mremap.c` can call it, and there is no `vm_mmap()`
+**030** additionally drives `mremap` around its truncates, and `mremap` is
+unreachable from a KUnit case: it exists only as a syscall entry point
+(`SYSCALL_DEFINE5(mremap, ...)`) with static helpers, and `nm` on
+`.kunit/vmlinux` shows `__do_sys_mremap`, `__se_sys_mremap` and
+`sys_mremap` all as local symbols (`t`, not `T`). There is no `vm_mmap()`
 equivalent.
 
-**That access limit turns out not to matter, because the mremap calls in
-030 do nothing.** `mremap` rounds both lengths up to a page, and 030's file
-is 5017k, which is 1254.25 pages. `PAGE_ALIGN(5017k)` and `PAGE_ALIGN(5020k)`
-are both 5020k, so every `mremap -m 5020k` / `mremap 5017k` in upstream 030
-takes the `old_len == new_len` path and returns the same address without
-touching a VMA. What they resize is xfs_io's own record of the mapping
-length, which is what lets its next `mwrite` clear its own bounds check. A
-5017k mapping already covers the whole range 030 writes to.
+That does not matter, because 030's `mremap` calls are no-ops. `mremap`
+rounds both lengths up to a page, and 030's file is 5017k -- 1254.25 pages.
+`PAGE_ALIGN(5017k)` and `PAGE_ALIGN(5020k)` are both 5020k, so every
+`mremap -m 5020k` / `mremap 5017k` takes the `old_len == new_len` path and
+returns the same address without touching a VMA. What they resize is
+xfs_io's own record of the mapping length, which is what lets its next
+`mwrite` clear its own bounds check; a 5017k mapping already covers
+everything 030 writes. `kunit/xfstests/generic/030.c` asserts that rounding
+directly, so if the premise stops holding the test says so rather than
+silently drifting.
 
-This was confirmed directly: a forwarding wrapper appended to
-`mm/mremap.c` let the grow and shrink run through it, with an assertion
-that a write past the shrunk mapping must fail if the shrink actually
-landed. It did not fail -- the tail was still mapped, confirming the
-`old_len == new_len` no-op path. The wrapper and the kernel edit were
-removed afterward; a kernel change to call a function that provably does
-nothing is worse than no test. `kunit/xfstests/generic/030.c` asserts the
-rounding directly instead, so if the premise ever stops holding the test
-says so rather than silently drifting.
-
-What 030 does add is a second layout over 029's code path: unaligned mapped
-writes inside the last page of a ~5 MB file, versus 029's page-multiple 5 KB
-ones. It is worth being precise about how much that is worth, because two
-mutations run against both give a split answer:
+030 adds a second layout over 029's code path: unaligned mapped writes
+inside the last page of a ~5 MB file, versus 029's page-multiple 5 KB ones.
+Two mutations run against both give a split answer:
 
 | mutation | 029 | 030 |
 |---|---|---|
@@ -495,7 +269,7 @@ mutations run against both give a split answer:
 | drop `nfs_folio_length()`'s partial-last-folio clamp (internal.h) | catches | **misses** |
 
 The clamp mutation is caught by 029 because its third case is 5121 bytes, and
-is invisible to 030 -- including to the mid-test check described below.
+is invisible to 030 -- including to the mid-test check described next.
 **030 is not a strictly stronger 029**; the two catch different mutations
 and neither subsumes the other.
 
@@ -514,158 +288,6 @@ stays green; and making `nfs_vmtruncate()` skip `truncate_pagecache()` leaves
 stale bytes past the new EOF, which 029 catches both server-side and
 client-side ("byte 5118 is 58, expected 00") alongside the older
 nfs-inode-pagecache unit tests and 014/075.
-
-What the newly ported four added, and what porting them taught:
-
-- **025** runs `_rename_tests`' real 5x5x2 type matrix for RENAME_EXCHANGE,
-  where the already-ported 024 only probed one combination. The matrix
-  splits into two regimes -- either name absent gives ENOENT from
-  do_renameat2()'s own checks and never reaches NFS; both present gives
-  EINVAL from nfs_rename() -- so 024's single probe was exercising just one
-  of them. Teeth confirmed: making nfs_rename() accept flags fails 024 and
-  025 together.
-- **026** pins that POSIX ACLs are unusable over NFSv4 (no handler; and the
-  tmpfs export is built without CONFIG_TMPFS_POSIX_ACL) and that the NFSv4
-  ACL xattr refuses cleanly -- measured EOPNOTSUPP, reported rather than
-  hard-pinned since an ACL-carrying export would answer differently.
-  Mutation established a limit worth writing down: giving the nfs4_acl
-  handler the POSIX name so the call reaches the wire leaves the test
-  passing, because the server refuses with the same errno. The test pins
-  the user-visible contract, not which layer refuses, and now says so.
-- **027** fills eight directories round-robin to ENOSPC on a 16MB export,
-  four times, checking a 2MB reserve file survives each squeeze. Two
-  findings: the reserve check had to move server-side (a client-side read is
-  answered from the page cache), and 027 detects ENOSPC at *file creation*
-  rather than at write/fsync -- the fsync-swallowing mutation that fails
-  015/204/273/275 leaves 027 green. It is the only ENOSPC port covering the
-  create path, and no one-line kernel mutation for it has been found yet.
-- **028** is upstream's getcwd() race, rendered as d_path() over a churning
-  tree including a renamed ancestor. Teeth confirmed: a nfs_rename() that
-  returns success without telling the server fails it.
-
-### The 031-039 band
-
-031, 032, 033, 034 and 039 are ported; **036 and 038 are not, and will not
-be.** Both need things the fixture cannot have and that no amount of
-restructuring supplies:
-
-- **036** is CVE-2014-8086, an aio/dio race. It runs the compiled
-  `aio-dio-fcntl-race` binary, which needs libaio, multiple userspace
-  threads, and `fcntl()` toggling `O_DIRECT` underneath in-flight AIO. There
-  is no AIO submission path callable from a KUnit case, and the race is
-  between userspace threads by construction.
-- **038** stresses btrfs block-group allocation against `fstrim` running in
-  parallel, over 200,000 files. tmpfs has no discard, NFS has no trim
-  operation, and the bug is in btrfs' block group lifecycle -- there is no
-  client-side residue to test.
-
-Of the five that are in, two are honest partial ports and the docs should not
-pretend otherwise. **034 and 039 are both dm-flakey crash-consistency tests,
-and the crash is the test.** dm-flakey needs a block device; the fixture
-exports tmpfs and runs client and server in one kernel, so writes cannot be
-dropped and replayed. Neither port tests what upstream tests, and **nothing in
-the ported set covers crash consistency at all** -- it is the largest single
-gap in this collection.
-
-What those two keep is still NFS-specific rather than filler. Both upstream
-tests end by unlinking every entry and calling rmdir, and over NFS that is
-where sillyrename bites: an unlinked file whose `struct file` still awaits its
-delayed fput becomes a `.nfsXXXX` entry, the directory is not empty, and rmdir
-returns ENOTEMPTY -- the same errno as the btrfs bug, from an unrelated cause.
-Both ports therefore use the **plain** `xfs_rmdir()`, not
-`xfs_rmdir_settled()`, so that condition is reported rather than retried away.
-034 additionally covers directory fsync (`nfs_fsync_dir`), which no other port
-calls; 039 asserts nlink at each step through a forced revalidation, since a
-stale cached nlink would pass a test that only checked the file still exists.
-
-The other three:
-
-- **031** is generic/012's collapse-refusal in a second layout: two
-  overlapping writes whose offsets and lengths are not page multiples (55756
-  bytes at 185332, 63394 at 133228), where 012's layouts are all 64K units.
-  Same relationship 030 has to 029 -- a layout, not a mechanism. Its golden
-  output inverts against upstream's, because upstream's expected size (196032)
-  is what the file measures after two successful collapses remove 45056 bytes,
-  and here they are refused.
-- **033** is thinner still, and labelled as such in the source: NFSv4.2 has no
-  ZERO_RANGE, so all sixteen `fzero` calls return EOPNOTSUPP and the file keeps
-  its data. Upstream expects 64K of zeroes; this expects 64K of 0xcd. Its
-  value is forward-looking -- if this ever stops returning EOPNOTSUPP, something
-  is emulating ZERO_RANGE client-side, and the byte check says whether the
-  emulation is right.
-- **032** is the one with genuinely new coverage. Its fiemap and
-  unwritten-extent assertions cannot be ported (neither concept reaches an NFS
-  client), but what remains is **the only case in the set with a second thread
-  inside the NFS client at the same time as the writer**: a background loop
-  calling `sync_filesystem()` on the NFS superblock while sub-page writes, a
-  real ALLOCATE, a 1 MB overwrite and an fsync run against the same file. It
-  is a check on locking rather than on sequencing. The case logs its sync-loop
-  count and fails if it is zero, so a pass cannot silently mean the
-  concurrency never happened.
-
-### The 040-049 band
-
-Ported: **040, 041, 047, 048**. **049 is folded into 048** as a second case,
-not given a suite of its own. **042, 043, 044, 045, 046 are not ported.**
-
-This band is dominated by two upstream families, and both lose their core to
-the same missing capability:
-
-- **040 and 041** are dm-flakey crash tests, like 034 and 039. No block
-  device, no crash, no log replay.
-- **043-049** are the "NULL files problem" family. Every one of them calls
-  `_scratch_shutdown` (the XFS shutdown ioctl, `src/godown`) and then counts
-  extents with fiemap. NFS has neither: there is no shutdown ioctl, and
-  fiemap is not in NFSv4.2, so "non-zero size but no extents" is a question
-  the client cannot ask.
-
-**Crash consistency remains entirely uncovered by this collection.** Four
-ports now sit in its shadow (034, 039, 040, 041) and none of them test it.
-
-What the four ports keep:
-
-- **040** reduces to link-count bookkeeping at scale, which over NFS is a
-  protocol question rather than an on-disk one -- nlink travels in GETATTR and
-  is cached on the client inode. Upstream's entire output is two link counts
-  and the file's contents, and that is exactly the part that survives:
-  `N + 2` after the links are made, `1` after the bulk unlink, both read with
-  a forced revalidation, then the data checked on the server so a surviving
-  inode is proven reachable rather than ESTALE.
-- **041** is the one with content 040 does not have. It removes a link and
-  then **recreates a link under the name it just removed** before fsyncing.
-  Over NFS that is a dentry-cache question: the client must not serve the
-  removed name from a stale dentry, nor hide the recreated one behind a
-  negative entry. The port keeps upstream's name-by-name sweep including its
-  inverted check for the single index that stays removed, because a link
-  count alone cannot see either failure.
-- **047** is per-file `fsync` in bulk -- `nfs_file_fsync()` -> `nfs_wb_all()`
-  plus COMMIT, across many files rather than one. It is the only case in the
-  set shaped that way, so a client that dropped one COMMIT among hundreds
-  fails here and nowhere else.
-- **048** is the same durability question through `sync_filesystem()` on the
-  whole superblock, which is a different path from 047's per-file fsync and
-  the only place in the set where syncfs is the durability mechanism.
-
-**On folding 049 in.** 048 syncs as it writes; 049 writes everything unsynced
-and syncs once at the end. Upstream keeps them apart because the XFS log
-replay paths they expose *after a shutdown* differ -- and without a shutdown
-that divergence does not exist, so over NFS they land on the same code path. A
-separate 049 suite would be a copy of 048 with one loop moved. Both shapes run
-as cases of 048; the distinction upstream draws is real, and this deployment
-simply cannot see it.
-
-The five that are out, individually:
-
-- **042** needs `src/godown` plus a loopback-mounted filesystem image inside
-  the scratch mount, and detects stale data by pre-writing a pattern to the
-  *image*. There is no image and no block layer here, and its three operations
-  (`falloc -k`, `fpunch`, `fzero -k`) are two that NFS rejects outright.
-- **043, 044, 045, 046** are shutdown-plus-fiemap, as above. Strip both and
-  what remains is "write files, optionally truncate, check size and content"
-  -- 045 is write-64K-truncate-to-32K and 046 is write-32K-truncate-to-64K,
-  which is truncate-down-discards and truncate-up-zero-fills, already covered
-  by 012, 029 and 030. Porting them would add four near-identical suites and
-  no coverage, so they are declined rather than padded in.
 
 ### A confirmed host-signal livelock on v6.12.57 (upstream bug, backported here)
 
@@ -760,80 +382,29 @@ the directory it was invoked from, so the path must be absolute.
 
 ### A note on green results and kernel logs
 
-generic/032's background syncer originally called `sync_filesystem()` without
-holding `s_umount`. The case reported PASSED while emitting **404 WARNs** in a
-single run -- three per sync loop, from `fs/sync.c:38` and two places in
-`sync_inodes_sb()` (`fs/fs-writeback.c:2626` and `:2803`), each of which opens
-with `WARN_ON(!rwsem_is_locked(&sb->s_umount))`. `SYSCALL_DEFINE1(syncfs)`
-takes that lock around the same call; the thread now does too, as does
-generic/048's `g048_syncfs()`.
+**A green KUnit result says nothing about what the kernel logged underneath
+it.** Nothing in the runner fails a suite for WARNing, and the default
+(non-raw) `kunit.py` output does not show kernel log lines at all. A case
+can pass while emitting hundreds of WARNs -- a thread calling
+`sync_filesystem()` without holding `s_umount` trips
+`WARN_ON(!rwsem_is_locked(&sb->s_umount))` three times per call and still
+reports PASSED. Run with `--raw_output` when a port does anything the VFS
+expects a syscall wrapper to have set up.
 
-The lesson is worth keeping: **a green KUnit result says nothing about what
-the kernel logged underneath it.** Nothing in the runner fails a suite for
-WARNing, and the default (non-raw) `kunit.py` output does not show kernel log
-lines at all -- the warnings were only visible because a `--raw_output` run
-was being read for another reason. The same run also confirmed the syncer is
-genuinely concurrent with the writer: 134 sync loops interleaved with the
-10 write iterations.
+## Why the unit tests are not ports
 
-Two properties of the ports are worth recording because they are easy to
-misdiagnose as test bugs:
-`nfs_update_folio()` rounds a write's dirty range back up to the page
-boundary, so the "drop the last byte" mutation is absorbed entirely for
-page-aligned writes -- which is why it fails the unaligned ports and not
-012/027. And 025's cleanup could present as a "partially applied exchange"
-that was in fact its own directory leak: removing the "tree" layout's
-child leaves a sillyrename entry pending, so a plain rmdir returns
-ENOTEMPTY. The fix is `xfs_rmdir_settled()` plus an assertion at the
-cleanup itself, so such a leak is reported where it happens rather than
-surfacing as a misleading failure in an unrelated later case.
+The unit suites are not miniature xfstests cases; they test the layer
+beneath one. `generic/007` checks that `open`/`unlink`/`stat` return
+sensible errnos end to end, and `fs/nfs_common/common.c` is the pure lookup
+deciding what those errnos are. The `generic/008`/`009` page-boundary cases
+have their analogue in XDR's 4-byte alignment rule. That is how every file
+in `kunit/*.c` was chosen: find the pure decision underneath a system-level
+concern and pin it directly.
 
-Validation on the full set: three one-line kernel mutations -- the client
-write path dropping a byte (17 failures across the data ports), rename
-silently skipping its RPC (8 failures across the namespace ports), and
-SETXATTR truncating its wire value (caught precisely by 097's server-side
-check) -- each reverted to a double-confirmed green run. Whole-run cost of
-all 69 ports plus fixture cycles: under two minutes wall clock including
-the kernel build.
-
-## Why these are not ports of xfstests cases
-
-An obvious-sounding idea is to reimplement xfstests cases as KUnit tests.
-It does not work, and the first ten `generic/` tests show why concretely:
-
-| Test | What it exercises |
-|---|---|
-| `generic/001` | `creat`/`write`/`unlink` chains, checked for data corruption |
-| `generic/002` | `st_nlink` after `link()` |
-| `generic/003` | `noatime`/`relatime`/`strictatime`/`nodiratime` mount options |
-| `generic/004` | `O_TMPFILE` opens, linked back into the namespace |
-| `generic/005` | symlink `ELOOP` limits |
-| `generic/006` | filename permutations |
-| `generic/007` | `open`/`unlink`/`stat` errno consistency |
-| `generic/008`, `009` | `fallocate` zero-range page boundaries |
-| `generic/011` | directory stress |
-
-Every one is a syscall- and VFS-level behaviour test. KUnit runs inside the
-kernel with no mounted filesystem, no userspace process issuing syscalls,
-and for NFS no server and no network. There is no function to call that
-answers "does `relatime` suppress this atime update" — that behaviour *is*
-the system: VFS, NFS client, XDR, RPC and server together. A KUnit test
-named after `generic/003` would be a test in name only.
-
-The survey was repeated over the next hundred `generic/` tests
-(`generic/012` through `generic/111`) with the same result: none have a
-unit-testable core. Their group tags show why — `metadata` (33), `log`
-(23, journal replay after a crash), `fiemap` (22), `rw` (21), `prealloc`
-(20), `shutdown` (13), `stress` (11). Every category needs a mounted
-filesystem and real I/O.
-
-What xfstests *is* good for here is pointing at the layer underneath.
-`generic/007` checks that `open`/`unlink`/`stat` return sensible errnos end
-to end, and `fs/nfs_common/common.c` is the pure lookup deciding what those
-errnos are; the `generic/008`/`009` page-boundary cases have their analogue
-in XDR's 4-byte alignment rule. Neither is a port. Both are the unit-level
-layer beneath a system-level concern, which is how every file here was
-chosen.
+A case whose subject *is* the system -- "does `relatime` suppress this atime
+update", journal replay after a crash, anything in the `shutdown` or
+`fiemap` groups -- has no such layer to drop to. Those either get a real
+mount (the `kunit/xfstests/` ports above) or they do not get tested here.
 
 ## fs/nfs is not wholly untestable
 
@@ -860,16 +431,8 @@ they are `static` and would need `VISIBLE_IF_KUNIT` plus a constructed
 
 ## The UBSAN artefact
 
-With the stock `.kunitconfig` a run reports **215 passed, 2 failed**. With
-`CONFIG_UBSAN=n` it reports **217 passed, 0 failed**:
-
-```sh
-kunit.py run --kunitconfig=net/sunrpc/.kunitconfig --kconfig_add CONFIG_UBSAN=n
-```
-
-The two "failures" are not test failures at all. The stock `.kunitconfig`
-sets `CONFIG_UBSAN=y`, and under the UML build UBSAN reports a misaligned
-access unrelated to any of this code:
+The stock `.kunitconfig` sets `CONFIG_UBSAN=y`, and under the UML build
+UBSAN reports a misaligned access unrelated to any of this code:
 
 ```
 UBSAN: misaligned-access in ../kernel/exit.c:774:2
@@ -878,19 +441,19 @@ which requires 64 byte alignment
 ```
 
 KUnit attributes whatever lands in the log to whichever test happens to be
-running, so the report surfaces as a failed case. Which case it lands on
-shifts with binary layout: in the original 59-test baseline it appeared as
-`64-fold("012345")`, and after adding more tests it moved to
-`map NFSv2/v3 status.NFS_OK`. The report is emitted three times per run,
-producing two attributed failures.
+running, so this surfaces as a failed case — and which case it lands on
+shifts with binary layout, so it moves between runs. Suppress it with:
 
-`64-fold("012345")` and `Encrypt empty plaintext with
-aes128-cts-hmac-sha256-128` are not pre-existing upstream failures at
-`v6.12.57`: both are this artefact, and upstream's `gss_krb5_test.c`
-passes in full. Distinguishing the two requires checking the raw output
-for an `EXPECTATION FAILED` line rather than treating any red result as
-an assertion failure — a UBSAN stack trace with no such line is this
-artefact, not a test failure.
+```sh
+kunit.py run --kunitconfig=net/sunrpc/.kunitconfig --kconfig_add CONFIG_UBSAN=n
+```
+
+A red result from this artefact is distinguishable from a real one: check
+the raw output for an `EXPECTATION FAILED` line. A UBSAN stack trace with
+no such line is this artefact. In particular `64-fold("012345")` and
+`Encrypt empty plaintext with aes128-cts-hmac-sha256-128` are not
+pre-existing upstream failures at `v6.12.57` -- upstream's
+`gss_krb5_test.c` passes in full.
 
 Whether the misaligned `task_struct` access is a genuine UML bug or a
 false positive has not been investigated. It is unrelated to NFS.
