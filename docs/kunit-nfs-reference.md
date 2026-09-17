@@ -26,6 +26,12 @@ return 0 — every IPv6 case would pass while testing nothing.
 `kunit/nfs4session_test.c` needs `CONFIG_NFS_V4=y` and `CONFIG_NFS_V4_1=y`,
 neither of which is in the stock `.kunitconfig`; the runner adds both.
 
+`CONFIG_KUNIT_ALL_TESTS=y` is what makes each generated `default
+KUNIT_ALL_TESTS` stanza self-select. A side effect: upstream's own
+`net/sunrpc/auth_gss/gss_krb5_test.c` is built and run too. It passes, and
+it is not this repo's work -- so a run's Kerberos coverage is upstream's
+crypto unit tests, not anything exercised over a mount here.
+
 ## The unit suites
 
 Covered: `net/sunrpc/addr.c`, `timer.c`, `xdr.c`; `fs/nfs_common/common.c`;

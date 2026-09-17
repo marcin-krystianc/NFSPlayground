@@ -18,8 +18,6 @@ Two kinds of test live here:
 It shows that both approaches work and are worth continuing. It does not
 show that the NFS client is well tested.
 
-Concretely, as of this writing:
-
 | | Covered | Out of |
 |---|---|---|
 | xfstests `generic/*` cases ported | 43 | 798 upstream |
@@ -29,7 +27,7 @@ Concretely, as of this writing:
 And within the files that *are* covered, coverage is partial by
 construction. `nfs4proc.c` is about 11,000 lines, almost all of it issuing
 RPCs; the unit tests reach a few dozen pure decision functions underneath
-that, not the RPC paths themselves. The same is true of `inode.c`.
+that, not the RPC paths themselves.
 
 What this means in practice: a green run is evidence that the specific
 behaviours pinned here still hold. It is not evidence that a change to the
@@ -55,10 +53,6 @@ scripts/fetch-sources.sh linux    # once: ~1.6 GB
 scripts/kunit/run-sunrpc-kunit.sh
 ```
 
-`fetch-sources.sh` checks out the pinned `v6.12.57` at depth 1. `kunit.py`
-drives kbuild, so it needs the whole tree at that commit; the fetch is
-shallow in history only.
-
 Extra arguments pass through to `kunit.py`, so a narrower run is:
 
 ```sh
@@ -66,8 +60,7 @@ scripts/kunit/run-sunrpc-kunit.sh "xfstests/generic/0*"
 scripts/kunit/run-sunrpc-kunit.sh --raw_output
 ```
 
-Build dependencies beyond a normal toolchain: `flex bison bc gawk
-libelf-dev libssl-dev`.
+Build dependencies beyond a normal toolchain: `flex bison bc gawk libelf-dev libssl-dev`.
 
 ## Three things that will confuse you
 
@@ -87,9 +80,7 @@ the CI matrix (`v6.18.52`, `v7.2.6`, `master`) are unaffected.
 
 **A green result says nothing about the kernel log.** Nothing fails a suite
 for emitting WARNs, and the default `kunit.py` output does not show kernel
-log lines at all. A case can pass while printing hundreds of them. Use
-`--raw_output` when a test does anything the VFS normally expects a syscall
-wrapper to have set up.
+log lines at all.
 
 ## CI
 
@@ -99,9 +90,6 @@ wrapper to have set up.
   unpatched. The `v6.12.57` leg can hit the livelock above.
 - `kunit-v6-12-57-patched` — `v6.12.57` with the UML fix applied, running
   the full suite to completion.
-
-Both are bounded at 30 minutes so a hang fails visibly instead of running
-out the runner's budget.
 
 ## Where the detail lives
 
