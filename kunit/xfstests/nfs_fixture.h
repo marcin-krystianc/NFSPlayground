@@ -30,7 +30,7 @@ bool xfstests_nfs_mounted(void);
  * fs_struct/root -- on current mainline that leaves the fresh thread unable
  * to see anything xfstests_nfs_get()'s bring-up mounted, so its first path
  * lookup under XFS_MNT fails with ENOENT before ever reaching NFS. Wired in
- * as every suite's .init by run-sunrpc-kunit.sh; see docs/kunit-nfs.md.
+ * as every suite's .init by run-sunrpc-kunit.sh; see docs/kunit-nfs-reference.md.
  */
 struct kunit;
 int xfstests_nfs_case_init(struct kunit *test);

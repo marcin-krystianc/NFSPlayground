@@ -59,12 +59,10 @@ warn_if_case_insensitive_fs() {
     rm -f "$probe"
 }
 
-# Shallow (one commit, not the whole history) but not sparse (the whole
-# tree at that commit, not just the NFS subtrees) -- kunit.py needs a
-# complete tree to run kbuild. `fetch --depth 1 <ref>` takes any ref shape
-# (tag, branch, or a bare commit SHA -- e.g. to bisect a fix, see
-# docs/kunit-nfs.md) uniformly, unlike `clone --branch`, which rejects a
-# bare SHA.
+# Shallow: one commit, not the whole history. `fetch --depth 1 <ref>` takes
+# any ref shape (tag, branch, or a bare commit SHA -- e.g. to bisect a fix,
+# see docs/kunit-nfs-reference.md) uniformly, unlike `clone --branch`, which
+# rejects a bare SHA.
 fetch_linux() {
     local dir="${SRC_DIR}/linux"
 
@@ -88,7 +86,7 @@ fetch_linux() {
         warn "linux: ${LINUX_REF} is a floating ref, not the pinned ${LINUX_REF_PINNED} -- not verified"
     fi
 
-    log "linux: ${LINUX_REF} ${head_sha:0:12} ok, full tree"
+    log "linux: ${LINUX_REF} ${head_sha:0:12} ok"
 }
 
 # Source tarball only; VAST publishes no public git repository.

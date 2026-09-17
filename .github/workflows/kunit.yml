@@ -72,7 +72,7 @@ jobs:
       #
       # filter_glob defaults to '*', so this runs every suite. The v6.12.57
       # leg can therefore still hit the UML host-signal livelock -- see
-      # "A confirmed host-signal livelock on v6.12.57" in docs/kunit-nfs.md
+      # "A confirmed host-signal livelock on v6.12.57" in docs/kunit-nfs-reference.md
       # -- and hang until the job timeout. That is deliberate: this leg
       # stays unpatched, and kunit-v6-12-57-patched below is the leg that
       # applies the backported fix. Narrow filter_glob (workflow_dispatch)
@@ -108,7 +108,7 @@ jobs:
           if-no-files-found: warn
 
   # Separate from the kunit matrix above: v6.12.57 with the host-signal
-  # livelock fix backported (see docs/kunit-nfs.md, "A confirmed
+  # livelock fix backported (see docs/kunit-nfs-reference.md, "A confirmed
   # host-signal livelock on v6.12.57"). The matrix leg intentionally
   # stays unpatched, so this job is the one place that continuously
   # confirms the patch still applies to the pinned tag and still lets a
