@@ -141,8 +141,8 @@ jobs:
 
       - name: Apply the UML host-signal live-lock fix
         run: |
-          git -C linux apply --check patches/um-thread-info-in-task-v6.12.57.patch
-          git -C linux apply patches/um-thread-info-in-task-v6.12.57.patch
+          git -C linux apply --check "${GITHUB_WORKSPACE}/patches/um-thread-info-in-task-v6.12.57.patch"
+          git -C linux apply "${GITHUB_WORKSPACE}/patches/um-thread-info-in-task-v6.12.57.patch"
 
       # Same CONFIG_UBSAN=n rationale as the kunit job above. filter_glob
       # defaults to '*' (see FILTER_GLOB below): the whole point of this
