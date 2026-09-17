@@ -62,24 +62,3 @@ that matter. Not good for performance testing, tests where timing of RPC's
 matter." It also warns that a failing test isn't automatically proof of a
 server bug — results should be checked against the RFC before concluding
 that.
-
-## Comparison
-
-| | xfstests | pynfs |
-|---|---|---|
-| Level | Syscall / VFS | Raw NFSv4 RPC (COMPOUND ops) |
-| Drives | A real mounted filesystem | A hand-built protocol client, server optional |
-| Scope in this repo | 1 NFS-specific test + 1601 generic tests (shared across all filesystems) | 29 server41tests files (NFSv4.1) + NFSv4.0 servertests |
-| Good at | Regressions in real file workloads, cross-layer bugs | Protocol state-machine correctness, error paths, RPC ordering |
-| Weak at | RFC-level protocol edge cases | Anything about real-world I/O performance or workload behavior |
-| Failure meaning | Behavior changed vs. expected `.out` | Server response didn't match RFC-mandated behavior (needs manual RFC check per pynfs's own README) |
-
-## Why both are referenced for this repo
-
-`docs/vastnfs-vs-linux.md` names xfstests `-nfs` and pynfs together as the
-tools for catching version-conditional breakage introduced by the VAST NFS
-backport (Linux 6.12 NFS code built to run on kernels 4.15–7.0). They cover
-different failure classes: xfstests would catch a backport breaking ordinary
-file operations; pynfs would catch a backport breaking a specific NFSv4
-state transition or error code that only shows up under protocol-level
-testing, not under a normal workload.

@@ -800,7 +800,7 @@ static int xfs_bringup(void)
 	 * this thread's fs_struct/root. On current mainline that kthread's
 	 * root never saw the mkdir/mount calls above, so the very first path
 	 * lookup a test makes under XFS_MNT fails with ENOENT before ever
-	 * reaching NFS code -- see docs/kunit-sunrpc.md. Every suite wires
+	 * reaching NFS code -- see docs/kunit-nfs.md. Every suite wires
 	 * xfstests_nfs_case_init() in as .init (run-sunrpc-kunit.sh adds it
 	 * automatically) so each fresh test-case thread rebinds to this
 	 * thread's root before the test body runs.

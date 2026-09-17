@@ -1,8 +1,8 @@
-# KUnit tests for SunRPC
+# KUnit tests for NFS
 
-Unit tests for pure-logic parts of SunRPC, run under User Mode Linux with
-`kunit.py`. No VM and no kernel install involved; a full run takes a few
-seconds.
+Unit tests for pure-logic parts of the NFS client and SunRPC, plus ported
+xfstests cases run against a real loopback NFS mount, all under User Mode
+Linux with `kunit.py`. No VM and no kernel install involved.
 
 ## Running
 
@@ -30,10 +30,25 @@ the cost of UBSAN coverage.
 
 ## What is tested
 
-All four files under test are pure logic with no I/O, allocation or
-locking, which is what makes them suitable for unit testing where most of
-`fs/nfs` is not (see [xfstests-vs-pynfs.md](xfstests-vs-pynfs.md)), and
-none had any tests before this.
+Three areas, in increasing order of how much of the stack they touch:
+
+- **SunRPC** (`net/sunrpc/addr.c`, `timer.c`, `xdr.c`): pure logic, no I/O,
+  allocation or locking. None had any tests before this.
+- **The NFS client** (`fs/nfs_common/common.c`, and several files under
+  `fs/nfs/`: `inode.c`, `nfs4proc.c`, `nfs4session.c`, `pagelist.c`,
+  `pnfs.h`): the pure-logic seams within files that are mostly VFS- and
+  RPC-entangled and so not unit-testable as a whole -- see
+  [xfstests-vs-pynfs.md](xfstests-vs-pynfs.md) and
+  ["fs/nfs is not wholly untestable"](#fsnfs-is-not-wholly-untestable)
+  below for what that boundary actually is. `inode_test.c` and
+  `nfs4proc_test.c` are the largest files here by a wide margin.
+- **xfstests ports** (`kunit/xfstests/`): full `generic/*` cases run
+  against a real NFS mount served by knfsd inside the same UML kernel --
+  see ["xfstests cases that ARE ported"](#xfstests-cases-that-are-ported-generic-over-a-loopback-nfs-mount)
+  below.
+
+The rest of this section covers the first two; the xfstests ports have
+their own section further down.
 
 `net/sunrpc/addr.c` is 354 lines of string ↔ `sockaddr` conversion with
 four exported entry points. `rpc_pton()` is the primitive every
@@ -53,8 +68,6 @@ protocol-visible bug.
 implement the wire format every NFS operation travels over. XDR's defining
 rule is that objects are padded out to a 4-byte boundary and the padding is
 zero-filled (RFC 4506), which is where its classic bugs live.
-
-Forty-seven suites, 438 cases, across seven files.
 
 `kunit/addr_test.c` covers `net/sunrpc/addr.c`:
 
@@ -654,7 +667,7 @@ The five that are out, individually:
   by 012, 029 and 030. Porting them would add four near-identical suites and
   no coverage, so they are declined rather than padded in.
 
-### A confirmed host-signal livelock on v6.12.57 (upstream bug, already fixed)
+### A confirmed host-signal livelock on v6.12.57 (upstream bug, backported here)
 
 A full run sometimes never finishes. Two distinct symptoms were observed
 under gdb on the VM, both on the `v6.12.57` pin:
@@ -715,14 +728,35 @@ specifically after xfstests:
 - It is intermittent, matching a timing race rather than a deterministic
   trigger.
 
-Nothing in this repo can fix a host-signal race in the pinned kernel's own
-`arch/um` code without patching the vendored kernel tree itself, which is a
-separate decision from testing NFS/SunRPC behavior. Practical mitigation
-applied instead: `.github/workflows/kunit.yml` sets `timeout-minutes: 20` on
-the job, so a livelocked `v6.12.57` run fails fast and visibly instead of
-consuming GitHub Actions' default 360-minute budget. When a run times out,
-re-run; if a specific result is needed, a filtered run (`kunit.py ...
-"xfstests/generic/04*"`) completes reliably.
+#### The backport
+
+Fixing this means patching the vendored kernel tree, since the race is in
+the pinned kernel's own `arch/um` code.
+`patches/um-thread-info-in-task-v6.12.57.patch` is that backport of
+`2f681ba4b352` to `v6.12.57`. It is not a straight cherry-pick: three files
+have diverged from the commit's mainline base through unrelated stable
+backports (an `aux_fp_regs` field in `thread_info`, a `highmem` argument on
+`setup_physmem()`/`mem_total_pages()`, an already-present
+`HAVE_ARCH_TRACEHOOK` select), so those conflicts are resolved by hand. The
+patch header records each one.
+
+`.github/workflows/kunit.yml` applies it in the `kunit-v6-12-57-patched`
+job, which fetches `v6.12.57`, applies the patch, and runs the full
+unfiltered suite to completion. The `v6.12.57` leg of the `kunit` matrix
+deliberately stays **unpatched**, so the two jobs together show both the bug
+and the fix. Both jobs set `timeout-minutes: 30`, which on the unpatched leg
+is the mitigation for a livelocked run: it fails fast and visibly rather
+than consuming GitHub Actions' default 360-minute budget.
+
+Applying it by hand:
+
+```sh
+LINUX_FULL=1 scripts/fetch-sources.sh linux
+git -C linux apply "$PWD/patches/um-thread-info-in-task-v6.12.57.patch"
+```
+
+`git -C linux apply` resolves a relative patch path against `linux/`, not
+the directory it was invoked from, so the path must be absolute.
 
 ### A note on green results and kernel logs
 

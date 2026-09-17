@@ -13,7 +13,7 @@ on:
   workflow_dispatch:
     inputs:
       filter_glob:
-        description: 'kunit.py filter_glob (suite.case globs, e.g. "xfstests/generic/0*"). Default runs only the addr_test family while the whole-run live-lock (see docs/kunit-sunrpc.md) is unresolved.'
+        description: 'kunit.py filter_glob (suite.case globs, e.g. "xfstests/generic/0*"). Leave empty to run every suite.'
         required: false
         default: ''
       extra_args:
@@ -25,9 +25,9 @@ jobs:
   kunit:
     name: kunit (linux ${{ matrix.linux_ref }})
     runs-on: ubuntu-latest
-    # A full run should no longer live-lock with the fix applied; this
-    # bounds the job in case that assumption stops holding, instead of
-    # consuming the runner's default multi-hour budget.
+    # These legs run unpatched, so the v6.12.57 one can still hit the UML
+    # host-signal livelock and spin forever. Fail fast and visibly instead
+    # of consuming the runner's default multi-hour budget.
     timeout-minutes: 30
 
     # master can fail before any test runs: run-sunrpc-kunit.sh exposes
@@ -62,23 +62,21 @@ jobs:
       # v6.12.57 under UML and unrelated to anything in kunit/. kunit.py
       # attributes them to whichever test happened to be running, so they
       # surface as two failures that move around between runs. Applied to
-      # both matrix legs uniformly: whether the same misalignment still
+      # all matrix legs uniformly: whether the same misalignment still
       # exists on current mainline is not tracked, and UBSAN's own findings
-      # are not what either leg is testing for.
+      # are not what any leg is testing for.
       #
       # --json needs the `=` form: its value is optional (nargs='?'), so
       # `--json path` leaves --json empty and path is taken as the positional
       # filter_glob instead, which silently runs zero tests.
-      # filter_glob defaults to the addr_test family, not the full suite.
-      # A full run intermittently live-locks in UML after every xfstests
-      # suite has run, in the pure-logic SunRPC suites that follow -- see
-      # "An intermittent whole-run live-lock" in docs/kunit-sunrpc.md. That
-      # is unrelated to addr_test itself (every suite, including this one,
-      # passes in isolation); the family is filtered in here only because it
-      # is small, fast and exercises none of the nfsd bring-up/teardown the
-      # leading hypothesis blames. Pass filter_glob='*' (workflow_dispatch)
-      # to run everything, at the cost of the run occasionally hanging until
-      # the job timeout.
+      #
+      # filter_glob defaults to '*', so this runs every suite. The v6.12.57
+      # leg can therefore still hit the UML host-signal livelock -- see
+      # "A confirmed host-signal livelock on v6.12.57" in docs/kunit-nfs.md
+      # -- and hang until the job timeout. That is deliberate: this leg
+      # stays unpatched, and kunit-v6-12-57-patched below is the leg that
+      # applies the backported fix. Narrow filter_glob (workflow_dispatch)
+      # to get a result out of this leg without waiting on a hang.
       - name: Run the KUnit suites
         shell: bash
         env:
@@ -110,17 +108,17 @@ jobs:
           if-no-files-found: warn
 
   # Separate from the kunit matrix above: v6.12.57 with the host-signal
-  # live-lock fix backported (see docs/kunit-sunrpc.md, "A confirmed
-  # host-signal live-lock on v6.12.57"). The matrix leg intentionally
+  # livelock fix backported (see docs/kunit-nfs.md, "A confirmed
+  # host-signal livelock on v6.12.57"). The matrix leg intentionally
   # stays unpatched, so this job is the one place that continuously
   # confirms the patch still applies to the pinned tag and still lets a
   # full, unfiltered run finish without hanging.
   kunit-v6-12-57-patched:
-    name: kunit (linux v6.12.57, live-lock fix backported)
+    name: kunit (linux v6.12.57, livelock fix backported)
     runs-on: ubuntu-latest
-    # A full run should no longer live-lock with the fix applied; this
-    # bounds the job in case that assumption stops holding, instead of
-    # consuming the runner's default multi-hour budget.
+    # With the fix applied a full run completes. This bounds the job if
+    # that stops holding, instead of consuming the runner's default
+    # multi-hour budget.
     timeout-minutes: 30
 
     steps:
@@ -139,7 +137,7 @@ jobs:
           LINUX_REF: v6.12.57
         run: bash scripts/fetch-sources.sh linux
 
-      - name: Apply the UML host-signal live-lock fix
+      - name: Apply the UML host-signal livelock fix
         run: |
           git -C linux apply --check "${GITHUB_WORKSPACE}/patches/um-thread-info-in-task-v6.12.57.patch"
           git -C linux apply "${GITHUB_WORKSPACE}/patches/um-thread-info-in-task-v6.12.57.patch"
@@ -147,7 +145,7 @@ jobs:
       # Same CONFIG_UBSAN=n rationale as the kunit job above. filter_glob
       # defaults to '*' (see FILTER_GLOB below): the whole point of this
       # leg is to run the full, unfiltered suite and show it completing
-      # without the live-lock.
+      # without the livelock.
       - name: Run the KUnit suites
         shell: bash
         env:

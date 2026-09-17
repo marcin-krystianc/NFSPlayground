@@ -1,7 +1,7 @@
 # Backport of upstream commit 2f681ba4b352cdd5658ed2a96062375a12839755
 # ("um: move thread info into task", Benjamin Berg, 2024-11-11) to v6.12.57.
 #
-# Fixes the host-signal livelock documented in docs/kunit-sunrpc.md under
+# Fixes the host-signal livelock documented in docs/kunit-nfs.md under
 # "A confirmed host-signal livelock on v6.12.57". Root cause: arch/um's
 # hard_handler() copies the current task's thread_info onto a separate
 # IRQ (signal) stack via to_irq_stack()/from_irq_stack(), guarded by a
@@ -50,15 +50,18 @@
 #     kill init!" panic under `./vmlinux mem=128M rootfstype=hostfs rw
 #     init=/bin/true panic=1`, exercising SIGIO/SIGALRM/ptrace signal
 #     delivery through the modified path during boot with no hang.
-#   - Not verified: a full multi-suite kunit.py run reproducing the
-#     livelock's absence, since the livelock is intermittent and the
-#     upstream mechanism it depended on (to_irq_stack/from_irq_stack/
-#     pending_mask) is removed outright by this patch, not merely
-#     narrowed.
+#   - A full, unfiltered kunit.py run over every suite completes in CI,
+#     in the kunit-v6-12-57-patched job of
+#     .github/workflows/kunit.yml. The unpatched v6.12.57 leg of the
+#     kunit matrix in the same workflow still livelocks, so the two
+#     together show both the bug and the fix.
 #
 # Apply from the repo root after fetching sources, e.g.:
 #   LINUX_FULL=1 scripts/fetch-sources.sh linux
-#   git -C linux apply ../patches/um-thread-info-in-task-v6.12.57.patch
+#   git -C linux apply "$PWD/patches/um-thread-info-in-task-v6.12.57.patch"
+#
+# Note the absolute path: `git -C linux apply` resolves a relative patch
+# path against linux/, not the directory you ran it from.
 #
 diff --git a/arch/um/Kconfig b/arch/um/Kconfig
 index c89575d050..9b6001173e 100644

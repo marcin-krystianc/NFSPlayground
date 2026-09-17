@@ -63,7 +63,7 @@ warn_if_case_insensitive_fs() {
 # tree at that commit, not just the NFS subtrees) -- kunit.py needs a
 # complete tree to run kbuild. `fetch --depth 1 <ref>` takes any ref shape
 # (tag, branch, or a bare commit SHA -- e.g. to bisect a fix, see
-# docs/kunit-sunrpc.md) uniformly, unlike `clone --branch`, which rejects a
+# docs/kunit-nfs.md) uniformly, unlike `clone --branch`, which rejects a
 # bare SHA.
 fetch_linux() {
     local dir="${SRC_DIR}/linux"

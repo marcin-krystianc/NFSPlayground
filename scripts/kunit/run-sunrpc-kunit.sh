@@ -314,7 +314,7 @@ for entry in "${TESTS[@]}"; do
     fi
     # KUnit runs each test case's body in its own fresh kthread, which does
     # not share suite_init()'s fs_struct/root -- see xfstests_nfs_case_init()
-    # in nfs_fixture.c and "The per-test-case thread" in docs/kunit-sunrpc.md.
+    # in nfs_fixture.c and "The per-test-case thread" in docs/kunit-nfs.md.
     # Every xfstests port (everything but nfs_fixture itself, which defines
     # no suite) needs its kunit_suite wired to rebind before each case.
     case "$stem" in
