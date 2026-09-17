@@ -20,6 +20,11 @@ on:
         description: 'Extra kunit.py arguments (e.g. --raw_output)'
         required: false
         default: ''
+      apply_um_livelock_fix:
+        description: 'For the kunit-v6.12.57-patched job only: apply patches/um-thread-info-in-task-v6.12.57.patch (a backport of upstream 2f681ba4b352, "um: move thread info into task", which fixes the UML host-signal live-lock -- see docs/kunit-sunrpc.md) before building. Set to false to build that job''s v6.12.57 leg unpatched, e.g. to re-confirm the live-lock still reproduces upstream.'
+        type: boolean
+        required: false
+        default: true
 
 jobs:
   kunit:
@@ -99,6 +104,76 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: kunit-results-${{ matrix.linux_ref }}
+          path: |
+            kunit.log
+            kunit-results.json
+          if-no-files-found: warn
+
+  # Separate from the kunit matrix above: v6.12.57 with the host-signal
+  # live-lock fix backported (see docs/kunit-sunrpc.md, "A confirmed
+  # host-signal live-lock on v6.12.57"). The matrix leg intentionally
+  # stays unpatched, so this job is the one place that continuously
+  # confirms the patch still applies to the pinned tag and still lets a
+  # full, unfiltered run finish without hanging.
+  kunit-v6.12.57-patched:
+    name: kunit (linux v6.12.57, live-lock fix backported)
+    runs-on: ubuntu-latest
+    # A full run should no longer live-lock with the fix applied; this
+    # bounds the job in case that assumption stops holding, instead of
+    # consuming the runner's default multi-hour budget.
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Install kernel build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential bc bison flex libelf-dev libssl-dev
+
+      - name: Fetch the kernel tree
+        env:
+          LINUX_REF: v6.12.57
+        run: bash scripts/fetch-sources.sh linux
+
+      - name: Apply the UML host-signal live-lock fix
+        if: ${{ inputs.apply_um_livelock_fix != false }}
+        run: |
+          git -C linux apply --check patches/um-thread-info-in-task-v6.12.57.patch
+          git -C linux apply patches/um-thread-info-in-task-v6.12.57.patch
+
+      # Same CONFIG_UBSAN=n rationale as the kunit job above. filter_glob
+      # defaults to '*' (see FILTER_GLOB below): the whole point of this
+      # leg is to run the full, unfiltered suite and show it completing
+      # without the live-lock.
+      - name: Run the KUnit suites
+        shell: bash
+        env:
+          FILTER_GLOB: ${{ inputs.filter_glob || '*' }}
+          EXTRA_ARGS: ${{ inputs.extra_args }}
+        run: |
+          set -o pipefail
+          bash scripts/kunit/run-sunrpc-kunit.sh \
+            --kconfig_add CONFIG_UBSAN=n \
+            --json="${GITHUB_WORKSPACE}/kunit-results.json" \
+            "$FILTER_GLOB" \
+            $EXTRA_ARGS 2>&1 | tee kunit.log
+
+      - name: Summarise
+        if: always()
+        shell: bash
+        run: |
+          grep -E '^\[.*\] (Testing complete|Failures:)' kunit.log \
+            >> "$GITHUB_STEP_SUMMARY" || true
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kunit-results-v6.12.57-patched
           path: |
             kunit.log
             kunit-results.json

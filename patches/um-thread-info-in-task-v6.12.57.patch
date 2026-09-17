@@ -1,0 +1,444 @@
+# Backport of upstream commit 2f681ba4b352cdd5658ed2a96062375a12839755
+# ("um: move thread info into task", Benjamin Berg, 2024-11-11) to v6.12.57.
+#
+# Fixes the host-signal livelock documented in docs/kunit-sunrpc.md under
+# "A confirmed host-signal livelock on v6.12.57". Root cause: arch/um's
+# hard_handler() copies the current task's thread_info onto a separate
+# IRQ (signal) stack via to_irq_stack()/from_irq_stack(), guarded by a
+# lock-free `pending_mask` retry loop. UML does not block signals with
+# sigprocmask/SA_DEFER/sa_mask, so a second signal can arrive while a
+# previous one is still setting up thread_info; under the right timing
+# (many suites in one kunit.py run means many timer ticks and ptrace
+# child-stop signals landing close together) the retry loop in
+# hard_handler() can spin forever without making forward progress.
+#
+# The upstream commit removes this mechanism entirely by selecting
+# THREAD_INFO_IN_TASK for UML (thread_info becomes a member of
+# task_struct, found via the existing cpu_tasks[] tracking, rather than
+# copied onto a separate per-signal stack), and replaces hard_handler()'s
+# retry loop with direct dispatch to handlers[sig]. It landed on mainline
+# after the v6.12.57 point release and reached v6.18; it carries no
+# `Cc: stable@vger.kernel.org` tag, so it was never auto-backported to
+# the 6.12.y stable branch.
+#
+# This is NOT a straight cherry-pick: three files have diverged from
+# the commit's mainline base (0f659ff362eac69777c4c191b7e5ccb19d76c67d)
+# due to unrelated stable backports already present in v6.12.57:
+#   - arch/um/Kconfig already selects HAVE_ARCH_TRACEHOOK elsewhere, so
+#     only `select THREAD_INFO_IN_TASK` is added here.
+#   - arch/um/include/asm/thread_info.h already carries an aux_fp_regs
+#     field (used by arch/um/kernel/process.c and
+#     arch/um/os-Linux/skas/process.c for out-of-band FP register
+#     save/restore) not present in the commit's mainline base. That
+#     field is kept; only `real_thread` and the custom
+#     current_thread_info() are removed (the latter is supplied
+#     generically once CONFIG_THREAD_INFO_IN_TASK=y).
+#   - arch/um/kernel/um_arch.c's setup_arch() already passes an extra
+#     `highmem` argument to setup_physmem()/mem_total_pages() from an
+#     unrelated backport; those two calls are left untouched; only the
+#     stack_protections() argument changes from `&init_thread_info`
+#     (a symbol that does not exist once THREAD_INFO_IN_TASK is
+#     selected) to `init_task.stack`.
+#
+# Verified in this repo (2026-09-17):
+#   - `git apply --check` (no --3way) applies cleanly to a fresh
+#     v6.12.57 checkout.
+#   - `make ARCH=um SUBARCH=x86_64 defconfig && make ARCH=um
+#     SUBARCH=x86_64 vmlinux` builds cleanly with
+#     CONFIG_THREAD_INFO_IN_TASK=y auto-selected.
+#   - The resulting vmlinux boots to a normal, expected "Attempted to
+#     kill init!" panic under `./vmlinux mem=128M rootfstype=hostfs rw
+#     init=/bin/true panic=1`, exercising SIGIO/SIGALRM/ptrace signal
+#     delivery through the modified path during boot with no hang.
+#   - Not verified: a full multi-suite kunit.py run reproducing the
+#     livelock's absence, since the livelock is intermittent and the
+#     upstream mechanism it depended on (to_irq_stack/from_irq_stack/
+#     pending_mask) is removed outright by this patch, not merely
+#     narrowed.
+#
+# Apply from the repo root after fetching sources, e.g.:
+#   LINUX_FULL=1 scripts/fetch-sources.sh linux
+#   git -C linux apply ../patches/um-thread-info-in-task-v6.12.57.patch
+#
+diff --git a/arch/um/Kconfig b/arch/um/Kconfig
+index c89575d050..9b6001173e 100644
+--- a/arch/um/Kconfig
++++ b/arch/um/Kconfig
+@@ -32,6 +32,7 @@ config UML
+ 	select HAVE_ARCH_VMAP_STACK
+ 	select HAVE_RUST
+ 	select ARCH_HAS_UBSAN
++	select THREAD_INFO_IN_TASK
+
+ config MMU
+ 	bool
+diff --git a/arch/um/include/asm/Kbuild b/arch/um/include/asm/Kbuild
+index 18f902da8e..428f2c5158 100644
+--- a/arch/um/include/asm/Kbuild
++++ b/arch/um/include/asm/Kbuild
+@@ -1,7 +1,6 @@
+ # SPDX-License-Identifier: GPL-2.0
+ generic-y += bug.h
+ generic-y += compat.h
+-generic-y += current.h
+ generic-y += device.h
+ generic-y += dma-mapping.h
+ generic-y += emergency-restart.h
+diff --git a/arch/um/include/asm/current.h b/arch/um/include/asm/current.h
+new file mode 100644
+index 0000000000..de64e032d6
+--- /dev/null
++++ b/arch/um/include/asm/current.h
+@@ -0,0 +1,23 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++#ifndef __ASM_CURRENT_H
++#define __ASM_CURRENT_H
++
++#include <linux/compiler.h>
++#include <linux/threads.h>
++
++#ifndef __ASSEMBLY__
++
++struct task_struct;
++extern struct task_struct *cpu_tasks[NR_CPUS];
++
++static __always_inline struct task_struct *get_current(void)
++{
++	return cpu_tasks[0];
++}
++
++
++#define current get_current()
++
++#endif /* __ASSEMBLY__ */
++
++#endif /* __ASM_CURRENT_H */
+diff --git a/arch/um/include/asm/thread_info.h b/arch/um/include/asm/thread_info.h
+index 40d823f36c..15e87411c8 100644
+--- a/arch/um/include/asm/thread_info.h
++++ b/arch/um/include/asm/thread_info.h
+@@ -17,35 +17,19 @@
+ #include <sysdep/ptrace_user.h>
+
+ struct thread_info {
+-	struct task_struct	*task;		/* main task structure */
+ 	unsigned long		flags;		/* low level flags */
+ 	__u32			cpu;		/* current CPU */
+ 	int			preempt_count;  /* 0 => preemptable,
+ 						   <0 => BUG */
+-	struct thread_info	*real_thread;    /* Points to non-IRQ stack */
+ 	unsigned long aux_fp_regs[FP_SIZE];	/* auxiliary fp_regs to save/restore
+ 						   them out-of-band */
+ };
+
+ #define INIT_THREAD_INFO(tsk)			\
+ {						\
+-	.task =		&tsk,			\
+ 	.flags =		0,		\
+ 	.cpu =		0,			\
+ 	.preempt_count = INIT_PREEMPT_COUNT,	\
+-	.real_thread = NULL,			\
+-}
+-
+-/* how to get the thread information struct from C */
+-static inline struct thread_info *current_thread_info(void)
+-{
+-	struct thread_info *ti;
+-	unsigned long mask = THREAD_SIZE - 1;
+-	void *p;
+-
+-	asm volatile ("" : "=r" (p) : "0" (&ti));
+-	ti = (struct thread_info *) (((unsigned long)p) & ~mask);
+-	return ti;
+ }
+
+ #endif
+diff --git a/arch/um/include/shared/as-layout.h b/arch/um/include/shared/as-layout.h
+index 06292fca5a..c774671b02 100644
+--- a/arch/um/include/shared/as-layout.h
++++ b/arch/um/include/shared/as-layout.h
+@@ -30,11 +30,8 @@
+
+ #include <sysdep/ptrace.h>
+
+-struct cpu_task {
+-	void *task;
+-};
+-
+-extern struct cpu_task cpu_tasks[];
++struct task_struct;
++extern struct task_struct *cpu_tasks[];
+
+ extern unsigned long high_physmem;
+ extern unsigned long uml_physmem;
+diff --git a/arch/um/kernel/dyn.lds.S b/arch/um/kernel/dyn.lds.S
+index 3385d653eb..5fcfbb7dbd 100644
+--- a/arch/um/kernel/dyn.lds.S
++++ b/arch/um/kernel/dyn.lds.S
+@@ -116,8 +116,6 @@ SECTIONS
+   .fini_array     : { *(.fini_array) }
+   .data           : {
+     INIT_TASK_DATA(KERNEL_STACK_SIZE)
+-    . = ALIGN(KERNEL_STACK_SIZE);
+-    *(.data..init_irqstack)
+     DATA_DATA
+     *(.data.* .gnu.linkonce.d.*)
+     SORT(CONSTRUCTORS)
+diff --git a/arch/um/kernel/irq.c b/arch/um/kernel/irq.c
+index 534e91797f..338450741a 100644
+--- a/arch/um/kernel/irq.c
++++ b/arch/um/kernel/irq.c
+@@ -674,115 +674,3 @@ void __init init_IRQ(void)
+ 	/* Initialize EPOLL Loop */
+ 	os_setup_epoll();
+ }
+-
+-/*
+- * IRQ stack entry and exit:
+- *
+- * Unlike i386, UML doesn't receive IRQs on the normal kernel stack
+- * and switch over to the IRQ stack after some preparation.  We use
+- * sigaltstack to receive signals on a separate stack from the start.
+- * These two functions make sure the rest of the kernel won't be too
+- * upset by being on a different stack.  The IRQ stack has a
+- * thread_info structure at the bottom so that current et al continue
+- * to work.
+- *
+- * to_irq_stack copies the current task's thread_info to the IRQ stack
+- * thread_info and sets the tasks's stack to point to the IRQ stack.
+- *
+- * from_irq_stack copies the thread_info struct back (flags may have
+- * been modified) and resets the task's stack pointer.
+- *
+- * Tricky bits -
+- *
+- * What happens when two signals race each other?  UML doesn't block
+- * signals with sigprocmask, SA_DEFER, or sa_mask, so a second signal
+- * could arrive while a previous one is still setting up the
+- * thread_info.
+- *
+- * There are three cases -
+- *     The first interrupt on the stack - sets up the thread_info and
+- * handles the interrupt
+- *     A nested interrupt interrupting the copying of the thread_info -
+- * can't handle the interrupt, as the stack is in an unknown state
+- *     A nested interrupt not interrupting the copying of the
+- * thread_info - doesn't do any setup, just handles the interrupt
+- *
+- * The first job is to figure out whether we interrupted stack setup.
+- * This is done by xchging the signal mask with thread_info->pending.
+- * If the value that comes back is zero, then there is no setup in
+- * progress, and the interrupt can be handled.  If the value is
+- * non-zero, then there is stack setup in progress.  In order to have
+- * the interrupt handled, we leave our signal in the mask, and it will
+- * be handled by the upper handler after it has set up the stack.
+- *
+- * Next is to figure out whether we are the outer handler or a nested
+- * one.  As part of setting up the stack, thread_info->real_thread is
+- * set to non-NULL (and is reset to NULL on exit).  This is the
+- * nesting indicator.  If it is non-NULL, then the stack is already
+- * set up and the handler can run.
+- */
+-
+-static unsigned long pending_mask;
+-
+-unsigned long to_irq_stack(unsigned long *mask_out)
+-{
+-	struct thread_info *ti;
+-	unsigned long mask, old;
+-	int nested;
+-
+-	mask = xchg(&pending_mask, *mask_out);
+-	if (mask != 0) {
+-		/*
+-		 * If any interrupts come in at this point, we want to
+-		 * make sure that their bits aren't lost by our
+-		 * putting our bit in.  So, this loop accumulates bits
+-		 * until xchg returns the same value that we put in.
+-		 * When that happens, there were no new interrupts,
+-		 * and pending_mask contains a bit for each interrupt
+-		 * that came in.
+-		 */
+-		old = *mask_out;
+-		do {
+-			old |= mask;
+-			mask = xchg(&pending_mask, old);
+-		} while (mask != old);
+-		return 1;
+-	}
+-
+-	ti = current_thread_info();
+-	nested = (ti->real_thread != NULL);
+-	if (!nested) {
+-		struct task_struct *task;
+-		struct thread_info *tti;
+-
+-		task = cpu_tasks[ti->cpu].task;
+-		tti = task_thread_info(task);
+-
+-		*ti = *tti;
+-		ti->real_thread = tti;
+-		task->stack = ti;
+-	}
+-
+-	mask = xchg(&pending_mask, 0);
+-	*mask_out |= mask | nested;
+-	return 0;
+-}
+-
+-unsigned long from_irq_stack(int nested)
+-{
+-	struct thread_info *ti, *to;
+-	unsigned long mask;
+-
+-	ti = current_thread_info();
+-
+-	pending_mask = 1;
+-
+-	to = ti->real_thread;
+-	current->stack = to;
+-	ti->real_thread = NULL;
+-	*to = *ti;
+-
+-	mask = xchg(&pending_mask, 0);
+-	return mask & ~1;
+-}
+-
+diff --git a/arch/um/kernel/process.c b/arch/um/kernel/process.c
+index eaeeedd629..6f87270442 100644
+--- a/arch/um/kernel/process.c
++++ b/arch/um/kernel/process.c
+@@ -43,7 +43,8 @@
+  * cares about its entry, so it's OK if another processor is modifying its
+  * entry.
+  */
+-struct cpu_task cpu_tasks[NR_CPUS] = { [0 ... NR_CPUS - 1] = { NULL } };
++struct task_struct *cpu_tasks[NR_CPUS];
++EXPORT_SYMBOL(cpu_tasks);
+
+ void free_stack(unsigned long stack, int order)
+ {
+@@ -64,7 +65,7 @@ unsigned long alloc_stack(int order, int atomic)
+
+ static inline void set_current(struct task_struct *task)
+ {
+-	cpu_tasks[task_thread_info(task)->cpu] = ((struct cpu_task) { task });
++	cpu_tasks[task_thread_info(task)->cpu] = task;
+ }
+
+ struct task_struct *__switch_to(struct task_struct *from, struct task_struct *to)
+diff --git a/arch/um/kernel/skas/process.c b/arch/um/kernel/skas/process.c
+index 68657988c8..05dcdc057a 100644
+--- a/arch/um/kernel/skas/process.c
++++ b/arch/um/kernel/skas/process.c
+@@ -22,15 +22,13 @@ static int __init start_kernel_proc(void *unused)
+ {
+ 	block_signals_trace();
+
+-	cpu_tasks[0].task = current;
+-
+ 	start_kernel();
+ 	return 0;
+ }
+
+ extern int userspace_pid[];
+
+-extern char cpu0_irqstack[];
++static char cpu0_irqstack[THREAD_SIZE] __aligned(THREAD_SIZE);
+
+ int __init start_uml(void)
+ {
+diff --git a/arch/um/kernel/um_arch.c b/arch/um/kernel/um_arch.c
+index 8e594cda6d..aebcc81431 100644
+--- a/arch/um/kernel/um_arch.c
++++ b/arch/um/kernel/um_arch.c
+@@ -65,9 +65,6 @@ struct cpuinfo_um boot_cpu_data = {
+
+ EXPORT_SYMBOL(boot_cpu_data);
+
+-union thread_union cpu0_irqstack
+-	__section(".data..init_irqstack") =
+-		{ .thread_info = INIT_THREAD_INFO(init_task) };
+
+ /* Changed in setup_arch, which is called in early boot */
+ static char host_info[(__NEW_UTS_LEN + 1) * 5];
+@@ -257,6 +254,8 @@ static struct notifier_block panic_exit_notifier = {
+
+ void uml_finishsetup(void)
+ {
++	cpu_tasks[0] = &init_task;
++
+ 	atomic_notifier_chain_register(&panic_notifier_list,
+ 				       &panic_exit_notifier);
+
+@@ -412,7 +411,7 @@ void __init setup_arch(char **cmdline_p)
+ {
+ 	u8 rng_seed[32];
+
+-	stack_protections((unsigned long) &init_thread_info);
++	stack_protections((unsigned long) init_task.stack);
+ 	setup_physmem(uml_physmem, uml_reserved, physmem_size, highmem);
+ 	mem_total_pages(physmem_size, iomem_size, highmem);
+ 	uml_dtb_init();
+diff --git a/arch/um/kernel/uml.lds.S b/arch/um/kernel/uml.lds.S
+index 5c92d58a78..a409d4b661 100644
+--- a/arch/um/kernel/uml.lds.S
++++ b/arch/um/kernel/uml.lds.S
+@@ -77,8 +77,6 @@ SECTIONS
+   .data    :
+   {
+     INIT_TASK_DATA(KERNEL_STACK_SIZE)
+-    . = ALIGN(KERNEL_STACK_SIZE);
+-    *(.data..init_irqstack)
+     DATA_DATA
+     *(.gnu.linkonce.d*)
+     CONSTRUCTORS
+diff --git a/arch/um/os-Linux/signal.c b/arch/um/os-Linux/signal.c
+index b11ed66c8b..be109103ae 100644
+--- a/arch/um/os-Linux/signal.c
++++ b/arch/um/os-Linux/signal.c
+@@ -190,43 +190,8 @@ static void hard_handler(int sig, siginfo_t *si, void *p)
+ {
+ 	ucontext_t *uc = p;
+ 	mcontext_t *mc = &uc->uc_mcontext;
+-	unsigned long pending = 1UL << sig;
+
+-	do {
+-		int nested, bail;
+-
+-		/*
+-		 * pending comes back with one bit set for each
+-		 * interrupt that arrived while setting up the stack,
+-		 * plus a bit for this interrupt, plus the zero bit is
+-		 * set if this is a nested interrupt.
+-		 * If bail is true, then we interrupted another
+-		 * handler setting up the stack.  In this case, we
+-		 * have to return, and the upper handler will deal
+-		 * with this interrupt.
+-		 */
+-		bail = to_irq_stack(&pending);
+-		if (bail)
+-			return;
+-
+-		nested = pending & 1;
+-		pending &= ~1;
+-
+-		while ((sig = ffs(pending)) != 0){
+-			sig--;
+-			pending &= ~(1 << sig);
+-			(*handlers[sig])(sig, (struct siginfo *)si, mc);
+-		}
+-
+-		/*
+-		 * Again, pending comes back with a mask of signals
+-		 * that arrived while tearing down the stack.  If this
+-		 * is non-zero, we just go back, set up the stack
+-		 * again, and handle the new interrupts.
+-		 */
+-		if (!nested)
+-			pending = from_irq_stack(nested);
+-	} while (pending);
++	(*handlers[sig])(sig, (struct siginfo *)si, mc);
+ }
+
+ void set_handler(int sig)
