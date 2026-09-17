@@ -20,10 +20,37 @@ on:
         description: 'Extra kunit.py arguments (e.g. --raw_output)'
         required: false
         default: ''
+  # Checks in on upstream mainline moving, independent of any push or PR to
+  # this repo -- push/pull_request/workflow_dispatch only re-run the matrix
+  # when *this* repo changes, so without this trigger a stale `master` could
+  # go unnoticed indefinitely. select-matrix below narrows this trigger to
+  # the master leg only, since re-running the pinned tags every 6 hours
+  # would not tell us anything new.
+  schedule:
+    - cron: '0 */6 * * *'
 
 jobs:
+  # linux_ref is the one thing that differs between "cron" and everything
+  # else: a schedule run only cares whether master still passes, but a push,
+  # PR or manual dispatch should still see the full matrix. Computed in its
+  # own job because a matrix: value can't reference github.event_name
+  # directly.
+  select-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      linux_refs: ${{ steps.select.outputs.linux_refs }}
+    steps:
+      - id: select
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            echo 'linux_refs=["master"]' >> "$GITHUB_OUTPUT"
+          else
+            echo 'linux_refs=["v6.12.57","v6.18.52","v7.2.6","master"]' >> "$GITHUB_OUTPUT"
+          fi
+
   kunit:
     name: kunit (linux ${{ matrix.linux_ref }})
+    needs: select-matrix
     runs-on: ubuntu-latest
     # These legs run unpatched, so the v6.12.57 one can still hit the UML
     # host-signal livelock and spin forever. Fail fast and visibly instead
@@ -35,7 +62,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        linux_ref: [v6.12.57, v6.18.52, v7.2.6, master]
+        linux_ref: ${{ fromJson(needs.select-matrix.outputs.linux_refs) }}
 
     steps:
       - uses: actions/checkout@v4
@@ -113,8 +140,13 @@ jobs:
   # stays unpatched, so this job is the one place that continuously
   # confirms the patch still applies to the pinned tag and still lets a
   # full, unfiltered run finish without hanging.
+  #
+  # Skipped on the mainline-watch schedule: the pinned tag doesn't change
+  # between polls, so re-running this every 6 hours would add cost without
+  # telling us anything new.
   kunit-v6-12-57-patched:
     name: kunit (linux v6.12.57, livelock fix backported)
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     # With the fix applied a full run completes. This bounds the job if
     # that stops holding, instead of consuming the runner's default
