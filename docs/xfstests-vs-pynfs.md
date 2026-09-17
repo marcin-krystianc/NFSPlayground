@@ -16,11 +16,13 @@ mount/remount, version detection (`_nfs_version`), and consistency checks.
 
 Two places tests live:
 
-- `xfstests/tests/nfs/` — tests specific to NFS. Currently one:
+- `xfstests/tests/nfs/` — tests specific to NFS. Two:
   `001`, which checks that `nfs4_getfacl` doesn't return `ERANGE` when an ACL
   buffer size lands near a page boundary (a regression test for a specific
-  fixed kernel bug, commit `ed92d8c137b7`).
-- `xfstests/tests/generic/` — 1601 filesystem-agnostic tests, most of which
+  fixed kernel bug, commit `ed92d8c137b7`); and `002`, added locally in this
+  repo rather than upstream, which checks that VAST's `remoteports=` actually
+  spreads RPC transports across multiple destination addresses.
+- `xfstests/tests/generic/` — 798 filesystem-agnostic tests, most of which
   can run against NFS via `FSTYP=nfs`. This is where the bulk of NFS coverage
   actually comes from: standard POSIX file operations, locking, xattrs,
   quotas, etc., run the same way they'd run against ext4 or XFS.
@@ -56,7 +58,7 @@ exactly one each time — a specific state-machine invariant from the spec,
 not something a normal file-write workload would exercise or notice if
 violated.
 
-`pynfs/README` is explicit about scope: "Good for correctness testing,
+`pynfs/nfs4.1/README` is explicit about scope: "Good for correctness testing,
 handling of error/unlikely paths, any test where it is the order of RPCs
 that matter. Not good for performance testing, tests where timing of RPC's
 matter." It also warns that a failing test isn't automatically proof of a

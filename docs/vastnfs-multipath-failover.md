@@ -1,10 +1,8 @@
 # VAST NFS multipath: what happens when a node goes offline
 
 Measured on the test VM (Ubuntu 24.04, kernel 6.8.0-138-generic, VAST NFS
-4.5.8) against the three-node docker cluster from
-[`scripts/nfs-test-env/`](../scripts/nfs-test-env), on 2026-08-26. Every
-number below was observed, not estimated; the reproduction steps are at the
-end.
+4.5.8) against a three-node docker cluster, on 2026-08-26. Every number
+below was observed, not estimated; the reproduction steps are at the end.
 
 ## Summary
 
@@ -68,8 +66,10 @@ That second condition is why NFSv4.1 behaved no better than NFSv3 here
 despite being moveable: the flag is necessary but not sufficient, and the
 state bit that would unlock migration is never reached by node loss alone.
 
-The same two-condition gate appears in `rpc_task_set_transport()`
-(`clnt.c:1702-1706`) for re-picking a transport on an already-bound task.
+A gate of the same shape appears in `rpc_task_set_transport()`
+(`clnt.c:1702-1706`) for re-picking a transport on an already-bound task,
+there pairing `RPC_TASK_MOVEABLE` with `XPRT_OFFLINE` rather than
+`XPRT_REMOVE`. Neither bit is set by a node simply going unresponsive.
 
 `RPC_XPRT_FLAGS_SKIP_UNCONNECTED` (`clnt.c:1699`) looks like it should make
 *new* requests avoid dead transports, but reading `xprt_is_active()`
@@ -183,15 +183,16 @@ What it still is **not**:
   are per-server, so a node's locks are not reclaimable elsewhere when it
   dies. Not measured.
 
-An earlier version of this document asserted that lock state and cache
-coherence were *not* shared here. Both claims were wrong and were corrected
-after being tested.
-
 ## Reproducing
 
+Needs the three-node cluster standing and the VAST modules loaded — see
+[xfstests-against-vastnfs.md](xfstests-against-vastnfs.md). The container
+layout lives in `scripts/00-run-xfstests-on-vm-and-docker.sh`, but that
+script tears its servers down in an `EXIT` trap, so it cannot be used as-is
+here: lift the `docker network create` / `docker run` block out of it, or
+leave a run paused, so the nodes stay up while the blackhole is applied.
+
 ```sh
-# three-node cluster + VAST driver loaded (see xfstests-against-vastnfs.md)
-bash scripts/nfs-test-env/01-setup-servers.sh
 sudo mount -t nfs -o vers=3,nconnect=4,remoteports=172.28.0.11-172.28.0.13 \
     172.28.0.12:/export/scratch /mnt/nfs-test-env/scratch
 

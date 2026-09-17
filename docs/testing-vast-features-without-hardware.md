@@ -53,10 +53,6 @@ Checked `bundle/net/sunrpc/rpcrdma_dummy.c`: it's a no-op stub module
 configured. Confirms the tree is meant to *build* without RDMA present —
 only the GDS data path itself needs the real hardware, not compilation.
 
-## Conclusion
-
-Everything except GDS is testable against a plain Linux NFS server (loopback,
-a VM, containers with multiple IPs). Only the GPUDirect Storage path needs
-GPU+RDMA hardware, and even that doesn't have to be VAST's. No part of
-testing VAST-specific features requires paying VAST or owning a VAST
-cluster.
+Everything except GDS is testable against a plain Linux NFS server
+(loopback, a VM, containers with multiple IPs). The GPUDirect Storage data
+path needs GPU and RDMA hardware, but not VAST's specifically.

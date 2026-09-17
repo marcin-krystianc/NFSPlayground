@@ -182,19 +182,15 @@ repo `driver-ops` and execs `ops ci-entry`. It pins nfs-utils to
 
 ## Method
 
-Ran on 2026-08-19 against `vastnfs-4.5.8.tar.xz`
-(sha256 `a4abaf2d6034d2b9d8d42086c30c355b2baf680ee3fb8e53a63af969f32d3b52`,
-see `vastnfs/fetch.sh`).
+Ran on 2026-08-19 against `vastnfs-4.5.8.tar.xz` (sha256
+`a4abaf2d6034d2b9d8d42086c30c355b2baf680ee3fb8e53a63af969f32d3b52`, pinned
+as `VASTNFS_SHA256` in `scripts/fetch-sources.sh`).
+
+`scripts/fetch-sources.sh` fetches and extracts both trees: the VAST tarball
+and Linux at the pinned `v6.12.57`.
 
 ```sh
-tar xf vastnfs/vastnfs-4.5.8.tar.xz
-
-git clone --filter=blob:none --sparse --depth 1 --branch v6.12.57 \
-    https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git linux
-cd linux
-git sparse-checkout set fs/nfs fs/nfsd fs/lockd fs/nfs_common \
-    net/sunrpc include/linux/nfs include/linux/sunrpc
-cd ..
+scripts/fetch-sources.sh
 
 L=linux V=vastnfs-4.5.8/bundle
 for d in fs/nfs fs/nfsd fs/lockd fs/nfs_common net/sunrpc; do
@@ -205,6 +201,11 @@ done
 diff -rq $L $V | grep "^Only in $V"
 ```
 
-The sparse clone cost 270 MB in `.git` and a 24 MB working tree, about one
-minute. Extracting the VAST tree requires a case sensitive filesystem: it ships
-both `Makefile` and `makefile` in the root and in each `src/v*` directory.
+Re-measuring needs a **pristine** `linux/`. `scripts/kunit/run-nfs-kunit.sh`
+edits the tree in place (test sources copied in, `VISIBLE_IF_KUNIT` applied
+to file-private functions), and those edits land in `fs/nfs` and
+`net/sunrpc` — exactly the subtrees counted here. Check `git -C linux status`
+first, or diff against a clean worktree.
+
+Extracting the VAST tree requires a case sensitive filesystem: it ships both
+`Makefile` and `makefile` in the root and in each `src/v*` directory.
