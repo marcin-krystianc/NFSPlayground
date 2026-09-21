@@ -29,6 +29,11 @@ on:
   schedule:
     - cron: '0 */6 * * *'
 
+# Default is contents: read; the coverage-pages and coverage-diff jobs below
+# elevate what they individually need.
+permissions:
+  contents: read
+
 jobs:
   # linux_ref is the one thing that differs between "cron" and everything
   # else: a schedule run only cares whether master still passes, but a push,
@@ -269,3 +274,130 @@ jobs:
             kunit-results.json
             coverage/
           if-no-files-found: warn
+
+  # Publishes coverage/ (coverage.info + the genhtml report) as the
+  # repo's GitHub Pages site. Push-to-master only: Pages serves one live
+  # site, so a PR run must not overwrite it -- coverage-diff below is how a
+  # PR sees its own numbers.
+  #
+  # One-time manual step this job depends on: repo Settings -> Pages ->
+  # Source: GitHub Actions. Not settable from a workflow.
+  publish-coverage-pages:
+    name: Publish coverage to GitHub Pages
+    needs: kunit-coverage
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Download coverage artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: kunit-coverage-master
+          path: artifact
+
+      - uses: actions/configure-pages@v5
+
+      # Pages root ends up serving both html/index.html (the genhtml
+      # report) and coverage.info (raw tracefile) side by side, so
+      # coverage-diff below can fetch the latter without needing a
+      # separate artifact-based path if it ever wants to.
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: artifact/coverage
+
+      - id: deployment
+        uses: actions/deploy-pages@v4
+
+  # PR-only: diffs this run's coverage.info against the latest successful
+  # push-to-master run's, via coverage-diff.py, and posts/updates one PR
+  # comment. Deliberately independent of publish-coverage-pages above --
+  # it reads the base coverage.info from Actions artifact storage, not
+  # from the published Pages site, so it still works before Pages is ever
+  # enabled or if a Pages deploy fails.
+  #
+  # On a fork PR, GITHUB_TOKEN is read-only and this can't post a comment;
+  # continue-on-error keeps that a silent no-op rather than a red X.
+  coverage-diff:
+    name: Coverage diff vs master
+    needs: kunit-coverage
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Download this PR's coverage
+        uses: actions/download-artifact@v4
+        with:
+          name: kunit-coverage-master
+          path: head-coverage
+
+      - name: Find the latest successful master coverage run
+        id: base-run
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const runs = await github.rest.actions.listWorkflowRuns({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'kunit.yml',
+              branch: 'master',
+              event: 'push',
+              status: 'success',
+              per_page: 1,
+            });
+            const run = runs.data.workflow_runs[0];
+            if (run) core.setOutput('run_id', String(run.id));
+
+      - name: Download master's coverage
+        if: steps.base-run.outputs.run_id
+        uses: actions/download-artifact@v4
+        with:
+          name: kunit-coverage-master
+          path: base-coverage
+          run-id: ${{ steps.base-run.outputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute diff
+        if: steps.base-run.outputs.run_id
+        run: |
+          python3 scripts/kunit/coverage-diff.py \
+            base-coverage/coverage/coverage.info \
+            head-coverage/coverage/coverage.info \
+            > coverage-diff.md
+
+      - name: Comment on the PR
+        if: steps.base-run.outputs.run_id
+        continue-on-error: true
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = '<!-- kunit-coverage-diff -->';
+            const body = marker + '\n' + fs.readFileSync('coverage-diff.md', 'utf8');
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find(c => c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                comment_id: existing.id, body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: context.issue.number, body,
+              });
+            }
