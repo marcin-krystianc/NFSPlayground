@@ -33,7 +33,9 @@ scripts/kunit/run-nfs-kunit.sh
 ```
 
 Test sources are in `kunit/`; `scripts/kunit/run-nfs-kunit.sh` wires them
-into a fetched kernel tree and drives `kunit.py`.
+into a fetched kernel tree and drives `kunit.py`. `COVERAGE=1
+scripts/kunit/run-nfs-kunit.sh` additionally produces an lcov/gcov HTML
+report ([docs/kunit-nfs.md#coverage](docs/kunit-nfs.md#coverage)).
 
 ## 2. VAST NFS investigation
 

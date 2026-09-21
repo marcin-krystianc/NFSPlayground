@@ -385,6 +385,55 @@ git -C linux apply "$PWD/patches/um-thread-info-in-task-v6.12.57.patch"
 `git -C linux apply` resolves a relative patch path against `linux/`, not
 the directory it was invoked from, so the path must be absolute.
 
+## Coverage
+
+`COVERAGE=1 scripts/kunit/run-nfs-kunit.sh` (see
+[kunit-nfs.md#coverage](kunit-nfs.md#coverage)) turns on UML's own gcov path
+(`CONFIG_GCOV`, `arch/um/Kconfig.debug`) rather than the debugfs-based
+`CONFIG_GCOV_KERNEL` other architectures use, since UML is an ordinary
+process and can write `.gcda` straight into the build dir. Getting a real
+report out of that needed two workarounds, both applied by the script and
+confirmed on this repo's own `kunit-coverage` CI job.
+
+### UML's linker scripts drop gcov's exit destructor
+
+A `COVERAGE=1` run built and ran cleanly but produced zero `.gcda` files —
+confirmed directly: 1130 `.gcno` (written at compile time) against 0 `.gcda`
+(written at process exit) after a full run. gcc emits each translation
+unit's gcov flush routine (`__gcov_exit`) into a *prioritized*
+`.fini_array.NNNNN` section, not the bare `.fini_array`. UML's linker
+scripts (`arch/um/include/asm/common.lds.S`, `arch/um/kernel/dyn.lds.S`)
+only collect `*(.fini_array)` into the final `.fini_array` output section —
+unlike `.init_array`, where both `*(.init_array.*)` and `*(.init_array)`
+are already collected. The prioritized destructor entries are silently
+dropped, so `__gcov_exit` never runs at process exit and no coverage data
+is ever written, gcov-instrumented or not.
+
+This is not new or specific to this repo: it is the same failure as the
+still-unmerged
+[RFC posted May 2026](https://ratatoskr.run/linux-um/2026/05/16442684/t),
+which traces back to a 2021 patch from Johannes Berg
+([lore](https://lkml.iu.edu/hypermail/linux/kernel/2103.1/06608.html)) that
+also never landed. No upstream fix exists as of this writing.
+`run-nfs-kunit.sh` works around it directly, grep-guarded like the rest of
+its tree edits: under `COVERAGE=1`, it adds `*(.fini_array.*)` ahead of
+`*(.fini_array)` in both linker scripts before the build.
+
+### `geninfo`'s line-mismatch error on syscall wrappers
+
+With `.gcda` files actually present, `lcov -c` still failed outright on
+`master`:
+
+```
+geninfo: ERROR: mismatched end line for __do_sys_socketcall at net/socket.c:3202: 3202 -> 3319
+```
+
+`geninfo` misattributes the end line of some syscall-wrapper macros (this
+one expands `SYSCALL_DEFINE2`) across gcc/lcov version combinations, and
+without `--ignore-errors mismatch` that is a hard error rather than a
+warning — the message names its own fix. `run-nfs-kunit.sh` passes
+`--ignore-errors mismatch` to `lcov -c` under `COVERAGE=1`.
+
 ### A note on green results and kernel logs
 
 **A green KUnit result says nothing about what the kernel logged underneath
