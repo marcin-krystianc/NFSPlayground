@@ -42,6 +42,25 @@ die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
 if [ "$COVERAGE" = "1" ]; then
     command -v lcov >/dev/null || die "COVERAGE=1 needs lcov (apt install lcov)"
     command -v genhtml >/dev/null || die "COVERAGE=1 needs genhtml (apt install lcov)"
+
+    # UML's linker scripts only capture the generic .fini_array section, not
+    # the prioritized .fini_array.NNNNN sections gcc emits gcov's
+    # __gcov_exit destructor into (unlike .init_array, which already
+    # captures both). That silently drops the destructor, so it never runs
+    # at process exit and no .gcda files are ever written: confirmed by a
+    # full run here producing .gcno files but zero .gcda. No upstream fix as
+    # of this writing -- see the unmerged RFC at
+    # https://ratatoskr.run/linux-um/2026/05/16442684/t and the 2021
+    # precedent at https://lkml.iu.edu/hypermail/linux/kernel/2103.1/06608.html.
+    for lds in "${LINUX_DIR}/arch/um/include/asm/common.lds.S" \
+               "${LINUX_DIR}/arch/um/kernel/dyn.lds.S"; do
+        [ -f "$lds" ] || die "${lds} not found"
+        grep -qF '*(.fini_array.*)' "$lds" && continue
+        log "fixing .fini_array in ${lds#"${LINUX_DIR}"/} so gcov's exit destructor runs"
+        sed -i 's/\*(\.fini_array)/*(.fini_array.*) *(.fini_array)/' "$lds"
+        grep -qF '*(.fini_array.*)' "$lds" ||
+            die "could not patch .fini_array in ${lds}"
+    done
 fi
 
 # Each entry is "stem:subdir:Kconfig symbol:Kconfig depends:description".
