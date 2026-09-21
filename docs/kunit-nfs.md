@@ -62,6 +62,27 @@ scripts/kunit/run-nfs-kunit.sh --raw_output
 
 Build dependencies beyond a normal toolchain: `flex bison bc gawk libelf-dev libssl-dev`.
 
+## Coverage
+
+```sh
+COVERAGE=1 scripts/kunit/run-nfs-kunit.sh
+```
+
+Turns on UML's gcov support and, after the run, writes `coverage/coverage.info`
+and an HTML report to `coverage/html/index.html` via `lcov`/`genhtml`
+(`apt install lcov`). This is the "Generating code coverage reports under
+UML" path from
+[running_tips.rst](https://docs.kernel.org/dev-tools/kunit/running_tips.html#generating-code-coverage-reports-under-uml):
+UML is an ordinary process, so `CONFIG_GCOV` writes `.gcda` files straight
+into the build dir, unlike the debugfs-based `CONFIG_GCOV_KERNEL` path in
+[gcov.rst](https://docs.kernel.org/dev-tools/gcov.html) that other
+architectures use.
+
+The report covers every file the run touched, not just `kunit/`: the
+unit suites reach into `fs/nfs`, `fs/nfs_common` and `net/sunrpc`, and the
+xfstests ports additionally exercise `fs/nfsd`, `fs/namei.c` and the VFS
+paths underneath the loopback mount.
+
 ## CI
 
 `.github/workflows/kunit.yml` runs two jobs:

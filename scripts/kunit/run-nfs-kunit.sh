@@ -12,12 +12,23 @@
 #
 # Usage: scripts/kunit/run-nfs-kunit.sh [extra kunit.py args...]
 #        scripts/kunit/run-nfs-kunit.sh --raw_output
+#        COVERAGE=1 scripts/kunit/run-nfs-kunit.sh
+#
+# COVERAGE=1 turns on UML's gcov support (Documentation/dev-tools/kunit/
+# running_tips.rst, "Generating code coverage reports under UML" -- UML
+# writes .gcda files straight to the build dir since it is an ordinary
+# process, so this needs none of the debugfs plumbing that
+# Documentation/dev-tools/gcov.rst describes for other architectures) and,
+# after the run, turns the build dir's .gcda/.gcno files into
+# coverage/coverage.info and an HTML report under coverage/html via lcov.
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 LINUX_DIR="${LINUX_DIR:-${REPO_ROOT}/linux}"
 SUNRPC_DIR="${LINUX_DIR}/net/sunrpc"
+BUILD_DIR="${LINUX_DIR}/.kunit"
+COVERAGE="${COVERAGE:-0}"
 
 log()  { printf '\n==> %s\n' "$*"; }
 die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -27,6 +38,11 @@ die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
     die "${LINUX_DIR} looks incomplete; run: scripts/fetch-sources.sh linux"
 [ -x "${LINUX_DIR}/tools/testing/kunit/kunit.py" ] ||
     die "kunit.py missing from ${LINUX_DIR}/tools/testing/kunit"
+
+if [ "$COVERAGE" = "1" ]; then
+    command -v lcov >/dev/null || die "COVERAGE=1 needs lcov (apt install lcov)"
+    command -v genhtml >/dev/null || die "COVERAGE=1 needs genhtml (apt install lcov)"
+fi
 
 # Each entry is "stem:subdir:Kconfig symbol:Kconfig depends:description".
 # Adding a suite means dropping the .c in kunit/ and adding a line here.
@@ -115,6 +131,14 @@ kunit_opts=(CONFIG_KUNIT=y CONFIG_KUNIT_ALL_TESTS=y
             CONFIG_IPV6=y CONFIG_NFS_V4=y
             CONFIG_NFS_V4_2=y CONFIG_NFSD=y CONFIG_NFSD_V4=y CONFIG_TMPFS=y
             CONFIG_TMPFS_XATTR=y)
+
+# arch/um/Kconfig.debug's GCOV symbol (not the generic CONFIG_GCOV_KERNEL
+# from Documentation/dev-tools/gcov.rst) depends on CONFIG_DEBUG_INFO; both
+# are named here, matching running_tips.rst's coverage_uml.config fragment.
+if [ "$COVERAGE" = "1" ]; then
+    kunit_opts+=(CONFIG_DEBUG_KERNEL=y CONFIG_DEBUG_INFO=y
+                 CONFIG_DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT=y CONFIG_GCOV=y)
+fi
 
 # NFS_V4_1 existed as its own Kconfig symbol through v6.12.57 (NFS_V4_2
 # depended on it); upstream later merged it into NFS_V4, so the symbol is
@@ -375,5 +399,20 @@ done
 
 log "running kunit.py"
 cd "$LINUX_DIR"
+
+if [ "$COVERAGE" = "1" ]; then
+    rc=0
+    ./tools/testing/kunit/kunit.py run \
+        --kunitconfig=net/sunrpc/.kunitconfig "$@" || rc=$?
+
+    log "collecting coverage from ${BUILD_DIR}"
+    mkdir -p "${REPO_ROOT}/coverage"
+    lcov -t nfs-kunit -o "${REPO_ROOT}/coverage/coverage.info" -c -d "${BUILD_DIR}"
+    genhtml -o "${REPO_ROOT}/coverage/html" "${REPO_ROOT}/coverage/coverage.info"
+    log "coverage report: ${REPO_ROOT}/coverage/html/index.html"
+
+    exit "$rc"
+fi
+
 exec ./tools/testing/kunit/kunit.py run \
     --kunitconfig=net/sunrpc/.kunitconfig "$@"

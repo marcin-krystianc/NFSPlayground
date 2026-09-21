@@ -207,3 +207,65 @@ jobs:
             kunit.log
             kunit-results.json
           if-no-files-found: warn
+
+  # Coverage always tracks upstream master (docs/kunit-nfs.md#coverage), not
+  # the pinned-tag/master matrix above, so it needs no select-matrix input.
+  kunit-coverage:
+    name: kunit coverage (linux master)
+    runs-on: ubuntu-latest
+    # A CONFIG_GCOV-instrumented build compiles slower than the plain matrix
+    # legs; the 30-minute budget those use isn't enough headroom.
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Install kernel build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential bc bison flex libelf-dev libssl-dev lcov
+
+      - name: Fetch the kernel tree
+        env:
+          LINUX_REF: master
+        run: bash scripts/fetch-sources.sh linux
+
+      # Same CONFIG_UBSAN=n rationale as the kunit job above.
+      - name: Run the KUnit suites with coverage
+        shell: bash
+        env:
+          COVERAGE: '1'
+        run: |
+          set -o pipefail
+          bash scripts/kunit/run-nfs-kunit.sh \
+            --kconfig_add CONFIG_UBSAN=n \
+            --json="${GITHUB_WORKSPACE}/kunit-results.json" \
+            '*' 2>&1 | tee kunit.log
+
+      - name: Summarise
+        if: always()
+        shell: bash
+        run: |
+          grep -E '^\[.*\] (Testing complete|Failures:)' kunit.log \
+            >> "$GITHUB_STEP_SUMMARY" || true
+          if [ -f coverage/coverage.info ]; then
+            {
+              echo '```'
+              lcov --summary coverage/coverage.info
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kunit-coverage-master
+          path: |
+            kunit.log
+            kunit-results.json
+            coverage/
+          if-no-files-found: warn
