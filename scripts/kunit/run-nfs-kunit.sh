@@ -426,7 +426,11 @@ if [ "$COVERAGE" = "1" ]; then
 
     log "collecting coverage from ${BUILD_DIR}"
     mkdir -p "${REPO_ROOT}/coverage"
-    lcov -t nfs-kunit -o "${REPO_ROOT}/coverage/coverage.info" -c -d "${BUILD_DIR}"
+    # mismatch: geninfo misattributes end lines for some syscall-wrapper
+    # macros (e.g. __do_sys_socketcall in net/socket.c) across gcc/lcov
+    # version combinations; a hard error otherwise, confirmed on CI.
+    lcov -t nfs-kunit -o "${REPO_ROOT}/coverage/coverage.info" -c -d "${BUILD_DIR}" \
+        --ignore-errors mismatch
     genhtml -o "${REPO_ROOT}/coverage/html" "${REPO_ROOT}/coverage/coverage.info"
     log "coverage report: ${REPO_ROOT}/coverage/html/index.html"
 
