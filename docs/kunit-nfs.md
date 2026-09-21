@@ -91,7 +91,7 @@ root causes.
 
 ## CI
 
-`.github/workflows/kunit.yml` runs three jobs:
+`.github/workflows/kunit.yml` runs:
 
 - `kunit` — a matrix over `v6.12.57`, `v6.18.52`, `v7.2.6` and `master`,
   unpatched. The `v6.12.57` leg can hit the livelock above.
@@ -100,6 +100,18 @@ root causes.
 - `kunit-coverage` — `master` with `COVERAGE=1`, unfiltered. Uploads
   `coverage/coverage.info` and the HTML report as the `kunit-coverage-master`
   artifact, and puts the `lcov --summary` totals in the job's step summary.
+  Runs on every push and PR, not just `master`.
+- `publish-coverage-pages` — push-to-`master` only. Publishes
+  `kunit-coverage`'s `coverage/` (the HTML report plus `coverage.info`) to
+  GitHub Pages. Requires the one-time repo setting Settings -> Pages ->
+  Source: GitHub Actions; a workflow can't turn that on itself.
+- `coverage-diff` — PR-only. Downloads the PR's own `coverage.info`
+  (from `kunit-coverage` in the same run) and the latest successful
+  push-to-`master` run's, via `actions/download-artifact`'s cross-run
+  `run-id` support, then runs `scripts/kunit/coverage-diff.py` and
+  posts/updates a single PR comment with the per-file delta. On a fork PR
+  the default `GITHUB_TOKEN` is read-only, so the comment step no-ops
+  instead of failing the job.
 
 ## Where the detail lives
 
