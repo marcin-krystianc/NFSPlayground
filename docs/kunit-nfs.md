@@ -103,8 +103,7 @@ root causes.
   Runs on every push and PR, not just `master`.
 - `publish-coverage-pages` — push-to-`master` only. Publishes
   `kunit-coverage`'s `coverage/` (the HTML report plus `coverage.info`) to
-  GitHub Pages. Requires the one-time repo setting Settings -> Pages ->
-  Source: GitHub Actions; a workflow can't turn that on itself.
+  GitHub Pages.
 - `coverage-diff` — PR-only. Downloads the PR's own `coverage.info`
   (from `kunit-coverage` in the same run) and the latest successful
   push-to-`master` run's, via `actions/download-artifact`'s cross-run
