@@ -302,13 +302,21 @@ jobs:
 
       - uses: actions/configure-pages@v5
 
-      # Pages root ends up serving both html/index.html (the genhtml
-      # report) and coverage.info (raw tracefile) side by side, so
-      # coverage-diff below can fetch the latter without needing a
-      # separate artifact-based path if it ever wants to.
+      # genhtml's own output (artifact/coverage/html/*) has to become the
+      # site *root* -- Pages looks for index.html at the top level, and a
+      # nested html/index.html 404s at the bare site URL. coverage.info
+      # goes in alongside it, not inside html/, so coverage-diff below (or
+      # anyone else) can fetch the raw tracefile without walking into the
+      # report's own directory.
+      - name: Assemble the Pages site
+        run: |
+          mkdir site
+          cp -r artifact/coverage/html/. site/
+          cp artifact/coverage/coverage.info site/
+
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: artifact/coverage
+          path: site
 
       - id: deployment
         uses: actions/deploy-pages@v4
