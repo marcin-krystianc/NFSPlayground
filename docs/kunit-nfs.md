@@ -22,7 +22,7 @@ show that the NFS client is well tested.
 |---|---|---|
 | xfstests `generic/*` cases ported | 43 | 798 upstream |
 | `net/sunrpc` files with unit tests | 3 | 27 |
-| `fs/nfs` files with unit tests | 5 | 56 |
+| `fs/nfs` files with unit tests | 6 | 56 |
 
 And within the files that *are* covered, coverage is partial by
 construction. `nfs4proc.c` is about 11,000 lines, almost all of it issuing
