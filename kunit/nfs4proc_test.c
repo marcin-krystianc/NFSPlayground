@@ -78,6 +78,10 @@ bool nfs4_clear_cap_atomic_open_v1(struct nfs_server *server, int err,
 bool nfs4_mode_match_open_stateid(struct nfs4_state *state, fmode_t fmode);
 int can_open_cached(struct nfs4_state *state, fmode_t mode, int open_mode,
 		    enum open_claim_type4 claim);
+struct nfs_open_context *nfs4_state_find_open_context_mode(struct nfs4_state *state,
+							    fmode_t mode);
+struct nfs_open_context *nfs4_state_find_open_context(struct nfs4_state *state);
+void nfs_init_lock_context(struct nfs_lock_context *l_ctx);
 void update_open_stateflags(struct nfs4_state *state, fmode_t fmode);
 bool nfs_open_stateid_recover_openmode(struct nfs4_state *state);
 void nfs_state_log_update_open_stateid(struct nfs4_state *state);
@@ -1829,6 +1833,137 @@ static void clear_delegation_reverts_to_the_open_stateid(struct kunit *test)
 	KUNIT_EXPECT_FALSE(test, test_bit(NFS_DELEGATED_STATE, &state->flags));
 }
 
+/*
+ * nfs4_state_find_open_context{,_mode}()
+ *
+ * State recovery after a server reboot needs an open context to replay
+ * the OPEN under. These walk the inode's open_files list for one whose
+ * ->state matches and whose ->mode covers every bit asked for, skipping
+ * contexts get_nfs_open_context() reports as mid-teardown rather than
+ * treating that NULL as "nothing found". nfs4_state_find_open_context()
+ * layers the RDWR-then-WRONLY-then-RDONLY preference order callers
+ * actually want on top of the single-mode search.
+ */
+
+struct open_ctx_fixture {
+	struct nfs_inode nfsi;
+};
+
+static struct inode *open_ctx_inode(struct kunit *test)
+{
+	struct open_ctx_fixture *f = kunit_kzalloc(test, sizeof(*f), GFP_KERNEL);
+
+	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, f);
+	INIT_LIST_HEAD(&f->nfsi.open_files);
+	return &f->nfsi.vfs_inode;
+}
+
+static struct nfs_open_context *add_open_ctx(struct kunit *test, struct inode *inode,
+					      struct nfs4_state *state, fmode_t mode)
+{
+	struct nfs_open_context *ctx = kunit_kzalloc(test, sizeof(*ctx), GFP_KERNEL);
+
+	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, ctx);
+	ctx->state = state;
+	ctx->mode = mode;
+	nfs_init_lock_context(&ctx->lock_context);
+	ctx->lock_context.open_context = ctx;
+	list_add_tail_rcu(&ctx->list, &NFS_I(inode)->open_files);
+	return ctx;
+}
+
+static void no_open_files_returns_enoent(struct kunit *test)
+{
+	struct nfs4_state *state = open_state(test);
+
+	state->inode = open_ctx_inode(test);
+
+	KUNIT_EXPECT_EQ(test,
+		       PTR_ERR(nfs4_state_find_open_context_mode(state, FMODE_READ)),
+		       -ENOENT);
+}
+
+/* A context on the list for a different nfs4_state is not a match. */
+static void a_context_for_another_state_is_skipped(struct kunit *test)
+{
+	struct nfs4_state *state = open_state(test);
+	struct nfs4_state *other = open_state(test);
+	struct inode *inode = open_ctx_inode(test);
+
+	state->inode = inode;
+	add_open_ctx(test, inode, other, FMODE_READ);
+
+	KUNIT_EXPECT_EQ(test,
+		       PTR_ERR(nfs4_state_find_open_context_mode(state, FMODE_READ)),
+		       -ENOENT);
+}
+
+/* ctx->mode must cover every bit asked for, not just overlap it. */
+static void mode_must_be_a_superset_of_what_is_asked_for(struct kunit *test)
+{
+	struct nfs4_state *state = open_state(test);
+	struct inode *inode = open_ctx_inode(test);
+
+	state->inode = inode;
+	add_open_ctx(test, inode, state, FMODE_READ);
+
+	KUNIT_EXPECT_EQ(test,
+		       PTR_ERR(nfs4_state_find_open_context_mode(state, FMODE_READ | FMODE_WRITE)),
+		       -ENOENT);
+}
+
+static void a_wider_context_satisfies_a_narrower_request(struct kunit *test)
+{
+	struct nfs4_state *state = open_state(test);
+	struct inode *inode = open_ctx_inode(test);
+	struct nfs_open_context *ctx;
+
+	state->inode = inode;
+	ctx = add_open_ctx(test, inode, state, FMODE_READ | FMODE_WRITE);
+
+	KUNIT_EXPECT_PTR_EQ(test,
+			   nfs4_state_find_open_context_mode(state, FMODE_READ), ctx);
+}
+
+/*
+ * A context whose refcount already hit zero is being torn down;
+ * get_nfs_open_context() returns NULL for it, and the walk has to keep
+ * looking rather than treat that NULL as "search over, nothing found".
+ */
+static void a_dying_context_is_skipped_not_fatal(struct kunit *test)
+{
+	struct nfs4_state *state = open_state(test);
+	struct inode *inode = open_ctx_inode(test);
+	struct nfs_open_context *dying, *live;
+
+	state->inode = inode;
+	dying = add_open_ctx(test, inode, state, FMODE_READ);
+	refcount_set(&dying->lock_context.count, 0);
+	live = add_open_ctx(test, inode, state, FMODE_READ);
+
+	KUNIT_EXPECT_PTR_EQ(test,
+			   nfs4_state_find_open_context_mode(state, FMODE_READ), live);
+}
+
+/* The wrapper tries RDWR, then WRONLY, then RDONLY, in that order. */
+static void find_open_context_prefers_rdwr_then_wronly_then_rdonly(struct kunit *test)
+{
+	struct nfs4_state *state = open_state(test);
+	struct inode *inode = open_ctx_inode(test);
+	struct nfs_open_context *rdonly, *wronly, *rdwr;
+
+	state->inode = inode;
+
+	rdonly = add_open_ctx(test, inode, state, FMODE_READ);
+	KUNIT_EXPECT_PTR_EQ(test, nfs4_state_find_open_context(state), rdonly);
+
+	wronly = add_open_ctx(test, inode, state, FMODE_WRITE);
+	KUNIT_EXPECT_PTR_EQ(test, nfs4_state_find_open_context(state), wronly);
+
+	rdwr = add_open_ctx(test, inode, state, FMODE_READ | FMODE_WRITE);
+	KUNIT_EXPECT_PTR_EQ(test, nfs4_state_find_open_context(state), rdwr);
+}
+
 static struct kunit_case nfs4_open_state_cases[] = {
 	KUNIT_CASE(mode_match_reads_the_right_counter),
 	KUNIT_CASE(o_excl_and_o_trunc_never_use_the_cache),
@@ -1845,6 +1980,12 @@ static struct kunit_case nfs4_open_state_cases[] = {
 	KUNIT_CASE(state_clear_open_flags_leaves_nothing_set),
 	KUNIT_CASE(set_delegation_copies_the_stateid_and_raises_the_flag),
 	KUNIT_CASE(clear_delegation_reverts_to_the_open_stateid),
+	KUNIT_CASE(no_open_files_returns_enoent),
+	KUNIT_CASE(a_context_for_another_state_is_skipped),
+	KUNIT_CASE(mode_must_be_a_superset_of_what_is_asked_for),
+	KUNIT_CASE(a_wider_context_satisfies_a_narrower_request),
+	KUNIT_CASE(a_dying_context_is_skipped_not_fatal),
+	KUNIT_CASE(find_open_context_prefers_rdwr_then_wronly_then_rdonly),
 	{}
 };
 
