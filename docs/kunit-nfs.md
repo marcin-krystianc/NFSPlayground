@@ -104,12 +104,14 @@ root causes.
 - `publish-coverage-pages` — push-to-`master` only. Publishes
   `kunit-coverage`'s `coverage/` (the HTML report plus `coverage.info`) to
   GitHub Pages.
-- `coverage-diff` — PR-only. Downloads the PR's own `coverage.info`
-  (from `kunit-coverage` in the same run) and the latest successful
-  push-to-`master` run's, via `actions/download-artifact`'s cross-run
-  `run-id` support, then runs `scripts/kunit/coverage-diff.py` and
-  posts/updates a single PR comment with the per-file delta. On a fork PR
-  the default `GITHUB_TOKEN` is read-only, so the comment step no-ops
+- `coverage-diff` — runs on every trigger. Downloads this run's own
+  `coverage.info` (from `kunit-coverage` in the same run) and the latest
+  successful push-to-`master` run's, via `actions/download-artifact`'s
+  cross-run `run-id` support, then runs `scripts/kunit/coverage-diff.py`
+  and always writes the per-file delta to the job's step summary. On a
+  `pull_request` event it additionally posts/updates a single PR comment
+  with the same content. On a fork PR the default `GITHUB_TOKEN` is
+  read-only, so the comment step no-ops
   instead of failing the job.
 
 ## Where the detail lives

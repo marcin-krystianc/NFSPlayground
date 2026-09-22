@@ -321,19 +321,22 @@ jobs:
       - id: deployment
         uses: actions/deploy-pages@v4
 
-  # PR-only: diffs this run's coverage.info against the latest successful
-  # push-to-master run's, via coverage-diff.py, and posts/updates one PR
-  # comment. Deliberately independent of publish-coverage-pages above --
-  # it reads the base coverage.info from Actions artifact storage, not
-  # from the published Pages site, so it still works before Pages is ever
-  # enabled or if a Pages deploy fails.
+  # Runs on every trigger (push, PR, schedule, workflow_dispatch): diffs
+  # this run's coverage.info against the latest successful push-to-master
+  # run's, via coverage-diff.py, and always writes the result to the job's
+  # step summary. On a pull_request event it additionally posts/updates
+  # one PR comment with the same content. Deliberately independent of
+  # publish-coverage-pages above -- it reads the base coverage.info from
+  # Actions artifact storage, not from the published Pages site, so it
+  # still works before Pages is ever enabled or if a Pages deploy fails.
   #
   # On a fork PR, GITHUB_TOKEN is read-only and this can't post a comment;
-  # continue-on-error keeps that a silent no-op rather than a red X.
+  # continue-on-error keeps that a silent no-op rather than a red X. The
+  # step summary still gets written regardless, since that needs no token
+  # permissions beyond the job's own log output.
   coverage-diff:
     name: Coverage diff vs master
     needs: kunit-coverage
-    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -343,7 +346,7 @@ jobs:
         with:
           submodules: false
 
-      - name: Download this PR's coverage
+      - name: Download this run's coverage
         uses: actions/download-artifact@v4
         with:
           name: kunit-coverage-master
@@ -383,8 +386,18 @@ jobs:
             head-coverage/coverage/coverage.info \
             > coverage-diff.md
 
+      - name: Write the diff to the job summary
+        if: always()
+        run: |
+          if [ -f coverage-diff.md ]; then
+            cat coverage-diff.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'No prior successful push-to-master coverage run found to diff against.' \
+              >> "$GITHUB_STEP_SUMMARY"
+          fi
+
       - name: Comment on the PR
-        if: steps.base-run.outputs.run_id
+        if: steps.base-run.outputs.run_id && github.event_name == 'pull_request'
         continue-on-error: true
         uses: actions/github-script@v7
         with:
