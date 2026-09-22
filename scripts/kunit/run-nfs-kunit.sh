@@ -75,6 +75,7 @@ TESTS=(
     "pnfs_test:fs/nfs:NFS_PNFS_KUNIT_TEST:NFS_V4:pNFS layout range arithmetic"
     "pagelist_test:fs/nfs:NFS_PAGELIST_KUNIT_TEST:NFS_FS:NFS page request coalescing"
     "nfs4proc_test:fs/nfs:NFS_V4_PROC_KUNIT_TEST:NFS_V4:NFSv4 protocol decision logic"
+    "fs_context_test:fs/nfs:NFS_FS_CONTEXT_KUNIT_TEST:NFS_FS:NFS mount option parsing"
     # The xfstests ports share one Kconfig symbol and the loopback NFS
     # fixture object; nfs_fixture must be listed (it has no suite, it is
     # the shared deployment the generic/* suites mount through).
@@ -203,6 +204,9 @@ UNSTATIC=(
     "fs/nfs/pagelist.c:bool:nfs_page_is_contiguous"
     "fs/nfs/pagelist.c:bool:nfs_match_lock_context"
     "fs/nfs/pagelist.c:unsigned int:nfs_coalesce_size"
+    "fs/nfs/fs_context.c:int:nfs_fs_context_parse_param"
+    "fs/nfs/fs_context.c:int:nfs_validate_transport_protocol"
+    "fs/nfs/fs_context.c:void:nfs_set_mount_transport_protocol"
     "fs/nfs/nfs4proc.c:int:nfs4_map_errors"
     "fs/nfs/nfs4proc.c:long:nfs4_update_delay"
     "fs/nfs/nfs4proc.c:u32:nfs4_fmode_to_share_access"
