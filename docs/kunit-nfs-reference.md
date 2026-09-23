@@ -435,7 +435,7 @@ nfs-inode-pagecache unit tests and 014/075.
 An audit compared all 120 ports against their `xfstests/tests/generic/NNN`
 originals, checking not just whether a port's header discloses a scale
 reduction but whether the reduced or altered version can still fail the way
-the original would. Nine ports have a gap; the rest -- including every
+the original would. Eight ports have a gap; the rest -- including every
 concurrency port that races a real second kthread (084, 133, 247, 340, 344,
 346, 354, 391, 707) -- hold up: the reduced scale still exercises the same
 code path and can still fail the same way the original does.
@@ -443,12 +443,7 @@ code path and can still fail the same way the original does.
 **Cannot fail regardless of correctness.** The property depends on a race
 window the port closed by going sequential:
 
-- **037**: upstream races a background setxattr-flip loop against 1000
-  concurrent `getfattr` reads to catch a torn read during a non-atomic
-  replace. The port does setxattr then getxattr sequentially,
-  single-threaded -- no concurrent reader exists, so a torn read cannot be
-  observed no matter how the replace is implemented.
-- **028**: same class. Upstream's bug is `getcwd()`/`d_path()` racing a
+- **028**: upstream's bug is `getcwd()`/`d_path()` racing a
   concurrent rename mid-walk. The port churns the tree and resolves paths
   one at a time -- the race window the bug lived in is never entered.
 
