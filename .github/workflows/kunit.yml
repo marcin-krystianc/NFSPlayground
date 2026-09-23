@@ -50,7 +50,7 @@ jobs:
           if [ "${{ github.event_name }}" = "schedule" ]; then
             echo 'linux_refs=["master"]' >> "$GITHUB_OUTPUT"
           else
-            echo 'linux_refs=["master","master","master","master","master","master","master","master","master","master","master"]' >> "$GITHUB_OUTPUT"
+            echo 'linux_refs=["master","master","master","master","master","master","master","master","master","master","master","master","master","master","master"]' >> "$GITHUB_OUTPUT"
           fi
 
   kunit:
