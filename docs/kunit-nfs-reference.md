@@ -302,6 +302,16 @@ failing "wrong" expectation and verified before being encoded:
   (436, 445): the program only sets `unwritten_extents` when a
   fallocate'd range still reads as a hole, and ALLOCATE against the tmpfs
   export allocates real zeroed pages.
+- **The client only learned to report statx btime after v6.12.57** (528):
+  `fs/nfs/inode.c` has no `STATX_BTIME` on that release and five
+  references to it on v6.18.52, v7.2.6 and mainline. Upstream's answer is
+  `_require_btime`, which notruns. The port does not simply skip when the
+  bit is missing, because that would also hide a regression on a kernel
+  that does support it: it tells the two apart at compile time with
+  `NFS_ATTR_FATTR_BTIME` (include/linux/nfs_xdr.h), which is absent on
+  v6.12.57 and present on the other three refs -- the same boundary. Where
+  the client knows about btime, not reporting it fails; where it does not,
+  the case skips. CI's v6.12.57 leg found this, not the VM.
 
 Two in-kernel mechanics the newer ports needed, both worth knowing before
 writing another one:

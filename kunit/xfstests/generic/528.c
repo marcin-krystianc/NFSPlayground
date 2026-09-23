@@ -12,10 +12,25 @@
  * for only when the caller asked for STATX_BTIME (nfs_getattr() adds it
  * to the bitmap) and which the server fills from the underlying
  * filesystem -- tmpfs keeps it. So the port checks three things
- * upstream's tolerance check implies: that the bit comes back in
- * stx_mask at all, that the value is close to now, and that it does not
- * move when the file is written to afterwards, which is what makes it a
- * creation time rather than another mtime.
+ * upstream's tolerance check implies: that the value is close to now,
+ * that it does not move when the file is written to afterwards (which is
+ * what makes it a creation time rather than another mtime), and that the
+ * bit comes back in stx_mask at all.
+ *
+ * That last one is a requirement upstream states separately, as
+ * _require_btime, and it is the one that needs care here: **the NFS
+ * client only learned to report btime after v6.12.57**. fs/nfs/inode.c
+ * has no STATX_BTIME at all on that release and five references to it on
+ * v6.18.52, v7.2.6 and mainline, so on the oldest kernel in this repo's
+ * CI matrix the mount answers with the bit clear, and upstream notruns.
+ *
+ * Skipping unconditionally would give that up on every other kernel too:
+ * a client that stopped reporting btime would skip quietly instead of
+ * failing. So the two cases are told apart at compile time by
+ * NFS_ATTR_FATTR_BTIME (include/linux/nfs_xdr.h), which is absent on
+ * v6.12.57 and present on v6.18.52, v7.2.6 and mainline -- the same
+ * boundary as the behaviour. Where the client knows about btime, not
+ * reporting it is a failure; where it does not, the case skips.
  *
  * Deviations: the tolerance is the same five seconds; the clock is the
  * kernel's own coarse real time rather than date(1).
@@ -29,6 +44,10 @@
 #include <linux/time64.h>
 #include <linux/delay.h>
 #include <linux/ktime.h>
+/* for NFS_ATTR_FATTR_BTIME; nfs_xdr.h does not stand alone, nfs_fs.h
+ * pulls it in with the nfs.h/nfs4.h/sunrpc chain it needs
+ */
+#include <linux/nfs_fs.h>
 
 #include "xfstests_nfs_fixture.h"
 
@@ -73,9 +92,16 @@ static void btime_is_when_the_file_was_created(struct kunit *test)
 	KUNIT_ASSERT_EQ(test, xfs_write_new_file(G528_FILE, "", 0), 0);
 
 	KUNIT_ASSERT_EQ(test, g528_btime(G528_FILE, &st), 0);
+#ifdef NFS_ATTR_FATTR_BTIME
 	KUNIT_ASSERT_TRUE_MSG(test, st.result_mask & STATX_BTIME,
-			      "the mount did not report btime at all (mask %x)",
+			      "this client knows about btime but did not report it (mask %x)",
 			      st.result_mask);
+#else
+	if (!(st.result_mask & STATX_BTIME))
+		kunit_skip(test,
+			   "this client has no btime support at all (mask %x); fs/nfs gained it after v6.12.57",
+			   st.result_mask);
+#endif
 
 	delta = st.btime.tv_sec - now.tv_sec;
 	KUNIT_EXPECT_TRUE_MSG(test, delta >= -G528_SLACK && delta <= G528_SLACK,
