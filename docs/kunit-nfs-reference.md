@@ -152,7 +152,7 @@ appended only for link-local addresses and only when non-zero.
 
 ## The xfstests ports
 
-The `kunit/xfstests/` tree holds ports of **43 xfstests generic cases**,
+The `kunit/xfstests/` tree holds ports of **120 xfstests generic cases**,
 each a KUnit suite named after its original (`xfstests/generic/001` ...),
 each running against a real NFS mount served by knfsd inside the same UML
 kernel. The deployment lives in `kunit/xfstests/nfs_fixture.{c,h}`: tmpfs
@@ -178,20 +178,31 @@ Every xfstests suite needs it wired in as `.init`; `run-nfs-kunit.sh`
 adds that automatically, so a new port gets it without doing anything. The
 exception is `nfs_fixture` itself, which defines no suite.
 
-Ported: 001 002 005 006 007 011 013 014 020 023 028 029 030 035 037 069 070 074 075 087 088 089 109 123
-126 129 131 132 169 193 213 221 228 236 245 257 285 286 308 309
-313 314 360.
+Ported:
 
-43 of upstream's 798 `generic/` cases: this set is a demonstration that
-the approach works, not a coverage target. Selection was driven by what
-was reachable, not by what would be most valuable to port.
+```
+001 002 005 006 007 011 013 014 020 023 028 029 030 035 037 069 070 074
+075 080 084 086 087 088 089 100 103 109 123 124 125 126 129 130 131 132
+133 135 141 169 184 193 213 214 215 221 228 236 245 246 247 248 249 257
+258 285 286 306 308 309 310 313 314 337 340 344 346 354 355 360 364 377
+378 391 393 394 401 406 412 423 430 431 432 433 434 438 443 448 450 453
+454 464 471 486 490 523 525 528 532 533 568 609 611 615 618 637 638 639
+647 676 680 706 707 708 728 729 736 749 755 763
+```
 
-Two rules bound it. A case upstream reports `[not run]` on an NFSv4.2
-mount is not ported, since there is no upstream result to mirror; measured
-with `scripts/00-run-xfstests-on-vm-and-docker.sh` against knfsd in docker
-at `vers=4.2`. And a case whose subject is a userspace library rather than
-the filesystem is not ported either -- generic/010 drives ndbm through
-`src/dbtest`, which has no in-kernel equivalent to mirror.
+120 of upstream's 798 `generic/` cases. Every one of the other 678 is
+accounted for in
+[xfstests-ports-not-done.md](xfstests-ports-not-done.md), which names,
+per test, what cannot be reproduced -- generated from the test sources so
+it stays checkable.
+
+Two rules bound the set. A case upstream reports `[not run]` on an
+NFSv4.2 mount is not ported, since there is no upstream result to mirror;
+measured with `scripts/00-run-xfstests-on-vm-and-docker.sh` against knfsd
+in docker at `vers=4.2`. And a case whose subject is a userspace program
+rather than the filesystem is not ported either -- generic/010 drives
+ndbm through `src/dbtest`, generic/241 is dbench, generic/759 is fsx on
+hugepages.
 
 Nothing in the ported set covers crash consistency: dm-flakey needs a block
 device, and the fixture exports tmpfs with client and server in one kernel,
@@ -204,18 +215,56 @@ that reduction loses the point of the test, the port says so in its header;
 where upstream keeps an NFS-specific golden image (`035.out.nfs`), the port
 follows it rather than the default one.
 
-The families: namespace semantics (023 rename matrix, 028 path resolution
-across renames, 035 sillyrename-on-rename-over, 089 mtab link/rename churn,
-109, 245, 309, 360 long symlink target); data integrity (001 chain copier,
-014 truncfile, 075 mini-fsx with a shadow model, 029/030 mapped writes,
-069 O_APPEND, 074, 129, 132, 169, 213 ALLOCATE boundaries, 286 seek-driven
-sparse copy, 308 1TB offsets); timestamps (221, 236, 313); xattrs -- RFC
-8276 works end to end here -- (020, 037, 070 model-checked storm);
-permissions via in-kernel credential switching with dropped capabilities
-(087, 088, 123, 126, 193, 314 SGID inheritance); plus POSIX locks as NFSv4
-LOCK state (131), SEEK RPCs (285/286), READDIR cookie stability (257),
-RLIMIT_FSIZE (228), symlink ELOOP limits (005) and the directory-stress
-pair (011/013).
+The families, by what they exercise:
+
+- **Namespace semantics**: the 023 rename matrix, 028 path resolution
+  across renames, 035 sillyrename-on-rename-over, 089 mtab link/rename
+  churn, 109, 245, 309, 360 long symlink targets, 453 filenames that are
+  byte strings rather than text, 736 readdir while every entry is being
+  renamed, 707 a directory moved while it grows.
+- **Data integrity**: 001 chain copier, 014 truncfile, 075 mini-fsx with a
+  shadow model, 029/030 mapped writes, 069 O_APPEND, 074, 100 a copied
+  tree, 124 positional patterns, 129, 132, 169, 213 ALLOCATE boundaries,
+  214 writes into preallocated ranges, 286 seek-driven sparse copy, 308
+  1TB offsets, 525 the top of the 64-bit offset range, 406 one large
+  direct write, 639 a write beside uncached data.
+- **Direct I/O**: 130 the buffered/direct battery, 135 the three write
+  paths, 412 a truncate into a hole between them, 450 reads at and past
+  EOF, 609 O_DIRECT with O_DSYNC, 125 direct reads after a truncate, 355
+  suid stripped on a direct write.
+- **Faults and mappings**: 246 writev from a mapping, 248 pwrite from the
+  same page, 443 writev faulting on its own iovecs, 638 an overlapping
+  pwritev, 647/729 reads and writes whose buffer is the file's own
+  mapping, 708 a direct write from a half-faulted mapping, 749 the tail of
+  the last page, 080/215 mapped writes and timestamps, 141 a mapping at a
+  non-zero offset.
+- **Timestamps**: 221, 236, 313, 258 pre-epoch times, 528 statx btime, 728
+  ctime after an xattr operation, 755 ctime after unlinking a link.
+- **Xattrs** -- RFC 8276 works end to end here: 020, 037, 070
+  model-checked storm, 337 listxattr completeness, 377 its buffer sizes,
+  454 keys that are byte strings, 486 XATTR_REPLACE, 523 a slash in a
+  name, 533 the smoke test, 611 an empty value, 618 two mid-sized values,
+  103 large values at ENOSPC.
+- **Permissions**, via in-kernel credential switching with dropped
+  capabilities: 087, 088, 123, 126, 193, 314 SGID inheritance, 378 a hard
+  link's shared mode, 680 the Dirty Pipe CVE.
+- **Directories and readdir cookies**: 257 cookie stability, 471
+  rewinddir, 637 a directory modified mid-walk, 676 seekdir to valid and
+  invalid offsets, 310 read(2) racing readdir, 401 d_type for every entry
+  type, 011/013 the directory-stress pair.
+- **copy_file_range as NFSv4.2 COPY**: 430 into new files, 431 one byte at
+  a time, 432/433 rearranging an existing file, 434 what it must refuse;
+  249 is the sendfile/splice equivalent.
+- **Concurrency**, each with one kthread beside the test thread: 084 a
+  link storm against a vanishing target, 133 a reader and a writer, 247 a
+  direct overwriter against a mapped writer, 340/344/346/354 the holetest
+  family, 364 direct writes and fsync on one fd, 391 interleaved direct
+  reads, 438 fallocate-and-mmap under a fsync loop, 464 mixed writes and
+  syncs, 615 st_blocks during writeback.
+- Plus POSIX locks as NFSv4 LOCK state (131), SEEK RPCs (285/286, 490,
+  706, 448), RLIMIT_FSIZE (228 fallocate, 394 truncate), symlink ELOOP
+  limits (005), mknod (184), statx across object types (423, 532), and
+  the read-only mount rules (306).
 
 NFS-specific semantics the porting surfaced and pinned, each found as a
 failing "wrong" expectation and verified before being encoded:
@@ -233,6 +282,74 @@ failing "wrong" expectation and verified before being encoded:
 - A write's dirty range is rounded back up to the page boundary by
   `nfs_update_folio()`, so a "drop the last byte" mutation is absorbed
   entirely for page-aligned writes and only the unaligned ports catch it.
+- **A delegation hides a SETATTR from the server.** With a write
+  delegation on the file, `nfs_setattr()` applies `ATTR_MTIME_SET`/
+  `ATTR_ATIME_SET` locally through `nfs_set_timestamps_to_ts()` and clears
+  the bits, so no SETATTR is sent: the client reports the new timestamps
+  and the server still holds the old ones. Found while porting 258, whose
+  server-side check failed until the file under test was one the client
+  had never opened. The port now covers both sides.
+- **A negative SEEK_HOLE/SEEK_DATA offset comes back as ENXIO, not
+  EINVAL** (448). `nfs4_file_llseek()` hands both whences straight to
+  `nfs42_proc_llseek()`, so the offset is encoded as an unsigned offset4
+  and goes to the server, which answers NFS4ERR_NXIO because it is past
+  EOF. ENXIO is what seek_sanity_test's own `do_lseek()` requires, so this
+  is upstream's expectation reached by an unusual route.
+- **suid and sgid are stripped by the server, and the client notices**
+  (355): the WRITE carries no mode, knfsd applies the POSIX rule, and a
+  forced revalidation on the client agrees with the server's own file.
+- **seek_sanity_test's unwritten-extent cases are vacuous on this stack**
+  (436, 445): the program only sets `unwritten_extents` when a
+  fallocate'd range still reads as a hole, and ALLOCATE against the tmpfs
+  export allocates real zeroed pages.
+
+Two in-kernel mechanics the newer ports needed, both worth knowing before
+writing another one:
+
+- **O_DIRECT cannot be driven with `kernel_read()`/`kernel_write()`.**
+  Their ITER_KVEC reaches `iov_iter_get_pages_alloc2()` (via
+  `nfs_direct_{read,write}_schedule_iovec()`), which handles user-backed,
+  bvec, folioq and xarray iterators and returns **-EFAULT** for a kvec.
+  An ITER_BVEC over the same kmalloc'd buffer works, and that is what
+  `xfs_direct_read()`/`xfs_direct_write()` build. For a buffer that is a
+  user address inside a `kunit_vm_mmap()` mapping there is
+  `xfs_user_rw()`, which is pread/pwrite's iterator with the direct flag
+  as a parameter.
+- **`kernel_write()` refuses any file whose fops wire up both `->write`
+  and `->write_iter`** ("implies very convoluted semantics",
+  fs/read_write.c) -- which is exactly what `null_fops` and a directory's
+  `generic_read_dir` do. Writing to a device node (184, 306) or reading a
+  directory (310) therefore goes through `vfs_write()`/`vfs_read()` with a
+  user address, which is the syscall's own path.
+- **A worker kthread cannot use KUnit assertions**: they unwind through
+  the test thread's try_catch. The concurrency ports (084, 133, 247,
+  310, 340, 344, 346, 354, 364, 391, 438, 464, 615, 707) record the
+  worker's first error in a struct and let the test thread assert on it.
+  A worker that has to touch a `kunit_vm_mmap()` mapping calls
+  `kthread_use_mm()` with the test thread's mm -- which only exists after
+  the first `kunit_vm_mmap()` call, so take the pointer after it, not
+  before.
+- **`iterate_dir()` is one getdents(2), not a whole directory.** It
+  returns a batch; a port that reads a directory has to call it until a
+  pass adds nothing, or it will silently check only the first ~17 entries.
+
+One thing is measured but not explained, and the port that hit it says so
+rather than working around it quietly: after the client mount is
+remounted read-only, **the first open of a device node whose dentry is no
+longer cached fails with -EIO**, repeatedly, while a plain `kern_path()`
+or any getattr first makes the same open succeed (306). fs/namei.c's
+`atomic_open()` turns "`->atomic_open()` returned 0 without opening" into
+-EIO, which fits, but that path also WARNs and no warning appears in the
+log.
+
+Twice during a full run the UML kernel has panicked in a way that is not
+attributed: once in `nfs_delegation_find_inode()` on the NFSv4 callback
+thread handling a CB_RECALL, once in `refill_objects()` on the nfsd
+thread, both "Segfault with no mm" with a small bad pointer. Neither
+reproduced on a re-run, and a run with `slub_debug=FZPU` reported no slab
+corruption. It is recorded here because the ports' server-side checks
+(reading the export directly while the client holds a delegation) make
+the client's CB_RECALL path run far more often than it used to.
 
 029 and 030 both need `vm_mmap()`, which normally requires `current->mm` --
 absent in the kernel thread a KUnit case runs in. That is not a blocker:

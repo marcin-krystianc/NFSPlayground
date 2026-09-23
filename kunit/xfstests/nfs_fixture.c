@@ -45,6 +45,8 @@
 #include <linux/slab.h>
 #include <linux/fs.h>
 #include <linux/file.h>
+#include <linux/bvec.h>
+#include <linux/uio.h>
 #include <linux/namei.h>
 #include <linux/mount.h>
 #include <uapi/linux/mount.h>	/* MS_REMOUNT, MS_RDONLY */
@@ -90,6 +92,14 @@ void nfsd4_end_grace(struct nfsd_net *nn);
 /* fs/open.c bodies; non-static there but not declared in a header */
 int chmod_common(const struct path *path, umode_t mode);
 int chown_common(const struct path *path, uid_t user, gid_t group);
+/*
+ * mknod(2)'s syscall body. File-private on v6.12.57 (un-staticed by the
+ * runner) and undeclared there; on current mainline it is renamed
+ * filename_mknodat() and already declared in the fs/internal.h included
+ * above, where this repeats it harmlessly. The runner rewrites the name in
+ * this file's copy along with the rest of the fs/namei.c renames.
+ */
+int do_mknodat(int dfd, struct filename *name, umode_t mode, unsigned int dev);
 
 #define XFS_NFSDFS	"/nfsdfs"
 #define XFS_DOMAIN	"localhost"
@@ -216,7 +226,11 @@ int xfs_write_new_file(const char *path, const void *data, size_t len)
 	ssize_t written;
 	int err = 0;
 
-	f = filp_open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+	/* O_LARGEFILE by hand: an in-kernel open does not get
+	 * force_o_largefile(), so without it these helpers stop at
+	 * MAX_NON_LFS (2 GiB) -- see the generic/308 and 525 ports.
+	 */
+	f = filp_open(path, O_WRONLY | O_CREAT | O_TRUNC | O_LARGEFILE, 0644);
 	if (IS_ERR(f))
 		return PTR_ERR(f);
 	while (len) {
@@ -237,12 +251,125 @@ ssize_t xfs_read_range(const char *path, void *buf, size_t len, loff_t off)
 	struct file *f;
 	ssize_t got;
 
-	f = filp_open(path, O_RDONLY, 0);
+	f = filp_open(path, O_RDONLY | O_LARGEFILE, 0);
 	if (IS_ERR(f))
 		return PTR_ERR(f);
 	got = kernel_read(f, buf, len, &off);
 	filp_close(f, NULL);
 	return got;
+}
+
+/*
+ * O_DIRECT from a kernel buffer.
+ *
+ * kernel_read()/kernel_write() build an ITER_KVEC, and NFS's direct path
+ * ends up in iov_iter_get_pages_alloc2() (fs/nfs/direct.c ->
+ * nfs_direct_{read,write}_schedule_iovec), which handles user-backed, bvec,
+ * folioq and xarray iterators and returns -EFAULT for everything else,
+ * kvec included (lib/iov_iter.c, __iov_iter_get_pages_alloc). So an
+ * O_DIRECT kernel_write() over NFS fails with -EFAULT before any RPC is
+ * sent -- confirmed here, not assumed.
+ *
+ * An ITER_BVEC over the same memory is the way in: the buffer must be
+ * kmalloc'd (physically contiguous, so one bio_vec covers it and the
+ * consecutive struct pages the bvec path walks are the right ones).
+ * IOCB_DIRECT is set explicitly so this is the direct path whether or not
+ * the caller opened with O_DIRECT.
+ */
+static ssize_t xfs_direct_rw(struct file *f, void *buf, size_t len,
+			     loff_t *pos, bool write)
+{
+	struct iov_iter iter;
+	struct bio_vec bv;
+	struct kiocb kiocb;
+	ssize_t ret;
+
+	bvec_set_page(&bv, virt_to_page(buf), len, offset_in_page(buf));
+	iov_iter_bvec(&iter, write ? ITER_SOURCE : ITER_DEST, &bv, 1, len);
+
+	init_sync_kiocb(&kiocb, f);
+	kiocb.ki_pos = *pos;
+	kiocb.ki_flags |= IOCB_DIRECT;
+
+	if (write)
+		ret = vfs_iocb_iter_write(f, &kiocb, &iter);
+	else
+		ret = vfs_iocb_iter_read(f, &kiocb, &iter);
+	if (ret > 0)
+		*pos = kiocb.ki_pos;
+	return ret;
+}
+
+ssize_t xfs_direct_write(struct file *f, const void *buf, size_t len,
+			 loff_t *pos)
+{
+	return xfs_direct_rw(f, (void *)buf, len, pos, true);
+}
+
+/*
+ * Writes whose source is a user address, i.e. somewhere inside a
+ * kunit_vm_mmap() mapping. kernel_write() cannot express this: its
+ * ITER_KVEC would have the copy read the user pointer as a kernel one.
+ * The iovec form takes a kernel array of iovecs whose iov_base values are
+ * user pointers, which is exactly what ITER_IOVEC is.
+ */
+static ssize_t xfs_user_rw_iter(struct file *f, struct iov_iter *iter,
+				loff_t *pos, bool write, bool direct)
+{
+	struct kiocb kiocb;
+	ssize_t ret;
+
+	init_sync_kiocb(&kiocb, f);
+	kiocb.ki_pos = *pos;
+	if (direct)
+		kiocb.ki_flags |= IOCB_DIRECT;
+	if (write)
+		ret = vfs_iocb_iter_write(f, &kiocb, iter);
+	else
+		ret = vfs_iocb_iter_read(f, &kiocb, iter);
+	if (ret > 0)
+		*pos = kiocb.ki_pos;
+	return ret;
+}
+
+ssize_t xfs_user_rw(struct file *f, void __user *buf, size_t len, loff_t *pos,
+		    bool write, bool direct)
+{
+	struct iov_iter iter;
+
+	iov_iter_ubuf(&iter, write ? ITER_SOURCE : ITER_DEST, buf, len);
+	return xfs_user_rw_iter(f, &iter, pos, write, direct);
+}
+
+ssize_t xfs_user_write(struct file *f, const void __user *buf, size_t len,
+		       loff_t *pos)
+{
+	return xfs_user_rw(f, (void __user *)buf, len, pos, true, false);
+}
+
+ssize_t xfs_user_writev(struct file *f, const struct iovec *iov,
+			unsigned long nr_segs, loff_t *pos)
+{
+	struct iov_iter iter;
+	size_t count = 0;
+	unsigned long i;
+
+	for (i = 0; i < nr_segs; i++)
+		count += iov[i].iov_len;
+	iov_iter_init(&iter, ITER_SOURCE, iov, nr_segs, count);
+	return xfs_user_rw_iter(f, &iter, pos, true, false);
+}
+
+ssize_t xfs_direct_read(struct file *f, void *buf, size_t len, loff_t *pos)
+{
+	return xfs_direct_rw(f, buf, len, pos, false);
+}
+
+int xfs_mknod(const char *path, umode_t mode, unsigned int major,
+	      unsigned int minor)
+{
+	return do_mknodat(AT_FDCWD, getname_kernel(path), mode,
+			  new_encode_dev(MKDEV(major, minor)));
 }
 
 int xfs_statfs(const char *path, struct kstatfs *st)
@@ -263,7 +390,7 @@ int xfs_fsync_path(const char *path)
 	struct file *f;
 	int err;
 
-	f = filp_open(path, O_RDONLY, 0);
+	f = filp_open(path, O_RDONLY | O_LARGEFILE, 0);
 	if (IS_ERR(f))
 		return PTR_ERR(f);
 	err = vfs_fsync(f, 0);

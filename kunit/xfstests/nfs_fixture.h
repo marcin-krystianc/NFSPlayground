@@ -80,6 +80,34 @@ ssize_t xfs_readlink(const char *path, char *buf, size_t size);
 int xfs_write_new_file(const char *path, const void *data, size_t len);
 ssize_t xfs_read_range(const char *path, void *buf, size_t len, loff_t off);
 
+/*
+ * O_DIRECT I/O from a kmalloc'd buffer. kernel_read()/kernel_write() cannot
+ * do this over NFS -- their ITER_KVEC reaches iov_iter_get_pages_alloc2(),
+ * which returns -EFAULT for a kvec; see nfs_fixture.c. The buffer must come
+ * from kmalloc (kunit_kmalloc is fine), not vmalloc.
+ */
+ssize_t xfs_direct_write(struct file *f, const void *buf, size_t len,
+			 loff_t *pos);
+ssize_t xfs_direct_read(struct file *f, void *buf, size_t len, loff_t *pos);
+
+/*
+ * Writes sourced from a user address, for the ports that write out of a
+ * kunit_vm_mmap() mapping. The iovec form's iov_base values are user
+ * pointers; the array itself is an ordinary kernel one.
+ */
+struct iovec;
+ssize_t xfs_user_write(struct file *f, const void __user *buf, size_t len,
+		       loff_t *pos);
+/* the general form: reads too, and either the buffered or the direct path */
+ssize_t xfs_user_rw(struct file *f, void __user *buf, size_t len, loff_t *pos,
+		    bool write, bool direct);
+ssize_t xfs_user_writev(struct file *f, const struct iovec *iov,
+			unsigned long nr_segs, loff_t *pos);
+
+/* mknod(2): character/block/fifo/socket nodes, built from kern_path_create */
+int xfs_mknod(const char *path, umode_t mode, unsigned int major,
+	      unsigned int minor);
+
 int xfs_statfs(const char *path, struct kstatfs *st);
 /* poll until XFS_MNT reports at least this many bytes available */
 int xfs_wait_for_free_bytes(u64 bytes);
