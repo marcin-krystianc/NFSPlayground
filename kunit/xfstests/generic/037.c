@@ -28,6 +28,7 @@
 #include <linux/kthread.h>
 #include <linux/completion.h>
 #include <linux/atomic.h>
+#include <linux/jiffies.h>
 
 #include "xfstests_nfs_fixture.h"
 
@@ -41,13 +42,23 @@ struct g037_flipper {
 	atomic_t		*stop;
 	int			err;
 	unsigned long		flips;
+	struct completion	started;	/* first iteration attempted */
 	struct completion	done;
 };
 
+/*
+ * kthread_run() only queues the new task; nothing guarantees it is
+ * scheduled before the test thread's read loop finishes, and a fast
+ * enough loopback run can complete all G037_READS iterations before this
+ * thread gets a single timeslice. Signalling `started` after the first
+ * attempt -- win or lose -- lets the test thread block until the race is
+ * actually underway instead of assuming it started in time.
+ */
 static int g037_flip(void *arg)
 {
 	struct g037_flipper *f = arg;
 	int i = 0;
+	bool announced = false;
 
 	while (!atomic_read(f->stop)) {
 		const char *val = g037_vals[i++ & 1];
@@ -59,8 +70,14 @@ static int g037_flip(void *arg)
 			break;
 		}
 		f->flips++;
+		if (!announced) {
+			complete(&f->started);
+			announced = true;
+		}
 		cond_resched();
 	}
+	if (!announced)
+		complete(&f->started);
 	complete(&f->done);
 	return 0;
 }
@@ -93,9 +110,15 @@ static void flipping_values_are_never_torn(struct kunit *test)
 	KUNIT_ASSERT_EQ(test, err, 0);
 
 	flipper.stop = &stop;
+	init_completion(&flipper.started);
 	init_completion(&flipper.done);
 	t = kthread_run(g037_flip, &flipper, "g037-flip");
 	KUNIT_ASSERT_FALSE_MSG(test, IS_ERR(t), "kthread_run: %ld", PTR_ERR(t));
+
+	KUNIT_ASSERT_NE_MSG(test,
+			    wait_for_completion_timeout(&flipper.started,
+							msecs_to_jiffies(10000)),
+			    0UL, "flip worker made no progress within 10s");
 
 	for (i = 0; i < G037_READS; i++) {
 		ssize_t n = xfs_getxattr(G037_FILE, "user.something", rd,
