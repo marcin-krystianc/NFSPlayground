@@ -430,6 +430,72 @@ stale bytes past the new EOF, which 029 catches both server-side and
 client-side ("byte 5118 is 58, expected 00") alongside the older
 nfs-inode-pagecache unit tests and 014/075.
 
+### Known gaps from upstream, found by audit
+
+An audit compared all 120 ports against their `xfstests/tests/generic/NNN`
+originals, checking not just whether a port's header discloses a scale
+reduction but whether the reduced or altered version can still fail the way
+the original would. Nine ports have a gap; the rest -- including every
+concurrency port that races a real second kthread (084, 133, 247, 340, 344,
+346, 354, 391, 707) -- hold up: the reduced scale still exercises the same
+code path and can still fail the same way the original does.
+
+**Cannot fail regardless of correctness.** The property depends on a race
+window the port closed by going sequential:
+
+- **037**: upstream races a background setxattr-flip loop against 1000
+  concurrent `getfattr` reads to catch a torn read during a non-atomic
+  replace. The port does setxattr then getxattr sequentially,
+  single-threaded -- no concurrent reader exists, so a torn read cannot be
+  observed no matter how the replace is implemented.
+- **028**: same class. Upstream's bug is `getcwd()`/`d_path()` racing a
+  concurrent rename mid-walk. The port churns the tree and resolves paths
+  one at a time -- the race window the bug lived in is never entered.
+
+**Tests a different, weaker property than the original, undisclosed:**
+
+- **088**: upstream (`t_access_root.c`) drops privilege to the *file's own
+  owner* uid and checks that CAP_DAC_OVERRIDE is still denied despite
+  matching ownership -- the actual regression the test was written for. The
+  port instead checks root opening a mode-000 file (trivially true) and an
+  unrelated uid getting EACCES (trivially true); it never reproduces
+  upstream's scenario.
+- **023**: upstream runs a full 5x5 file-type rename matrix
+  (none/regular/symlink/dir/tree), both same- and cross-directory, 50 rows
+  checked against a golden `.out`. The port hand-picks 8 same-directory
+  errno cases; cross-directory rename is untested entirely.
+- **130**: the header claims "the last scenario keeps upstream's offsets."
+  Upstream's last scenario has a third part at ~10GB offsets (large
+  sparse-offset handling); the port only replays the 0-13 and 4090-4105
+  byte ranges. The header's claim is false.
+- **132**: upstream is a growing-block-size sweep, 512B up to 10MB across 14
+  stages (~94MB total) -- that progression is the test's actual subject
+  ("aligned vector rw"). The port only ever uses fixed 512-byte blocks in a
+  rewrite/verify loop of its own design; no block size above 512B is
+  exercised.
+- **193**: roughly two-thirds of upstream -- suid/sgid clearing on
+  chmod/chown/truncate, a POSIX privilege-escalation-class property -- is
+  dropped. The port keeps only basic ownership/permission checks, with no
+  disclosure of the omission.
+
+**Scope reduction, understated but not structurally broken:**
+
+- **074**: upstream runs 5 configurations (baseline, mmap I/O, and three
+  multi-process concurrent-write variants). The port implements only the
+  single-threaded baseline. The header says "single-threaded port," which
+  undersells losing 4 of 5 configurations.
+- **286**: keeps only upstream's test01 (pure holes+data); drops test02-04
+  (falloc'd unwritten-extent layouts). Likely justified -- ALLOCATE against
+  the tmpfs export produces real zeroed pages, not unwritten extents, the
+  same reasoning already used for 436/445 -- but the header doesn't say so.
+- **749**: ports 2 of upstream's 6 file-length/block-size parameterizations.
+  The dropped 4 are how upstream reaches its target bug
+  (`folio_map_range()`, gated on `block_size > PAGE_SIZE`); tmpfs/NFS has no
+  block size distinct from the page size, so that scenario can't be
+  reproduced on this fixture at any scale. The port's kept case is a real,
+  correctly-checked property, but a different and weaker claim than what
+  generic/749 was written to catch, and the header doesn't say so.
+
 ### A confirmed host-signal livelock on v6.12.57 (upstream bug, backported here)
 
 A full run sometimes never finishes. Two distinct symptoms were observed
