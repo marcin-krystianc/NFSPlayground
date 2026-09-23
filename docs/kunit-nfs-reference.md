@@ -435,17 +435,10 @@ nfs-inode-pagecache unit tests and 014/075.
 An audit compared all 120 ports against their `xfstests/tests/generic/NNN`
 originals, checking not just whether a port's header discloses a scale
 reduction but whether the reduced or altered version can still fail the way
-the original would. Eight ports have a gap; the rest -- including every
-concurrency port that races a real second kthread (084, 133, 247, 340, 344,
-346, 354, 391, 707) -- hold up: the reduced scale still exercises the same
-code path and can still fail the same way the original does.
-
-**Cannot fail regardless of correctness.** The property depends on a race
-window the port closed by going sequential:
-
-- **028**: upstream's bug is `getcwd()`/`d_path()` racing a
-  concurrent rename mid-walk. The port churns the tree and resolves paths
-  one at a time -- the race window the bug lived in is never entered.
+the original would. Seven ports have a gap; the rest -- including every
+concurrency port that races a real second kthread (028, 084, 133, 247, 340,
+344, 346, 354, 391, 707) -- hold up: the reduced scale still exercises the
+same code path and can still fail the same way the original does.
 
 **Tests a different, weaker property than the original, undisclosed:**
 
