@@ -60,6 +60,12 @@ int xfs_rmdir(const char *path);
  */
 int xfs_rmdir_settled(const char *path);
 int xfs_unlink(const char *path);
+/*
+ * Flush the delayed fputs of files this thread has closed, so that a
+ * following unlink is a REMOVE rather than a sillyrename to .nfsXXXX.
+ * See nfs_fixture.c.
+ */
+void xfs_settle_fput(void);
 int xfs_rename(const char *from, const char *to);
 int xfs_link(const char *oldpath, const char *newpath);
 int xfs_symlink(const char *target, const char *linkpath);

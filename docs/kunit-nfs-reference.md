@@ -342,6 +342,15 @@ writing another one:
 - **`iterate_dir()` is one getdents(2), not a whole directory.** It
   returns a batch; a port that reads a directory has to call it until a
   pass adds nothing, or it will silently check only the first ~17 entries.
+- **An in-kernel unlink of a file the test itself wrote can sillyrename
+  it.** `filp_close()` from a kernel thread defers the final `fput` to a
+  workqueue, and NFS turns an unlink whose inode still has a live struct
+  file into a RENAME to `.nfsXXXX`; the name then disappears on its own
+  when the fput lands. A port that unlinks a file and then cares what the
+  directory contains has to call `xfs_settle_fput()` first. Found as an
+  intermittent generic/637 failure on CI -- a cookie that had pointed at
+  a transient `.nfs...` entry later returned a different name -- after
+  twenty clean runs on the VM.
 
 One thing is measured but not explained, and the port that hit it says so
 rather than working around it quietly: after the client mount is

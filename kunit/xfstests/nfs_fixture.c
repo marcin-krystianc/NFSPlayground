@@ -646,6 +646,21 @@ static int xfs_umount(const char *mountpoint)
 	return path_umount(&p, 0);
 }
 
+/*
+ * Settle the delayed fputs this thread's filp_close()s left behind.
+ *
+ * fput() from a kernel thread defers the final release of a struct file to
+ * a workqueue, and NFS sillyrenames an unlink whose inode still has a live
+ * struct file: the REMOVE becomes a RENAME to .nfsXXXX, and the name only
+ * disappears when the fput lands. A test that unlinks a file it wrote and
+ * then cares what the directory contains has to settle first, or it races
+ * that transient entry.
+ */
+void xfs_settle_fput(void)
+{
+	flush_delayed_fput();
+}
+
 int xfs_rmdir_settled(const char *path)
 {
 	int err = -ENOTEMPTY;

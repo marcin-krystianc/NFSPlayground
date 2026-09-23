@@ -104,6 +104,15 @@ static int g637_setup(struct kunit *test)
 		snprintf(path, sizeof(path), G637_DIR "/%d", i);
 		KUNIT_ASSERT_EQ(test, xfs_write_new_file(path, "", 0), 0);
 	}
+	/*
+	 * Every one of those was opened and closed, and an in-kernel close
+	 * defers the final fput. Unlinking a file whose struct file is still
+	 * alive sillyrenames it, which would put a transient .nfsXXXX entry
+	 * in the directory in the middle of the walk below -- and then
+	 * remove it again when the fput landed, which is a directory change
+	 * this test is not making. Settle first.
+	 */
+	xfs_settle_fput();
 	return 0;
 }
 
@@ -113,8 +122,16 @@ static int g637_walk(struct kunit *test, struct file *d,
 {
 	int n = 0;
 
-	while (n < max && g637_one(d, &seen[n]))
+	while (n < max && g637_one(d, &seen[n])) {
+		/* a sillyrename here is the fixture racing itself, not a
+		 * directory change the test made: name it rather than let
+		 * it surface as a confusing cookie mismatch later
+		 */
+		KUNIT_EXPECT_NE_MSG(test, strncmp(seen[n].name, ".nfs", 4), 0,
+				    "a sillyrenamed entry (%s) appeared during the walk",
+				    seen[n].name);
 		n++;
+	}
 	return n;
 }
 
