@@ -71,4 +71,3 @@ without VAST hardware, and how it behaves under failure.
 `xfstests/`, `pynfs/` and `nfs-utils/` are git submodules. `linux/` and the
 extracted `vastnfs-*/` tree are gitignored and fetched on demand by
 `scripts/fetch-sources.sh`.
-
