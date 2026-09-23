@@ -136,6 +136,25 @@ int xfs_utimes_raw(const char *path, struct timespec64 times[2]);
 int xfs_switch_creds(uid_t uid, gid_t gid);
 void xfs_restore_creds(void);
 
+/*
+ * seteuid(2)'s actual effect: only euid/fsuid move, uid/suid and
+ * capabilities are untouched by hand -- security_task_fix_setuid() decides
+ * what happens to cap_effective, the same LSM hook setresuid(2) goes
+ * through. Pairs with xfs_restore_creds(), same one-at-a-time rule as
+ * xfs_switch_creds().
+ */
+int xfs_seteuid(uid_t uid);
+
+/*
+ * access(2)'s in-kernel equivalent: POSIX requires the check to use the
+ * *real* uid/gid, not the effective ones, so this builds the same
+ * override cred access(2) itself builds (fs/open.c's
+ * access_override_creds()) before calling inode_permission() -- fsuid set
+ * to the real uid, and capabilities restored to cap_permitted if that
+ * real uid is 0, cleared otherwise. `mode` is R_OK/W_OK/X_OK, OR'd.
+ */
+int xfs_access(const char *path, int mode);
+
 /* xattrs by path, with the mnt_want_write dance callers of vfs_* owe */
 int xfs_setxattr(const char *path, const char *name, const void *value,
 		 size_t size, int flags);

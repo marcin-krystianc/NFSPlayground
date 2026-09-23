@@ -435,19 +435,13 @@ nfs-inode-pagecache unit tests and 014/075.
 An audit compared all 120 ports against their `xfstests/tests/generic/NNN`
 originals, checking not just whether a port's header discloses a scale
 reduction but whether the reduced or altered version can still fail the way
-the original would. Seven ports have a gap; the rest -- including every
+the original would. Six ports have a gap; the rest -- including every
 concurrency port that races a real second kthread (028, 084, 133, 247, 340,
 344, 346, 354, 391, 707) -- hold up: the reduced scale still exercises the
 same code path and can still fail the same way the original does.
 
 **Tests a different, weaker property than the original, undisclosed:**
 
-- **088**: upstream (`t_access_root.c`) drops privilege to the *file's own
-  owner* uid and checks that CAP_DAC_OVERRIDE is still denied despite
-  matching ownership -- the actual regression the test was written for. The
-  port instead checks root opening a mode-000 file (trivially true) and an
-  unrelated uid getting EACCES (trivially true); it never reproduces
-  upstream's scenario.
 - **023**: upstream runs a full 5x5 file-type rename matrix
   (none/regular/symlink/dir/tree), both same- and cross-directory, 50 rows
   checked against a golden `.out`. The port hand-picks 8 same-directory

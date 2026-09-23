@@ -66,6 +66,7 @@
 #include <linux/fs_struct.h>	/* set_fs_root/set_fs_pwd, see xfstests_nfs_case_init() */
 #include <linux/capability.h>
 #include <linux/uidgid.h>
+#include <linux/security.h>	/* security_task_fix_setuid, see xfs_seteuid() */
 
 #include "internal.h"		/* path_mount/path_umount, do_*at bodies */
 #include "nfsd/nfsd.h"		/* nfsd_svc, nfsd_vers, nfsd_mutex */
@@ -484,6 +485,84 @@ void xfs_restore_creds(void)
 	put_cred(xfs_override);
 	xfs_saved_creds = NULL;
 	xfs_override = NULL;
+}
+
+int xfs_seteuid(uid_t uid)
+{
+	struct cred *c;
+	const struct cred *old;
+	int err;
+
+	if (WARN_ON(xfs_saved_creds))
+		return -EBUSY;
+	old = current_cred();
+	c = prepare_creds();
+	if (!c)
+		return -ENOMEM;
+	/* setresuid(-1, uid, -1): only euid (and fsuid, which follows it) move */
+	c->euid = c->fsuid = KUIDT_INIT(uid);
+	err = security_task_fix_setuid(c, old, LSM_SETID_RES);
+	if (err) {
+		abort_creds(c);
+		return err;
+	}
+	xfs_override = c;
+	xfs_saved_creds = override_creds(c);
+	return 0;
+}
+
+/*
+ * fs/open.c's access_override_creds(), reproduced: fsuid/fsgid are pinned
+ * to the *real* uid/gid for the duration of the check, and capabilities
+ * are restored to cap_permitted if that real uid is 0 (root regains
+ * CAP_DAC_OVERRIDE for the check even if its effective uid currently
+ * isn't root) or cleared otherwise. do_faccessat() only builds this
+ * override when fsuid/uid already disagree; this always builds it, which
+ * changes nothing about the result -- inode_permission() sees the same
+ * cred either way -- and keeps xfs_access() self-contained.
+ *
+ * The single put_cred() below, after revert_creds() rather than right
+ * after override_creds(), is deliberate: some kernel versions have
+ * override_creds()/revert_creds() take and drop an extra reference
+ * themselves (the historical contract this mirrors, fs/open.c's own
+ * access_override_creds(), relies on that extra ref to justify its own
+ * immediate put_cred()), others (newer cred.h, where both are a bare
+ * rcu_replace_pointer() with no refcounting at all) don't. Exactly one
+ * put_cred() to match exactly one prepare_creds() -- the same shape
+ * xfs_switch_creds()/xfs_restore_creds() already use -- balances either
+ * way; a put_cred() sandwiched between override_creds() and revert_creds()
+ * does not, and frees the cred while it is still current->cred on a
+ * no-extra-ref kernel (kernel/cred.c: "BUG_ON(cred == current->cred)").
+ */
+int xfs_access(const char *path, int mode)
+{
+	const struct cred *old_cred;
+	struct cred *override;
+	struct path p;
+	int err;
+
+	override = prepare_creds();
+	if (!override)
+		return -ENOMEM;
+	override->fsuid = override->uid;
+	override->fsgid = override->gid;
+	if (uid_eq(override->uid, GLOBAL_ROOT_UID))
+		override->cap_effective = override->cap_permitted;
+	else
+		cap_clear(override->cap_effective);
+	old_cred = override_creds(override);
+
+	err = kern_path(path, LOOKUP_FOLLOW, &p);
+	if (!err) {
+		err = inode_permission(mnt_idmap(p.mnt),
+				       d_backing_inode(p.dentry),
+				       mode | MAY_ACCESS);
+		path_put(&p);
+	}
+
+	revert_creds(old_cred);
+	put_cred(override);
+	return err;
 }
 
 int xfs_setxattr(const char *path, const char *name, const void *value,
