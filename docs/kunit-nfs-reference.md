@@ -435,17 +435,10 @@ nfs-inode-pagecache unit tests and 014/075.
 An audit compared all 120 ports against their `xfstests/tests/generic/NNN`
 originals, checking not just whether a port's header discloses a scale
 reduction but whether the reduced or altered version can still fail the way
-the original would. Four ports have a gap; the rest -- including every
+the original would. Three ports have a gap; the rest -- including every
 concurrency port that races a real second kthread (028, 084, 133, 247, 340,
 344, 346, 354, 391, 707) -- hold up: the reduced scale still exercises the
 same code path and can still fail the same way the original does.
-
-**Tests a different, weaker property than the original, undisclosed:**
-
-- **193**: roughly two-thirds of upstream -- suid/sgid clearing on
-  chmod/chown/truncate, a POSIX privilege-escalation-class property -- is
-  dropped. The port keeps only basic ownership/permission checks, with no
-  disclosure of the omission.
 
 **Scope reduction, understated but not structurally broken:**
 
