@@ -152,7 +152,7 @@ appended only for link-local addresses and only when non-zero.
 
 ## The xfstests ports
 
-The `kunit/xfstests/` tree holds ports of **132 xfstests generic cases**,
+The `kunit/xfstests/` tree holds ports of **138 xfstests generic cases**,
 each a KUnit suite named after its original (`xfstests/generic/001` ...),
 each running against a real NFS mount served by knfsd inside the same UML
 kernel. The deployment lives in `kunit/xfstests/nfs_fixture.{c,h}`: tmpfs
@@ -189,13 +189,13 @@ Ported:
 075 080 084 086 087 088 089 100 103 109 123 124 125 126 129 130 131 132
 133 135 141 169 184 193 213 214 215 221 228 236 245 246 247 248 249 257
 258 285 286 306 308 309 310 313 314 337 340 344 346 354 355 360 364 377
-378 391 393 394 401 406 412 420 423 428 430 431 432 433 434 437 438 439
-443 446 448 450 453 454 464 471 486 490 504 523 525 528 532 533 539 565
-567 568 604 609 611 615 618 637 638 639 647 676 680 683 684 706 707 708
-728 729 736 749 755 763
+378 391 393 394 401 406 412 420 423 428 430 431 432 433 434 436 437 438
+439 443 446 448 450 453 454 464 471 478 486 490 504 523 524 525 528 532
+533 539 565 567 568 591 597 598 604 609 611 615 618 637 638 639 647 676
+680 683 684 706 707 708 728 729 736 749 755 763
 ```
 
-132 of upstream's 798 `generic/` cases. Every one of the other 666 is
+138 of upstream's 798 `generic/` cases. Every one of the other 660 is
 accounted for in
 [xfstests-ports-not-done.md](xfstests-ports-not-done.md), which names,
 per test, what cannot be reproduced -- generated from the test sources so

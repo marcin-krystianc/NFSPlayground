@@ -1,7 +1,7 @@
 # xfstests generic/* that are not ported, and why
 
-[kunit/xfstests/](../kunit/xfstests/) holds 132 ports of upstream's 798
-`generic/*` cases. This file accounts for the other 666: every one of them
+[kunit/xfstests/](../kunit/xfstests/) holds 138 ports of upstream's 798
+`generic/*` cases. This file accounts for the other 660: every one of them
 has a reason, and the reason names what specifically cannot be reproduced
 rather than "it did not work".
 
@@ -461,17 +461,11 @@ generic/751
 | generic/339 | src/dirhash_collide generates names that collide in the XFS and btrfs directory hashes; the fixture's server is tmpfs, which has no such hash |
 | generic/345 | holetest -F: generic/340 and 344 with processes instead of threads. In a kernel test both markers are kthreads sharing one mm, so the port would duplicate generic/340 |
 | generic/402 | _require_timestamp_range notruns: _filesystem_timestamp_range() in common/rc has no nfs case, so the bounds are unknown |
-| generic/436 | seek_sanity_test cases 13-16 are gated on unwritten extents -- space fallocate has reserved that SEEK_HOLE still reports as a hole. ALLOCATE against the tmpfs export allocates real zeroed pages, so the program's own probe turns these cases off |
-| generic/445 | seek_sanity_test case 17, gated on unwritten extents for the same reason as generic/436 |
+| generic/445 | seek_sanity_test case 17 skips itself unless the page size is at least four allocation units; the probe finds 4096 on the tmpfs export (logged by the generic/436 port), so upstream reports it skipped |
 | generic/452 | copies ls onto the mount and executes it, before and after a read-only remount; a KUnit case cannot exec a binary |
 | generic/460 | the bug is XFS's delalloc indirect-block reservation, reached by writing a 1 GiB file with dirty_ratio at 100; NFS has no delayed allocation and the file does not fit a 64 MiB export |
-| generic/478 | OFD locks across clone(2), dup(2) and close: the subject is file-descriptor ownership across processes and fd tables, which a KUnit case does not have |
-| generic/524 | the race is between XFS writeback's cached extent mapping and a truncate; NFS has no block mapping to cache |
-| generic/571 | the lease test is src/locktest's two-process client/server protocol; nfs4_setlease() exists, but what the test drives is the harness |
+| generic/571 | _require_test_fcntl_setlease notruns on NFS without a delegation (common/rc: locktest -t returns EAGAIN); nfs4_add_lease() refuses a lease unless the client holds a delegation. Whether knfsd grants the read and write delegations the lease cases need was not probed |
 | generic/590 | an 8 GiB file and XFS's extent-size limit; the export is a 64 MiB tmpfs and NFS has no extents |
-| generic/591 | src/splice-test's concurrent reader and writer are two processes sharing a pipe across a fork; the splice side itself is covered by the generic/249 port |
-| generic/597 | toggles fs.protected_symlinks and fs.protected_hardlinks, which are static ints in fs/namei.c with no in-kernel setter; what they gate is enforced by the client's VFS (may_follow_link/may_linkat), not by NFS |
-| generic/598 | toggles fs.protected_regular and fs.protected_fifos, static ints in fs/namei.c; see generic/597 |
 | generic/632 | detached mounts and mount-namespace propagation |
 | generic/685 | fzero (FALLOC_FL_ZERO_RANGE): nfs42_fallocate() accepts only mode 0 and PUNCH_HOLE with KEEP_SIZE; the suid/sgid rule itself is covered by the generic/683 and 684 ports |
 | generic/686 | finsert (FALLOC_FL_INSERT_RANGE): not accepted by nfs42_fallocate(); see generic/685 |
@@ -480,11 +474,11 @@ generic/751
 | generic/759 | fsx on hugepage-backed userspace buffers |
 | generic/760 | fsx with O_DIRECT on hugepage-backed userspace buffers |
 | generic/761 | the property is that a filesystem which checksums data falls back to buffered writes when the source buffer changes mid-write; NFS does not checksum data |
-| generic/772 | file_getattr()/file_setattr() work on fsxattr -- project id, extent-size hints -- which NFS does not have |
+| generic/772 | _require_file_attr notruns: NFS has .fileattr_get but no .fileattr_set, so vfs_fileattr_set() returns -ENOIOCTLCMD |
 | generic/777 | _require_open_by_handle -N notruns: fs/nfs/export.c has no .fh_to_parent, so exportfs_can_encode_fh() refuses EXPORT_FH_CONNECTABLE and name_to_handle_at(AT_HANDLE_CONNECTABLE) returns EOPNOTSUPP |
-| generic/780 | file_getattr()/file_setattr() on special files; see generic/772 |
-| generic/786 | directory delegations via the F_SETDELEG fcntl, which does not exist on v6.12.57 -- one of the kernels this repo's CI builds against -- and src/locktest's two-process harness |
-| generic/787 | file delegations via F_SETDELEG; see generic/786 |
+| generic/780 | _require_file_attr notruns, as generic/772 |
+| generic/786 | _require_test_fcntl_setdeleg notruns: it probes a directory, NFS directories have no .setlease, and kernel_setlease() returns -EINVAL |
+| generic/787 | _require_test_fcntl_setdeleg notruns, as generic/786 (the probe is on a directory) |
 | generic/798 | cachestat()'s body is a static helper in mm/filemap.c reachable only through the syscall; the port would have to un-static it |
 
 ## Ported
@@ -504,11 +498,12 @@ generic/310 generic/313 generic/314 generic/337 generic/340 generic/344
 generic/346 generic/354 generic/355 generic/360 generic/364 generic/377
 generic/378 generic/391 generic/393 generic/394 generic/401 generic/406
 generic/412 generic/420 generic/423 generic/428 generic/430 generic/431
-generic/432 generic/433 generic/434 generic/437 generic/438 generic/439
-generic/443 generic/446 generic/448 generic/450 generic/453 generic/454
-generic/464 generic/471 generic/486 generic/490 generic/504 generic/523
-generic/525 generic/528 generic/532 generic/533 generic/539 generic/565
-generic/567 generic/568 generic/604 generic/609 generic/611 generic/615
+generic/432 generic/433 generic/434 generic/436 generic/437 generic/438
+generic/439 generic/443 generic/446 generic/448 generic/450 generic/453
+generic/454 generic/464 generic/471 generic/478 generic/486 generic/490
+generic/504 generic/523 generic/524 generic/525 generic/528 generic/532
+generic/533 generic/539 generic/565 generic/567 generic/568 generic/591
+generic/597 generic/598 generic/604 generic/609 generic/611 generic/615
 generic/618 generic/637 generic/638 generic/639 generic/647 generic/676
 generic/680 generic/683 generic/684 generic/706 generic/707 generic/708
 generic/728 generic/729 generic/736 generic/749 generic/755 generic/763
