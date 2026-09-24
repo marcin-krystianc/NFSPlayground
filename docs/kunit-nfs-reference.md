@@ -436,24 +436,18 @@ nfs-inode-pagecache unit tests and 014/075.
 An audit compared all 120 ports against their `xfstests/tests/generic/NNN`
 originals, checking not just whether a port's header discloses a scale
 reduction but whether the reduced or altered version can still fail the way
-the original would. Two ports have a gap; the rest -- including every
-concurrency port that races a real second kthread (028, 084, 133, 247, 340,
-344, 346, 354, 391, 707) -- hold up: the reduced scale still exercises the
-same code path and can still fail the same way the original does.
+the original would. It found six ports with a gap: 074, 130, 132, 193,
+286 and 749 each dropped upstream scenarios or parameter sets, and 130's
+header also claimed upstream offsets it did not use. All six now follow
+upstream's steps, and each header names what still differs. The rest -- including
+every concurrency port that races a real second kthread (028, 084, 133,
+247, 340, 344, 346, 354, 391, 707) -- hold up: the reduced scale still
+exercises the same code path and can still fail the same way the original
+does.
 
-**Scope reduction, understated but not structurally broken:**
-
-- **286**: keeps only upstream's test01 (pure holes+data); drops test02-04
-  (falloc'd unwritten-extent layouts). Likely justified -- ALLOCATE against
-  the tmpfs export produces real zeroed pages, not unwritten extents, the
-  same reasoning already used for 436/445 -- but the header doesn't say so.
-- **749**: ports 2 of upstream's 6 file-length/block-size parameterizations.
-  The dropped 4 are how upstream reaches its target bug
-  (`folio_map_range()`, gated on `block_size > PAGE_SIZE`); tmpfs/NFS has no
-  block size distinct from the page size, so that scenario can't be
-  reproduced on this fixture at any scale. The port's kept case is a real,
-  correctly-checked property, but a different and weaker claim than what
-  generic/749 was written to catch, and the header doesn't say so.
+The audit's reason for 749 was wrong. It said the dropped parameter sets
+need `block_size > PAGE_SIZE`. Upstream runs all six sets at the
+filesystem's own block size, and all six run here.
 
 ### A confirmed host-signal livelock on v6.12.57 (upstream bug, backported here)
 
