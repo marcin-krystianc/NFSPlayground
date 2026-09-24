@@ -1,7 +1,7 @@
 # xfstests generic/* that are not ported, and why
 
-[kunit/xfstests/](../kunit/xfstests/) holds 138 ports of upstream's 798
-`generic/*` cases. This file accounts for the other 660: every one of them
+[kunit/xfstests/](../kunit/xfstests/) holds 141 ports of upstream's 798
+`generic/*` cases. This file accounts for the other 657: every one of them
 has a reason, and the reason names what specifically cannot be reproduced
 rather than "it did not work".
 
@@ -458,22 +458,19 @@ generic/751
 | generic/010 | src/dbtest drives ndbm, a userspace library, not the filesystem |
 | generic/128 | needs to exec a setuid binary from the mount with nosuid set; a KUnit case cannot exec userspace, and the fixture mounts once |
 | generic/241 | dbench, a userspace workload generator |
-| generic/339 | src/dirhash_collide generates names that collide in the XFS and btrfs directory hashes; the fixture's server is tmpfs, which has no such hash |
 | generic/345 | holetest -F: generic/340 and 344 with processes instead of threads. In a kernel test both markers are kthreads sharing one mm, so the port would duplicate generic/340 |
 | generic/402 | _require_timestamp_range notruns: _filesystem_timestamp_range() in common/rc has no nfs case, so the bounds are unknown |
 | generic/445 | seek_sanity_test case 17 skips itself unless the page size is at least four allocation units; the probe finds 4096 on the tmpfs export (logged by the generic/436 port), so upstream reports it skipped |
 | generic/452 | copies ls onto the mount and executes it, before and after a read-only remount; a KUnit case cannot exec a binary |
 | generic/460 | the bug is XFS's delalloc indirect-block reservation, reached by writing a 1 GiB file with dirty_ratio at 100; NFS has no delayed allocation and the file does not fit a 64 MiB export |
-| generic/571 | _require_test_fcntl_setlease notruns on NFS without a delegation (common/rc: locktest -t returns EAGAIN); nfs4_add_lease() refuses a lease unless the client holds a delegation. Whether knfsd grants the read and write delegations the lease cases need was not probed |
+| generic/571 | _require_test_fcntl_setlease notruns on NFS whatever delegations are held: locktest -t does F_SETLEASE F_UNLCK on a file with no lease, generic_delete_lease() returns -EAGAIN when no lease matches (fs/locks.c), and common/rc turns exit code 11 into notrun for NFS only |
 | generic/590 | an 8 GiB file and XFS's extent-size limit; the export is a 64 MiB tmpfs and NFS has no extents |
 | generic/632 | detached mounts and mount-namespace propagation |
 | generic/685 | fzero (FALLOC_FL_ZERO_RANGE): nfs42_fallocate() accepts only mode 0 and PUNCH_HOLE with KEEP_SIZE; the suid/sgid rule itself is covered by the generic/683 and 684 ports |
 | generic/686 | finsert (FALLOC_FL_INSERT_RANGE): not accepted by nfs42_fallocate(); see generic/685 |
 | generic/687 | fcollapse (FALLOC_FL_COLLAPSE_RANGE): not accepted by nfs42_fallocate(); see generic/685 |
-| generic/754 | the attributes are set in the trusted namespace (attr -R) on symlinks, which NFSv4.2 does not carry; what remains is symlink-target length coverage, which generic/309 and generic/360 already provide |
 | generic/759 | fsx on hugepage-backed userspace buffers |
 | generic/760 | fsx with O_DIRECT on hugepage-backed userspace buffers |
-| generic/761 | the property is that a filesystem which checksums data falls back to buffered writes when the source buffer changes mid-write; NFS does not checksum data |
 | generic/772 | _require_file_attr notruns: NFS has .fileattr_get but no .fileattr_set, so vfs_fileattr_set() returns -ENOIOCTLCMD |
 | generic/777 | _require_open_by_handle -N notruns: fs/nfs/export.c has no .fh_to_parent, so exportfs_can_encode_fh() refuses EXPORT_FH_CONNECTABLE and name_to_handle_at(AT_HANDLE_CONNECTABLE) returns EOPNOTSUPP |
 | generic/780 | _require_file_attr notruns, as generic/772 |
@@ -494,17 +491,18 @@ generic/133 generic/135 generic/141 generic/169 generic/184 generic/193
 generic/213 generic/214 generic/215 generic/221 generic/228 generic/236
 generic/245 generic/246 generic/247 generic/248 generic/249 generic/257
 generic/258 generic/285 generic/286 generic/306 generic/308 generic/309
-generic/310 generic/313 generic/314 generic/337 generic/340 generic/344
-generic/346 generic/354 generic/355 generic/360 generic/364 generic/377
-generic/378 generic/391 generic/393 generic/394 generic/401 generic/406
-generic/412 generic/420 generic/423 generic/428 generic/430 generic/431
-generic/432 generic/433 generic/434 generic/436 generic/437 generic/438
-generic/439 generic/443 generic/446 generic/448 generic/450 generic/453
-generic/454 generic/464 generic/471 generic/478 generic/486 generic/490
-generic/504 generic/523 generic/524 generic/525 generic/528 generic/532
-generic/533 generic/539 generic/565 generic/567 generic/568 generic/591
-generic/597 generic/598 generic/604 generic/609 generic/611 generic/615
-generic/618 generic/637 generic/638 generic/639 generic/647 generic/676
-generic/680 generic/683 generic/684 generic/706 generic/707 generic/708
-generic/728 generic/729 generic/736 generic/749 generic/755 generic/763
+generic/310 generic/313 generic/314 generic/337 generic/339 generic/340
+generic/344 generic/346 generic/354 generic/355 generic/360 generic/364
+generic/377 generic/378 generic/391 generic/393 generic/394 generic/401
+generic/406 generic/412 generic/420 generic/423 generic/428 generic/430
+generic/431 generic/432 generic/433 generic/434 generic/436 generic/437
+generic/438 generic/439 generic/443 generic/446 generic/448 generic/450
+generic/453 generic/454 generic/464 generic/471 generic/478 generic/486
+generic/490 generic/504 generic/523 generic/524 generic/525 generic/528
+generic/532 generic/533 generic/539 generic/565 generic/567 generic/568
+generic/591 generic/597 generic/598 generic/604 generic/609 generic/611
+generic/615 generic/618 generic/637 generic/638 generic/639 generic/647
+generic/676 generic/680 generic/683 generic/684 generic/706 generic/707
+generic/708 generic/728 generic/729 generic/736 generic/749 generic/754
+generic/755 generic/761 generic/763
 ```
