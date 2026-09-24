@@ -442,10 +442,6 @@ same code path and can still fail the same way the original does.
 
 **Tests a different, weaker property than the original, undisclosed:**
 
-- **130**: the header claims "the last scenario keeps upstream's offsets."
-  Upstream's last scenario has a third part at ~10GB offsets (large
-  sparse-offset handling); the port only replays the 0-13 and 4090-4105
-  byte ranges. The header's claim is false.
 - **132**: upstream is a growing-block-size sweep, 512B up to 10MB across 14
   stages (~94MB total) -- that progression is the test's actual subject
   ("aligned vector rw"). The port only ever uses fixed 512-byte blocks in a
