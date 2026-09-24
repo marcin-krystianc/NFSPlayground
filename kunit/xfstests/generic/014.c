@@ -10,15 +10,18 @@
  * exercising the client's nfs_vmtruncate/writeback interaction and the
  * server's truncation.
  *
- * The port keeps upstream's write-block/truncate loop (block stamped with
- * its own offset, exactly like writeblk()), then adds what
- * _require_sparse_files implies but upstream never checks: after the
- * storm, a deterministic epilogue proves truncate-down really cut the
- * data off (growing the file back exposes zeros, not the old bytes) and
- * that the final size is what the last truncate said.
+ * The port runs upstream's loop at upstream's parameters: 10,000 rounds,
+ * 512-byte blocks, offsets anywhere in truncfile's default 256 MiB range
+ * (upstream passes no -l), the block stamped with its own offset exactly
+ * like writeblk(), and ftruncate() on the same open file. Offsets come from
+ * xfs_random(), the generator truncfile itself draws from, seeded with a
+ * fresh value each run as upstream seeds with time(NULL). The file stays
+ * sparse, so the tmpfs export holds at most one page per write.
  *
- * Deviations: 2,000 rounds rather than 10,000 (documented cut), 512-byte
- * blocks over a 1 MB range as upstream's defaults.
+ * Not in upstream: after the storm, the final size must be what the last
+ * truncate said, and a deterministic epilogue proves truncate-down really
+ * cut data off (growing the file back exposes zeros, not the old bytes) --
+ * what _require_sparse_files implies but upstream never checks.
  */
 
 #include <kunit/test.h>
@@ -26,16 +29,15 @@
 #include <linux/errno.h>
 #include <linux/fs.h>
 #include <linux/file.h>
-#include <linux/prandom.h>
+#include <linux/random.h>
 
 #include "xfstests_nfs_fixture.h"
 
 #define G014_ROOT	XFS_MNT "/g014"
 #define G014_FILE	G014_ROOT "/truncfile"
 #define G014_BS		512
-#define G014_FILESIZE	(1024 * 1024)
-#define G014_COUNT	2000	/* upstream: -c 10000 */
-#define G014_SEED	1
+#define G014_FILESIZE	(256 * 1024 * 1024)	/* truncfile's default -l */
+#define G014_COUNT	10000			/* -c 10000 */
 
 static void g014_remove_tree(void *unused)
 {
@@ -45,7 +47,8 @@ static void g014_remove_tree(void *unused)
 
 static void write_truncate_churn_ends_consistent(struct kunit *test)
 {
-	struct rnd_state st;
+	struct xfs_random rnd;
+	unsigned int seed = get_random_u32();
 	struct kstat kst;
 	struct file *f;
 	u8 *buf;
@@ -64,9 +67,10 @@ static void write_truncate_churn_ends_consistent(struct kunit *test)
 	f = filp_open(G014_FILE, O_RDWR | O_CREAT | O_TRUNC, 0666);
 	KUNIT_ASSERT_FALSE(test, IS_ERR(f));
 
-	prandom_seed_state(&st, G014_SEED);
+	kunit_info(test, "Seed = %u\n", seed);
+	xfs_srandom(&rnd, seed);
 	for (i = 0; i < G014_COUNT; i++) {
-		loff_t off = prandom_u32_state(&st) % G014_FILESIZE;
+		loff_t off = xfs_random(&rnd) % G014_FILESIZE;
 		ssize_t w;
 
 		/* writeblk(): the block is stamped with its own offset */
@@ -76,9 +80,9 @@ static void write_truncate_churn_ends_consistent(struct kunit *test)
 				    "write %d failed: %zd", i, w);
 
 		/* truncfile(): chop or grow to a random size */
-		last_trunc = prandom_u32_state(&st) % G014_FILESIZE;
-		KUNIT_ASSERT_EQ_MSG(test, xfs_truncate(G014_FILE, last_trunc),
-				    0, "truncate %d failed", i);
+		last_trunc = xfs_random(&rnd) % G014_FILESIZE;
+		KUNIT_ASSERT_EQ_MSG(test, xfs_ftruncate(f, last_trunc), 0,
+				    "ftruncate %d failed", i);
 	}
 	filp_close(f, NULL);
 

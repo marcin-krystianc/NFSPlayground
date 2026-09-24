@@ -1,11 +1,16 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * xfstests generic/309 over a loopback NFS mount: directory times on rename-over.
+ * xfstests generic/309 over a loopback NFS mount: directory times on a
+ * move onto an existing name.
  *
- * Upstream: moving a file onto an existing target must update the
- * directory's mtime and ctime. The port covers both the same-directory
- * rename-over and a cross-directory move, checking the affected parents'
- * times against the server each step.
+ * Upstream creates testdir_309/testfile and, beside the directory,
+ * testfile.309; records the directory's mtime and ctime (stat %Y and %Z,
+ * whole seconds); sleeps one second; moves testfile.309 onto
+ * testdir_309/testfile; and requires both of the directory's times to have
+ * changed.
+ *
+ * Not in upstream: a same-directory rename onto an existing name must also
+ * advance that directory's mtime and ctime.
  */
 
 #include <kunit/test.h>
@@ -18,6 +23,7 @@
 #include "xfstests_nfs_fixture.h"
 
 #define G309_ROOT	XFS_MNT "/g309"
+#define G309_DIR	G309_ROOT "/testdir_309"
 
 /* strictly-after comparison for timestamps */
 static bool g309_after(const struct timespec64 *a, const struct timespec64 *b)
@@ -28,52 +34,55 @@ static bool g309_after(const struct timespec64 *a, const struct timespec64 *b)
 
 static void g309_remove_tree(void *unused)
 {
+	xfs_unlink(G309_DIR "/testfile");
+	xfs_unlink(G309_ROOT "/testfile.309");
 	xfs_unlink(G309_ROOT "/d1/a");
 	xfs_unlink(G309_ROOT "/d1/b");
-	xfs_unlink(G309_ROOT "/d2/c");
+	xfs_rmdir(G309_DIR);
 	xfs_rmdir(G309_ROOT "/d1");
-	xfs_rmdir(G309_ROOT "/d2");
 	xfs_rmdir(G309_ROOT);
 }
 
 static void rename_over_updates_directory_times(struct kunit *test)
 {
-	struct kstat d1a, d1b, d2a, d2b;
+	struct kstat t1, t2;
 
 	KUNIT_ASSERT_TRUE(test, xfstests_nfs_mounted());
 	KUNIT_ASSERT_EQ(test, xfs_mkdir(G309_ROOT), 0);
 	KUNIT_ASSERT_EQ(test,
 			kunit_add_action_or_reset(test, g309_remove_tree, NULL),
 			0);
+	KUNIT_ASSERT_EQ(test, xfs_mkdir(G309_DIR), 0);
+	KUNIT_ASSERT_EQ(test, xfs_write_new_file(G309_DIR "/testfile", NULL, 0),
+			0);
+	KUNIT_ASSERT_EQ(test,
+			xfs_write_new_file(G309_ROOT "/testfile.309", NULL, 0),
+			0);
+
+	KUNIT_ASSERT_EQ(test, xfs_kstat(G309_DIR, &t1), 0);
+	ssleep(1);
+	KUNIT_ASSERT_EQ(test,
+			xfs_rename(G309_ROOT "/testfile.309",
+				   G309_DIR "/testfile"), 0);
+	KUNIT_ASSERT_EQ(test, xfs_kstat(G309_DIR, &t2), 0);
+	KUNIT_EXPECT_NE_MSG(test, t1.mtime.tv_sec, t2.mtime.tv_sec,
+			    "mtime not updated");
+	KUNIT_EXPECT_NE_MSG(test, t1.ctime.tv_sec, t2.ctime.tv_sec,
+			    "ctime not updated");
+
+	/* not upstream: same-directory rename onto an existing name */
 	KUNIT_ASSERT_EQ(test, xfs_mkdir(G309_ROOT "/d1"), 0);
-	KUNIT_ASSERT_EQ(test, xfs_mkdir(G309_ROOT "/d2"), 0);
 	KUNIT_ASSERT_EQ(test, xfs_write_new_file(G309_ROOT "/d1/a", "a", 1), 0);
 	KUNIT_ASSERT_EQ(test, xfs_write_new_file(G309_ROOT "/d1/b", "b", 1), 0);
-	KUNIT_ASSERT_EQ(test, xfs_write_new_file(G309_ROOT "/d2/c", "c", 1), 0);
-
-	KUNIT_ASSERT_EQ(test, xfs_kstat(G309_ROOT "/d1", &d1a), 0);
+	KUNIT_ASSERT_EQ(test, xfs_kstat(G309_ROOT "/d1", &t1), 0);
 	msleep(20);
-
-	/* same-directory rename onto an existing target */
 	KUNIT_ASSERT_EQ(test,
 			xfs_rename(G309_ROOT "/d1/a", G309_ROOT "/d1/b"), 0);
-	KUNIT_ASSERT_EQ(test, xfs_kstat(G309_ROOT "/d1", &d1b), 0);
-	KUNIT_EXPECT_TRUE_MSG(test, g309_after(&d1b.mtime, &d1a.mtime),
+	KUNIT_ASSERT_EQ(test, xfs_kstat(G309_ROOT "/d1", &t2), 0);
+	KUNIT_EXPECT_TRUE_MSG(test, g309_after(&t2.mtime, &t1.mtime),
 			      "rename-over did not advance the directory mtime");
-	KUNIT_EXPECT_TRUE_MSG(test, g309_after(&d1b.ctime, &d1a.ctime),
+	KUNIT_EXPECT_TRUE_MSG(test, g309_after(&t2.ctime, &t1.ctime),
 			      "rename-over did not advance the directory ctime");
-
-	/* cross-directory move onto an existing target: both parents move */
-	KUNIT_ASSERT_EQ(test, xfs_kstat(G309_ROOT "/d1", &d1a), 0);
-	KUNIT_ASSERT_EQ(test, xfs_kstat(G309_ROOT "/d2", &d2a), 0);
-	msleep(20);
-	KUNIT_ASSERT_EQ(test,
-			xfs_rename(G309_ROOT "/d1/b", G309_ROOT "/d2/c"), 0);
-	KUNIT_ASSERT_EQ(test, xfs_kstat(G309_ROOT "/d1", &d1b), 0);
-	KUNIT_ASSERT_EQ(test, xfs_kstat(G309_ROOT "/d2", &d2b), 0);
-	KUNIT_EXPECT_TRUE(test, g309_after(&d1b.mtime, &d1a.mtime));
-	KUNIT_EXPECT_TRUE_MSG(test, g309_after(&d2b.mtime, &d2a.mtime),
-			      "the receiving directory's mtime did not advance");
 }
 
 static int g309_suite_init(struct kunit_suite *suite)

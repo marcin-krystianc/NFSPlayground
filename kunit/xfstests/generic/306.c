@@ -9,10 +9,12 @@
  * read-only, and then checks that:
  *
  *	creating a new file fails with EROFS
- *	writing to the null device node succeeds
+ *	writing to the null device node succeeds -- a pwrite, a truncating
+ *	    write (echo foo > devnull) and an appending one (echo foo >>)
  *	reading from the zero device node succeeds
- *	writing through the symlink, whose target is elsewhere, succeeds
- *	writing to the bind-mounted file succeeds
+ *	writing through the symlink, whose target is elsewhere, succeeds --
+ *	    opened plainly, with O_CREAT (xfs_io -f) and with O_TRUNC (-t)
+ *	writing to the bind-mounted file succeeds, in the same three ways
  *
  * The rule being checked is that read-only applies to the filesystem's
  * own data, not to what a device node or a symlink on it happens to point
@@ -79,6 +81,28 @@ static void g306_remove_tree(void *unused)
 	xfs_unlink(G306_TARGET);
 }
 
+/*
+ * xfs_io -c "pwrite 0 512" (or a shell redirection) with the given open
+ * flags: 512 bytes from the user buffer at addr. vfs_write() because
+ * null_fops wires up both ->write and ->write_iter, which kernel_write()
+ * refuses.
+ */
+static void g306_write(struct kunit *test, const char *path, int flags,
+		       unsigned long addr, const char *what)
+{
+	struct file *f;
+	loff_t pos = 0;
+
+	f = filp_open(path, flags, 0644);
+	KUNIT_ASSERT_FALSE_MSG(test, IS_ERR(f), "%s: open: %ld", what,
+			       PTR_ERR(f));
+	KUNIT_EXPECT_EQ_MSG(test,
+			    vfs_write(f, (const char __user *)addr, G306_LEN,
+				      &pos),
+			    (ssize_t)G306_LEN, "%s: the write failed", what);
+	filp_close(f, NULL);
+}
+
 static void a_read_only_mount_still_lets_its_devices_work(struct kunit *test)
 {
 	unsigned long addr;
@@ -119,23 +143,13 @@ static void a_read_only_mount_still_lets_its_devices_work(struct kunit *test)
 			    -EROFS,
 			    "creating a file on a read-only mount was allowed");
 
-	/* the null device still takes writes */
+	/* "pwrite to null device": xfs_io opens it O_RDWR */
 	KUNIT_ASSERT_TRUE(test, xfs_exists(G306_NULL));	/* see the header */
-	f = filp_open(G306_NULL, O_WRONLY, 0);
-	KUNIT_ASSERT_FALSE_MSG(test, IS_ERR(f),
-			       "opening the null node after the remount: %ld",
-			       PTR_ERR(f));
-	pos = 0;
-	KUNIT_EXPECT_EQ_MSG(test,
-			    vfs_write(f, (const char __user *)addr, G306_LEN,
-				      &pos),
-			    (ssize_t)G306_LEN,
-			    "writing to the null node on a read-only mount failed");
-	filp_close(f, NULL);
+	g306_write(test, G306_NULL, O_RDWR, addr, "pwrite to null device");
 
 	/* and the zero device still gives zeroes */
 	KUNIT_ASSERT_TRUE(test, xfs_exists(G306_ZERO));	/* see the header */
-	f = filp_open(G306_ZERO, O_RDONLY, 0);
+	f = filp_open(G306_ZERO, O_RDWR, 0);	/* xfs_io -c "pread 0 512" */
 	KUNIT_ASSERT_FALSE_MSG(test, IS_ERR(f), "opening the zero node: %ld",
 			       PTR_ERR(f));
 	KUNIT_ASSERT_EQ(test, copy_to_user((void __user *)addr, buf, G306_LEN),
@@ -156,16 +170,22 @@ static void a_read_only_mount_still_lets_its_devices_work(struct kunit *test)
 			break;
 		}
 
-	/* writing through a symlink whose target is on another filesystem */
-	f = filp_open(G306_SYMLINK, O_WRONLY, 0);
-	KUNIT_ASSERT_FALSE_MSG(test, IS_ERR(f),
-			       "opening through the symlink: %ld",
-			       PTR_ERR(f));
-	pos = 0;
-	KUNIT_EXPECT_EQ_MSG(test, kernel_write(f, buf, G306_LEN, &pos),
-			    (ssize_t)G306_LEN,
-			    "writing through the symlink failed");
-	filp_close(f, NULL);
+	/* "truncating write to null device": echo foo > devnull */
+	g306_write(test, G306_NULL, O_WRONLY | O_CREAT | O_TRUNC, addr,
+		   "truncating write to null device");
+	/* "appending write to null device": echo foo >> devnull */
+	g306_write(test, G306_NULL, O_WRONLY | O_CREAT | O_APPEND, addr,
+		   "appending write to null device");
+
+	/*
+	 * "writing to symlink from ro fs to rw fs", with and without -f
+	 * (O_CREAT) and with -t (O_TRUNC)
+	 */
+	g306_write(test, G306_SYMLINK, O_RDWR, addr, "symlink");
+	g306_write(test, G306_SYMLINK, O_RDWR | O_CREAT, addr,
+		   "symlink, O_CREAT");
+	g306_write(test, G306_SYMLINK, O_RDWR | O_TRUNC, addr,
+		   "symlink, O_TRUNC");
 
 	KUNIT_EXPECT_EQ_MSG(test, xfs_remount_client(false), 0,
 			    "remounting read-write failed");

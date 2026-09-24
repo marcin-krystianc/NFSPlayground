@@ -210,10 +210,12 @@ so writes cannot be dropped and replayed. That is the largest single gap.
 
 Each port is meant to perform upstream's operations and assert upstream's
 outcome, at reduced scale where the original's magnitudes do not fit an
-in-kernel tmpfs export, and single-threaded where the original forks. Where
-that reduction loses the point of the test, the port says so in its header;
+in-kernel tmpfs export, with kthreads where the original forks or starts
+threads. Every difference from upstream is stated in the port's header;
 where upstream keeps an NFS-specific golden image (`035.out.nfs`), the port
 follows it rather than the default one.
+How far the ports meet this, case by case, is in
+[xfstests-ports-fidelity.md](xfstests-ports-fidelity.md).
 
 The families, by what they exercise:
 
@@ -223,14 +225,15 @@ The families, by what they exercise:
   byte strings rather than text, 736 readdir while every entry is being
   renamed, 707 a directory moved while it grows.
 - **Data integrity**: 001 chain copier, 014 truncfile, 075 mini-fsx with a
-  shadow model, 029/030 mapped writes, 069 O_APPEND, 074, 100 a copied
-  tree, 124 positional patterns, 129, 132, 169, 213 ALLOCATE boundaries,
-  214 writes into preallocated ranges, 286 seek-driven sparse copy, 308
-  1TB offsets, 525 the top of the 64-bit offset range, 406 one large
-  direct write, 639 a write beside uncached data.
+  shadow model, 029/030 mapped writes, 069 O_APPEND, 074 fstest with
+  three writer kthreads, 100 a copied tree, 124 positional patterns, 129,
+  132, 169, 213 ALLOCATE boundaries, 214 writes into preallocated ranges,
+  286 seek-driven sparse copy, 308 offsets just under 16 TiB, 525 the top
+  of the 64-bit offset range, 406 one large direct write, 639 a write
+  beside uncached data.
 - **Direct I/O**: 130 the buffered/direct battery, 135 the three write
   paths, 412 a truncate into a hole between them, 450 reads at and past
-  EOF, 609 O_DIRECT with O_DSYNC, 125 direct reads after a truncate, 355
+  EOF, 609 O_DIRECT with O_SYNC, 125 direct reads after a truncate, 355
   suid stripped on a direct write.
 - **Faults and mappings**: 246 writev from a mapping, 248 pwrite from the
   same page, 443 writev faulting on its own iovecs, 638 an overlapping
@@ -255,7 +258,7 @@ The families, by what they exercise:
 - **copy_file_range as NFSv4.2 COPY**: 430 into new files, 431 one byte at
   a time, 432/433 rearranging an existing file, 434 what it must refuse;
   249 is the sendfile/splice equivalent.
-- **Concurrency**, each with one kthread beside the test thread: 084 a
+- **Concurrency**, with kthreads for upstream's processes and threads: 084 a
   link storm against a vanishing target, 133 a reader and a writer, 247 a
   direct overwriter against a mapped writer, 340/344/346/354 the holetest
   family, 364 direct writes and fsync on one fd, 391 interleaved direct
@@ -332,7 +335,7 @@ writing another one:
   directory (310) therefore goes through `vfs_write()`/`vfs_read()` with a
   user address, which is the syscall's own path.
 - **A worker kthread cannot use KUnit assertions**: they unwind through
-  the test thread's try_catch. The concurrency ports (084, 133, 247,
+  the test thread's try_catch. The concurrency ports (074, 084, 133, 247,
   310, 340, 344, 346, 354, 364, 391, 438, 464, 615, 707) record the
   worker's first error in a struct and let the test thread assert on it.
   A worker that has to touch a `kunit_vm_mmap()` mapping calls
@@ -435,44 +438,18 @@ nfs-inode-pagecache unit tests and 014/075.
 An audit compared all 120 ports against their `xfstests/tests/generic/NNN`
 originals, checking not just whether a port's header discloses a scale
 reduction but whether the reduced or altered version can still fail the way
-the original would. Five ports have a gap; the rest -- including every
-concurrency port that races a real second kthread (028, 084, 133, 247, 340,
-344, 346, 354, 391, 707) -- hold up: the reduced scale still exercises the
-same code path and can still fail the same way the original does.
+the original would. It found six ports with a gap: 074, 130, 132, 193,
+286 and 749 each dropped upstream scenarios or parameter sets, and 130's
+header also claimed upstream offsets it did not use. All six now follow
+upstream's steps, and each header names what still differs. The rest -- including
+every concurrency port that races a real second kthread (028, 084, 133,
+247, 340, 344, 346, 354, 391, 707) -- hold up: the reduced scale still
+exercises the same code path and can still fail the same way the original
+does.
 
-**Tests a different, weaker property than the original, undisclosed:**
-
-- **130**: the header claims "the last scenario keeps upstream's offsets."
-  Upstream's last scenario has a third part at ~10GB offsets (large
-  sparse-offset handling); the port only replays the 0-13 and 4090-4105
-  byte ranges. The header's claim is false.
-- **132**: upstream is a growing-block-size sweep, 512B up to 10MB across 14
-  stages (~94MB total) -- that progression is the test's actual subject
-  ("aligned vector rw"). The port only ever uses fixed 512-byte blocks in a
-  rewrite/verify loop of its own design; no block size above 512B is
-  exercised.
-- **193**: roughly two-thirds of upstream -- suid/sgid clearing on
-  chmod/chown/truncate, a POSIX privilege-escalation-class property -- is
-  dropped. The port keeps only basic ownership/permission checks, with no
-  disclosure of the omission.
-
-**Scope reduction, understated but not structurally broken:**
-
-- **074**: upstream runs 5 configurations (baseline, mmap I/O, and three
-  multi-process concurrent-write variants). The port implements only the
-  single-threaded baseline. The header says "single-threaded port," which
-  undersells losing 4 of 5 configurations.
-- **286**: keeps only upstream's test01 (pure holes+data); drops test02-04
-  (falloc'd unwritten-extent layouts). Likely justified -- ALLOCATE against
-  the tmpfs export produces real zeroed pages, not unwritten extents, the
-  same reasoning already used for 436/445 -- but the header doesn't say so.
-- **749**: ports 2 of upstream's 6 file-length/block-size parameterizations.
-  The dropped 4 are how upstream reaches its target bug
-  (`folio_map_range()`, gated on `block_size > PAGE_SIZE`); tmpfs/NFS has no
-  block size distinct from the page size, so that scenario can't be
-  reproduced on this fixture at any scale. The port's kept case is a real,
-  correctly-checked property, but a different and weaker claim than what
-  generic/749 was written to catch, and the header doesn't say so.
+The audit's reason for 749 was wrong. It said the dropped parameter sets
+need `block_size > PAGE_SIZE`. Upstream runs all six sets at the
+filesystem's own block size, and all six run here.
 
 ### A confirmed host-signal livelock on v6.12.57 (upstream bug, backported here)
 

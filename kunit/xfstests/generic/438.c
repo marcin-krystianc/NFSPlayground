@@ -17,10 +17,12 @@
  * moved EOF, and a COMMIT may be writing the page back at the same
  * moment. Losing the range means the mapped byte reads back as zero.
  *
- * Deviations: 2048 bytes rather than upstream's 256 KiB, because each
- * byte costs an ALLOCATE round trip; the fsync loop is a kthread. The
- * mapping covers a whole page from the start, which is what upstream
- * does too -- mmap rounds its length up.
+ * As upstream, the file first holds a newline (echo > $FILE), the loop's
+ * xfs_io -c fsync opens, fsyncs and closes the file each time, and
+ * t_mmap_fallocate truncates the file and maps all 256 KiB before the
+ * first byte exists. The fsync loop is a kthread.
+ *
+ * Not in upstream: the server's copy must hold the same bytes at the end.
  */
 
 #include <kunit/test.h>
@@ -40,11 +42,10 @@
 #define G438_ROOT	XFS_MNT "/g438"
 #define G438_FILE	G438_ROOT "/testfile_fallocate"
 #define G438_SERVER	XFS_EXPORT "/g438/testfile_fallocate"
-#define G438_SIZE	2048
+#define G438_SIZE	(256 * 1024)	/* t_mmap_fallocate $FILE 256 */
 #define G438_BYTE	0x78
 
 struct g438_syncer {
-	struct file		*f;
 	atomic_t		stop;
 	unsigned long		syncs;
 	int			err;
@@ -55,9 +56,13 @@ static int g438_fsync_loop(void *arg)
 {
 	struct g438_syncer *s = arg;
 
+	/* while [ $STOP -eq 0 ]; do xfs_io -c fsync $FILE; done */
 	while (!atomic_read(&s->stop)) {
-		int err = vfs_fsync(s->f, 0);
+		struct file *f = filp_open(G438_FILE, O_RDWR, 0);
+		int err = IS_ERR(f) ? PTR_ERR(f) : vfs_fsync(f, 0);
 
+		if (!IS_ERR(f))
+			filp_close(f, NULL);
 		if (err) {
 			s->err = err;
 			break;
@@ -71,6 +76,7 @@ static int g438_fsync_loop(void *arg)
 
 static void g438_remove_tree(void *unused)
 {
+	xfs_settle_fput();
 	xfs_unlink(G438_FILE);
 	xfs_rmdir_settled(G438_ROOT);
 }
@@ -80,7 +86,7 @@ static void bytes_written_while_the_file_grows_survive(struct kunit *test)
 	struct g438_syncer s = {};
 	struct task_struct *t;
 	unsigned long addr;
-	struct file *f, *sf;
+	struct file *f;
 	u8 *got;
 	int i;
 
@@ -90,22 +96,21 @@ static void bytes_written_while_the_file_grows_survive(struct kunit *test)
 			kunit_add_action_or_reset(test, g438_remove_tree, NULL),
 			0);
 
+	/* echo > $FILE */
+	KUNIT_ASSERT_EQ(test, xfs_write_new_file(G438_FILE, "\n", 1), 0);
+
+	init_completion(&s.done);
+	atomic_set(&s.stop, 0);
+	t = kthread_run(g438_fsync_loop, &s, "g438-fsync");
+	KUNIT_ASSERT_FALSE_MSG(test, IS_ERR(t), "kthread_run: %ld",
+			       PTR_ERR(t));
+
+	/* t_mmap_fallocate $FILE 256 */
 	f = filp_open(G438_FILE, O_RDWR | O_CREAT | O_TRUNC, 0644);
 	KUNIT_ASSERT_FALSE_MSG(test, IS_ERR(f), "open: %ld", PTR_ERR(f));
 	addr = kunit_vm_mmap(test, f, 0, G438_SIZE, PROT_READ | PROT_WRITE,
 			     MAP_SHARED, 0);
 	KUNIT_ASSERT_NE_MSG(test, addr, 0UL, "kunit_vm_mmap failed");
-
-	/* the shell test's background fsync loop */
-	sf = filp_open(G438_FILE, O_RDWR, 0);
-	KUNIT_ASSERT_FALSE_MSG(test, IS_ERR(sf), "fsync open: %ld",
-			       PTR_ERR(sf));
-	init_completion(&s.done);
-	atomic_set(&s.stop, 0);
-	s.f = sf;
-	t = kthread_run(g438_fsync_loop, &s, "g438-fsync");
-	KUNIT_ASSERT_FALSE_MSG(test, IS_ERR(t), "kthread_run: %ld",
-			       PTR_ERR(t));
 
 	for (i = 0; i < G438_SIZE; i++) {
 		u8 v = G438_BYTE, back = 0;
@@ -131,31 +136,38 @@ static void bytes_written_while_the_file_grows_survive(struct kunit *test)
 	KUNIT_EXPECT_GT_MSG(test, s.syncs, 0UL, "the fsync loop never ran");
 
 	/* upstream's final pass over the whole file */
-	got = kunit_kmalloc(test, G438_SIZE, GFP_KERNEL);
+	got = kunit_kmalloc(test, PAGE_SIZE, GFP_KERNEL);
 	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, got);
-	KUNIT_ASSERT_EQ(test,
-			copy_from_user(got, (void __user *)addr, G438_SIZE),
-			0UL);
-	for (i = 0; i < G438_SIZE; i++)
-		if (got[i] != G438_BYTE) {
+	for (i = 0; i < G438_SIZE; i++) {
+		if (i % PAGE_SIZE == 0)
+			KUNIT_ASSERT_EQ(test,
+					copy_from_user(got,
+						       (void __user *)(addr + i),
+						       PAGE_SIZE), 0UL);
+		if (got[i % PAGE_SIZE] != G438_BYTE) {
 			KUNIT_FAIL(test, "byte %d was modified: %02x", i,
-				   got[i]);
+				   got[i % PAGE_SIZE]);
 			break;
 		}
+	}
 
 	KUNIT_EXPECT_EQ(test, vm_munmap(addr, G438_SIZE), 0);
 	KUNIT_EXPECT_EQ(test, vfs_fsync(f, 0), 0);
-	filp_close(sf, NULL);
 	filp_close(f, NULL);
 
-	/* and the same bytes are on the server */
-	KUNIT_ASSERT_EQ(test, xfs_read_range(G438_SERVER, got, G438_SIZE, 0),
-			(ssize_t)G438_SIZE);
-	for (i = 0; i < G438_SIZE; i++)
-		if (got[i] != G438_BYTE) {
-			KUNIT_FAIL(test, "server byte %d is %02x", i, got[i]);
+	/* not upstream: the same bytes are on the server */
+	for (i = 0; i < G438_SIZE; i++) {
+		if (i % PAGE_SIZE == 0)
+			KUNIT_ASSERT_EQ(test,
+					xfs_read_range(G438_SERVER, got,
+						       PAGE_SIZE, i),
+					(ssize_t)PAGE_SIZE);
+		if (got[i % PAGE_SIZE] != G438_BYTE) {
+			KUNIT_FAIL(test, "server byte %d is %02x", i,
+				   got[i % PAGE_SIZE]);
 			break;
 		}
+	}
 }
 
 static int g438_suite_init(struct kunit_suite *suite)

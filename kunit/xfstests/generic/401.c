@@ -4,17 +4,18 @@
  *
  * Upstream creates one entry of each type -- directory, regular file,
  * symlink, character device, block device and fifo -- and walks the
- * directory with src/t_dir_type, requiring each entry's d_type to be
- * either the real type or DT_UNKNOWN (which is what a filesystem without
- * the filetype feature reports).
+ * directory with src/t_dir_type. The golden output wants every entry's
+ * real type, and DT_DIR for "." and "..". Only when _supports_filetype
+ * says no may a DT_UNKNOWN stand in. For NFS, _supports_filetype touches
+ * a file in the mount root and passes if t_dir_type finds no DT_UNKNOWN
+ * entry there.
  *
  * Over NFSv4 the type does not come from any on-disk directory entry: the
  * client asks for the type attribute in READDIR and turns it into a
- * d_type (nfs4_decode_dirent -> nfs_readdir_page_filler), so DT_UNKNOWN
- * here would mean the client dropped it, not that the server lacks a
- * feature. The port therefore asserts the exact type for every entry,
- * which is stricter than upstream and is the assertion that has meaning
- * on this filesystem.
+ * d_type (nfs4_decode_dirent -> nfs_readdir_page_filler). The port
+ * asserts the exact types, which is upstream's result when the probe
+ * passes; it does not run the probe, so a client that reported
+ * DT_UNKNOWN everywhere fails here where upstream would relax.
  */
 
 #include <kunit/test.h>
@@ -47,6 +48,7 @@ struct g401_iter {
 	unsigned int		seen[ARRAY_SIZE(g401_entries)];
 	int			alien;
 	unsigned int		dots;
+	unsigned int		dot_type[2];	/* ".", ".." */
 	int			total;		/* including . and .. */
 };
 
@@ -59,6 +61,7 @@ static bool g401_actor(struct dir_context *ctx, const char *name, int len,
 	it->total++;
 	if ((len == 1 && name[0] == '.') ||
 	    (len == 2 && name[0] == '.' && name[1] == '.')) {
+		it->dot_type[len - 1] = type;
 		it->dots++;
 		return true;
 	}
@@ -123,6 +126,10 @@ static void readdir_reports_every_entry_type(struct kunit *test)
 	KUNIT_EXPECT_EQ_MSG(test, it.alien, 0, "%d unexpected entries",
 			    it.alien);
 	KUNIT_EXPECT_EQ_MSG(test, it.dots, 2U, "%u dot entries", it.dots);
+	KUNIT_EXPECT_EQ_MSG(test, it.dot_type[0], (unsigned int)DT_DIR,
+			    ". came back with d_type %u", it.dot_type[0]);
+	KUNIT_EXPECT_EQ_MSG(test, it.dot_type[1], (unsigned int)DT_DIR,
+			    ".. came back with d_type %u", it.dot_type[1]);
 
 	for (i = 0; i < ARRAY_SIZE(g401_entries); i++) {
 		const struct g401_entry *e = &g401_entries[i];

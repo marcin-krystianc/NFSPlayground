@@ -3,11 +3,12 @@
  * xfstests generic/615 over a loopback NFS mount: st_blocks never reads
  * as zero while a file is being rewritten.
  *
- * Upstream keeps overwriting a 64k file -- first buffered with O_SYNC,
- * then with O_DIRECT -- while another process stats it in a loop, and
- * fails if stat ever reports zero allocated blocks. A file that has data
- * must never appear to have none, however briefly, or du and friends see
- * it vanish mid-writeback.
+ * Upstream creates a 64k file with xfs_io -f -s, then keeps overwriting
+ * it -- 2000 xfs_io -s runs, then 2000 xfs_io -d runs, each opening the
+ * file and writing 64k in one pwrite -- while another process stats it in
+ * a loop, and fails if stat ever reports zero allocated blocks. A file
+ * that has data must never appear to have none, however briefly, or du
+ * and friends see it vanish mid-writeback.
  *
  * Over NFS st_blocks is the server's space_used attribute as the client
  * last saw it, so the question becomes: while the client is writing, can
@@ -16,9 +17,10 @@
  * the server actually returned, and a zero here would mean it took a
  * field the reply did not carry.
  *
- * Deviations: bounded rounds rather than upstream's 2000, and the
- * stat loop is a kthread that records the first violation it sees rather
- * than asserting -- KUnit assertions belong to the test thread.
+ * The stat loop is a kthread that counts violations rather than
+ * asserting -- KUnit assertions belong to the test thread. Upstream's loop
+ * stops at the first one and the writers stop with it; here the writers
+ * run on and the count is checked at the end.
  */
 
 #include <kunit/test.h>
@@ -35,7 +37,7 @@
 #define G615_ROOT	XFS_MNT "/g615"
 #define G615_FILE	G615_ROOT "/foo"
 #define G615_SIZE	(64 * 1024)
-#define G615_ROUNDS	200
+#define G615_ROUNDS	2000
 
 struct g615_watcher {
 	atomic_t		stop;
@@ -68,6 +70,7 @@ static int g615_stat_loop(void *arg)
 
 static void g615_remove_tree(void *unused)
 {
+	xfs_settle_fput();
 	xfs_unlink(G615_FILE);
 	xfs_rmdir_settled(G615_ROOT);
 }
@@ -75,26 +78,26 @@ static void g615_remove_tree(void *unused)
 static void g615_rewrite(struct kunit *test, bool direct, u8 *buf,
 			 const char *what)
 {
-	struct file *f;
 	int i;
 
-	f = filp_open(G615_FILE,
-		      O_RDWR | (direct ? O_DIRECT : O_SYNC), 0);
-	KUNIT_ASSERT_FALSE_MSG(test, IS_ERR(f), "%s: open: %ld", what,
-			       PTR_ERR(f));
-
+	/* xfs_io {-s|-d} -c "pwrite -b 64K 0 64K" foo, 2000 times */
 	for (i = 0; i < G615_ROUNDS; i++) {
+		struct file *f;
 		loff_t pos = 0;
 		ssize_t n;
 
+		f = filp_open(G615_FILE,
+			      O_RDWR | (direct ? O_DIRECT : O_SYNC), 0);
+		KUNIT_ASSERT_FALSE_MSG(test, IS_ERR(f), "%s: open: %ld", what,
+				       PTR_ERR(f));
 		if (direct)
 			n = xfs_direct_write(f, buf, G615_SIZE, &pos);
 		else
 			n = kernel_write(f, buf, G615_SIZE, &pos);
+		filp_close(f, NULL);
 		KUNIT_ASSERT_EQ_MSG(test, n, (ssize_t)G615_SIZE,
 				    "%s: round %d wrote %zd", what, i, n);
 	}
-	filp_close(f, NULL);
 }
 
 static void st_blocks_is_never_zero_while_rewriting(struct kunit *test)
@@ -111,9 +114,19 @@ static void st_blocks_is_never_zero_while_rewriting(struct kunit *test)
 
 	buf = kunit_kmalloc(test, G615_SIZE, GFP_KERNEL);
 	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, buf);
-	memset(buf, 0x61, G615_SIZE);
-	KUNIT_ASSERT_EQ(test, xfs_write_new_file(G615_FILE, buf, G615_SIZE),
-			0);
+	memset(buf, 0xcd, G615_SIZE);
+	/* xfs_io -f -s -c "pwrite -b 64K 0 64K" foo */
+	{
+		struct file *f;
+		loff_t pos = 0;
+
+		f = filp_open(G615_FILE, O_RDWR | O_CREAT | O_SYNC, 0600);
+		KUNIT_ASSERT_FALSE_MSG(test, IS_ERR(f), "create: %ld",
+				       PTR_ERR(f));
+		KUNIT_EXPECT_EQ(test, kernel_write(f, buf, G615_SIZE, &pos),
+				(ssize_t)G615_SIZE);
+		filp_close(f, NULL);
+	}
 
 	init_completion(&w.done);
 	atomic_set(&w.stop, 0);

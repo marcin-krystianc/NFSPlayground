@@ -28,6 +28,8 @@ the docs.
   constraints on what can be tested this way. Read before changing a test.
 - [docs/xfstests-ports-not-done.md](docs/xfstests-ports-not-done.md) — the
   `generic/*` cases that are **not** ported, each with the reason.
+- [docs/xfstests-ports-fidelity.md](docs/xfstests-ports-fidelity.md) — how
+  closely each ported case follows upstream, and where it does not.
 
 ```sh
 scripts/fetch-sources.sh linux       # once

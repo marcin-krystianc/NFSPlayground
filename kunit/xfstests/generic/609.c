@@ -1,20 +1,22 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * xfstests generic/609 over a loopback NFS mount: an O_DIRECT | O_DSYNC
+ * xfstests generic/609 over a loopback NFS mount: an O_DIRECT | O_SYNC
  * write.
  *
  * Upstream is one line -- "xfs_io -f -d -s -c 'pwrite 0 64k'" -- written
  * so that a filesystem whose locking is incompatible with
  * generic_write_sync() being called from the iomap direct path gets a
- * lockdep warning. The golden output is just the successful write.
+ * lockdep warning. xfs_io opens the file O_RDWR | O_CREAT | O_DIRECT |
+ * O_SYNC and pwrite issues 16 writes of 4 KiB (its default -b) filled
+ * with 0xcd. The golden output is just the successful write.
  *
  * Over NFS the two flags are a single question: a direct write with
  * O_DSYNC must reach stable storage without a separate COMMIT round trip
  * being lost. nfs_direct_write() picks FLUSH_STABLE or FLUSH_COND_STABLE
  * for the WRITEs and then has to honour whichever the server granted, so
- * this port checks the outcome the shell test cannot see: after the write
- * returns, the bytes are already on the server, without the client
- * flushing anything.
+ * this port also checks what the shell test cannot see (not upstream):
+ * after the writes return, the bytes are already on the server, without
+ * the client flushing anything.
  */
 
 #include <kunit/test.h>
@@ -29,6 +31,7 @@
 #define G609_FILE	G609_ROOT "/file"
 #define G609_SERVER	XFS_EXPORT "/g609/file"
 #define G609_LEN	(64 * 1024)
+#define G609_BSIZE	4096
 
 static void g609_remove_tree(void *unused)
 {
@@ -54,19 +57,22 @@ static void a_direct_dsync_write_is_on_the_server_when_it_returns(
 	got = kunit_kmalloc(test, G609_LEN, GFP_KERNEL);
 	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, buf);
 	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, got);
-	memset(buf, 0x39, G609_LEN);
+	memset(buf, 0xcd, G609_LEN);
 
-	f = filp_open(G609_FILE, O_RDWR | O_CREAT | O_TRUNC | O_DIRECT | O_DSYNC,
-		      0644);
+	f = filp_open(G609_FILE, O_RDWR | O_CREAT | O_DIRECT | O_SYNC, 0600);
 	KUNIT_ASSERT_FALSE_MSG(test, IS_ERR(f), "open: %ld", PTR_ERR(f));
-	KUNIT_ASSERT_EQ_MSG(test, xfs_direct_write(f, buf, G609_LEN, &pos),
-			    (ssize_t)G609_LEN, "the write did not complete");
+	for (i = 0; i < G609_LEN / G609_BSIZE; i++)
+		KUNIT_ASSERT_EQ_MSG(test,
+				    xfs_direct_write(f, buf + pos, G609_BSIZE,
+						     &pos),
+				    (ssize_t)G609_BSIZE,
+				    "write %d did not complete", i);
 
 	/* no fsync, no close: O_DSYNC means it is already there */
 	KUNIT_ASSERT_EQ(test, xfs_read_range(G609_SERVER, got, G609_LEN, 0),
 			(ssize_t)G609_LEN);
 	for (i = 0; i < G609_LEN; i++)
-		if (got[i] != 0x39) {
+		if (got[i] != 0xcd) {
 			KUNIT_FAIL(test,
 				   "server byte %d is %02x before any flush",
 				   i, got[i]);

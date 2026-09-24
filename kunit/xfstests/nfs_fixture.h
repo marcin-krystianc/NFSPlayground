@@ -170,4 +170,64 @@ int xfs_removexattr(const char *path, const char *name);
 int xfs_posix_lock(struct file *f, unsigned char type, loff_t start,
 		   loff_t end, fl_owner_t owner, bool wait);
 
+/*
+ * getdents64(2) on an open directory: at most max entries, as many as a
+ * bufsize-byte buffer of linux_dirent64 records holds, with d_off set as
+ * the syscall sets it. Returns the count, 0 at the end of the directory, or
+ * a negative errno (-EINVAL if not even one record fits).
+ */
+struct xfs_dirent {
+	char		name[NAME_MAX + 1];
+	u64		ino;
+	loff_t		d_off;
+	unsigned int	type;
+};
+int xfs_getdents(struct file *dir, struct xfs_dirent *ents, int max,
+		 size_t bufsize);
+
+/*
+ * The buffer size glibc's readdir() passes to getdents64: the directory's
+ * st_blksize, but at least 32 KiB. Observed with glibc 2.39: 32768 for a
+ * directory with st_blksize 4096, 1048576 on an NFS mount whose
+ * st_blksize was 1048576. 0 if the directory cannot be stat'ed.
+ */
+size_t xfs_libc_dirbuf(struct file *dir);
+
+/*
+ * src/t_dir_offset2 <dir> [bufsize [+name|-name]], its checks as KUnit
+ * expectations: unique d_off per entry, seekable d_offs, and with a name,
+ * a descriptor opened after the create/unlink showing the change.
+ */
+void xfs_t_dir_offset2(struct kunit *test, const char *dir, size_t bufsize,
+		       const char *arg);
+
+/*
+ * src/holetest [-w] [-r] [-p] <file> <size>, for one size: the file is
+ * XFS_MNT/name, sized three ways in turn (zero-filled, posix_fallocate,
+ * ftruncate), each time marked by two threads through a mapping and
+ * checked. Flags are holetest's options; -F (processes) is not available.
+ */
+#define XFS_HOLETEST_WRITE	1	/* -w: thread 0 uses pwrite */
+#define XFS_HOLETEST_PREFAULT	2	/* -r: read every page first */
+#define XFS_HOLETEST_PRIVATE	4	/* -p: MAP_PRIVATE */
+void xfs_holetest(struct kunit *test, const char *name, loff_t sz,
+		  unsigned int flags);
+
+/*
+ * src/mmap-rw-fault [-2] on XFS_MNT/name: reads and writes whose user
+ * buffer is a MAP_PRIVATE mapping of the file being read or written.
+ */
+void xfs_mmap_rw_fault(struct kunit *test, const char *name, bool opt_2);
+
+/*
+ * srandom()/random() as upstream's src/ programs see them: xfstests links
+ * lib/random.c into each of them, replacing glibc's. Same seed, same
+ * sequence as the original run.
+ */
+struct xfs_random {
+	s32 is[2];
+};
+void xfs_srandom(struct xfs_random *r, unsigned int seed);
+long xfs_random(struct xfs_random *r);
+
 #endif /* _XFSTESTS_NFS_FIXTURE_H */

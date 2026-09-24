@@ -131,7 +131,7 @@ static void g680_try(struct kunit *test, bool as_user)
 			    err);
 
 	if (!err) {
-		/* one byte from an offset that is not page-aligned */
+		/* splice2pipe $file 1: one byte from offset 1 - 1 */
 		pos = 0;
 		KUNIT_EXPECT_EQ_MSG(test,
 				    vfs_splice_read(f, &pos,

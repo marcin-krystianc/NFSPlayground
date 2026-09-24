@@ -1,14 +1,28 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * xfstests generic/257 over a loopback NFS mount: readdir offset stability.
+ * xfstests generic/257 over a loopback NFS mount: no duplicate d_off, and
+ * every d_off seekable.
  *
- * Upstream's t_dir_offset2 regression: reading a directory with getdents
- * in small batches -- closing, reopening and seeking back to the saved
- * offset between batches -- must enumerate every entry exactly once, no
- * duplicates, no holes. Over NFS a directory position is a server READDIR
- * cookie, so what is really under test is cookie save/restore through the
- * client's readdir caching: 168 entries, batches of 7, a reopen + llseek
- * to the saved position each round, plus a rewind-to-zero pass.
+ * Upstream touches 1 .. 168 in a fresh directory and runs
+ * src/t_dir_offset2 on it with its default 4096-byte buffer: read the
+ * whole directory with getdents64, fail if two entries report the same
+ * d_off, then from the last entry back to the first, lseek to the d_off
+ * of the entry before it (0 for the first) and require the next getdents
+ * to start with that entry's inode.
+ *
+ * Over NFS a directory offset is a READDIR cookie, handed out by the
+ * server and cached by the client in its readdir pages, so what is under
+ * test is cookie uniqueness and cookie save/restore: every lseek back is
+ * a position the client may no longer hold a page for.
+ *
+ * xfs_t_dir_offset2() is t_dir_offset2 with its checks as KUnit
+ * expectations; xfs_getdents() sizes batches and sets d_off the way
+ * getdents64 does.
+ *
+ * A second case, not in upstream, resumes from a saved position through a
+ * fresh open instead of the same descriptor: batches of seven entries,
+ * each read by a new open plus an lseek to the last d_off, must still
+ * return every name exactly once.
  */
 
 #include <kunit/test.h>
@@ -20,130 +34,87 @@
 #include "xfstests_nfs_fixture.h"
 
 #define G257_ROOT	XFS_MNT "/g257"
+#define G257_DIR	G257_ROOT "/ttt"
 #define G257_ENTRIES	168
-#define G257_BATCH	7
 
-static u8 g257_seen[G257_ENTRIES];
-
-struct g257_iter {
-	struct dir_context	ctx;
-	struct kunit		*test;
-	int			taken;
-	int			dup;
-	int			alien;
-};
-
-static bool g257_actor(struct dir_context *ctx, const char *name, int len,
-		       loff_t off, u64 ino, unsigned int type)
+static void g257_populate(struct kunit *test)
 {
-	struct g257_iter *it = container_of(ctx, struct g257_iter, ctx);
-	char nbuf[16];
-	int idx;
+	char buf[64];
+	int n;
 
-	if (it->taken >= G257_BATCH)
-		return false;	/* stop; the current entry is not consumed */
-
-	if ((len == 1 && name[0] == '.') ||
-	    (len == 2 && name[0] == '.' && name[1] == '.'))
-		return true;
-
-	if (len < 2 || len >= sizeof(nbuf) || name[0] != 'e') {
-		it->alien++;
-		return true;
+	KUNIT_ASSERT_TRUE(test, xfstests_nfs_mounted());
+	KUNIT_ASSERT_EQ(test, xfs_mkdir(G257_ROOT), 0);
+	KUNIT_ASSERT_EQ(test, xfs_mkdir(G257_DIR), 0);
+	for (n = 1; n <= G257_ENTRIES; n++) {
+		snprintf(buf, sizeof(buf), G257_DIR "/%d", n);
+		KUNIT_ASSERT_EQ(test, xfs_write_new_file(buf, "", 0), 0);
 	}
-	memcpy(nbuf, name + 1, len - 1);
-	nbuf[len - 1] = '\0';
-	if (kstrtoint(nbuf, 10, &idx) || idx < 0 || idx >= G257_ENTRIES) {
-		it->alien++;
-		return true;
-	}
-	if (g257_seen[idx]++)
-		it->dup++;
-	it->taken++;
-	return true;
 }
 
 static void g257_remove_tree(void *unused)
 {
 	char buf[64];
-	int i;
+	int n;
 
-	for (i = 0; i < G257_ENTRIES; i++) {
-		snprintf(buf, sizeof(buf), G257_ROOT "/e%d", i);
+	for (n = 1; n <= G257_ENTRIES; n++) {
+		snprintf(buf, sizeof(buf), G257_DIR "/%d", n);
 		xfs_unlink(buf);
 	}
-	xfs_rmdir(G257_ROOT);
+	xfs_rmdir_settled(G257_DIR);
+	xfs_rmdir_settled(G257_ROOT);
 }
 
-/* one full enumeration in batches, reopening + seeking between batches */
-static void g257_enumerate(struct kunit *test)
+static void d_offs_are_unique_and_seekable(struct kunit *test)
 {
-	struct file *d;
-	loff_t pos = 0;
-	int rounds;
-
-	memset(g257_seen, 0, sizeof(g257_seen));
-
-	/* generously bounded: 168/7 = 24 data rounds plus slack */
-	for (rounds = 0; rounds < 200; rounds++) {
-		struct g257_iter it = {
-			.ctx.actor = g257_actor,
-			.test = test,
-		};
-
-		d = filp_open(G257_ROOT, O_RDONLY | O_DIRECTORY, 0);
-		KUNIT_ASSERT_FALSE(test, IS_ERR(d));
-		KUNIT_ASSERT_EQ_MSG(test, vfs_llseek(d, pos, SEEK_SET), pos,
-				    "seeking the directory to %lld failed",
-				    pos);
-		KUNIT_ASSERT_EQ(test, iterate_dir(d, &it.ctx), 0);
-		pos = d->f_pos;	/* the cookie to resume from */
-		filp_close(d, NULL);
-
-		KUNIT_ASSERT_EQ_MSG(test, it.dup, 0,
-				    "round %d returned duplicate entries",
-				    rounds);
-		KUNIT_ASSERT_EQ_MSG(test, it.alien, 0,
-				    "round %d returned unexpected names",
-				    rounds);
-		if (it.taken == 0)
-			break;	/* EOF round */
-	}
-	KUNIT_ASSERT_LT_MSG(test, rounds, 200,
-			    "the directory never reached EOF");
-}
-
-static void readdir_batches_enumerate_exactly_once(struct kunit *test)
-{
-	char buf[64];
-	int i, missing;
-
-	KUNIT_ASSERT_TRUE(test, xfstests_nfs_mounted());
-	KUNIT_ASSERT_EQ(test, xfs_mkdir(G257_ROOT), 0);
 	KUNIT_ASSERT_EQ(test,
 			kunit_add_action_or_reset(test, g257_remove_tree,
 						  NULL), 0);
+	g257_populate(test);
+	xfs_t_dir_offset2(test, G257_DIR, 4096, NULL);
+}
 
-	for (i = 0; i < G257_ENTRIES; i++) {
-		snprintf(buf, sizeof(buf), G257_ROOT "/e%d", i);
-		KUNIT_ASSERT_EQ(test, xfs_write_new_file(buf, "x", 1), 0);
+/* not in upstream: resume each batch of seven through a fresh open */
+static void batches_through_fresh_opens_see_every_name_once(struct kunit *test)
+{
+	struct xfs_dirent *ents;
+	u8 *seen;
+	loff_t pos = 0;
+	int rounds, n, i, idx;
+
+	KUNIT_ASSERT_EQ(test,
+			kunit_add_action_or_reset(test, g257_remove_tree,
+						  NULL), 0);
+	g257_populate(test);
+	ents = kunit_kcalloc(test, 7, sizeof(*ents), GFP_KERNEL);
+	seen = kunit_kzalloc(test, G257_ENTRIES + 1, GFP_KERNEL);
+	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, ents);
+	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, seen);
+
+	for (rounds = 0; rounds < 200; rounds++) {
+		struct file *d = filp_open(G257_DIR, O_RDONLY | O_DIRECTORY, 0);
+
+		KUNIT_ASSERT_FALSE(test, IS_ERR(d));
+		KUNIT_ASSERT_EQ(test, vfs_llseek(d, pos, SEEK_SET), pos);
+		n = xfs_getdents(d, ents, 7, 32768);
+		filp_close(d, NULL);
+		KUNIT_ASSERT_GE(test, n, 0);
+		if (!n)
+			break;
+		pos = ents[n - 1].d_off;
+		for (i = 0; i < n; i++) {
+			if (!strcmp(ents[i].name, ".") ||
+			    !strcmp(ents[i].name, ".."))
+				continue;
+			KUNIT_ASSERT_EQ_MSG(test, kstrtoint(ents[i].name, 10, &idx),
+					    0, "unexpected name %s", ents[i].name);
+			KUNIT_ASSERT_TRUE(test, idx >= 1 && idx <= G257_ENTRIES);
+			KUNIT_EXPECT_EQ_MSG(test, seen[idx]++, 0,
+					    "%d returned twice", idx);
+		}
 	}
-
-	g257_enumerate(test);
-	for (i = 0, missing = 0; i < G257_ENTRIES; i++)
-		if (!g257_seen[i])
-			missing++;
-	KUNIT_EXPECT_EQ_MSG(test, missing, 0,
-			    "%d of %d entries never enumerated", missing,
-			    G257_ENTRIES);
-
-	/* a second full pass (rewound to zero) must behave identically */
-	g257_enumerate(test);
-	for (i = 0, missing = 0; i < G257_ENTRIES; i++)
-		if (!g257_seen[i])
-			missing++;
-	KUNIT_EXPECT_EQ_MSG(test, missing, 0,
-			    "the rewound pass lost %d entries", missing);
+	KUNIT_ASSERT_LT_MSG(test, rounds, 200, "the directory never ended");
+	for (idx = 1; idx <= G257_ENTRIES; idx++)
+		KUNIT_EXPECT_EQ_MSG(test, seen[idx], 1, "%d never returned", idx);
 }
 
 static int g257_suite_init(struct kunit_suite *suite)
@@ -157,7 +128,8 @@ static void g257_suite_exit(struct kunit_suite *suite)
 }
 
 static struct kunit_case g257_cases[] = {
-	KUNIT_CASE(readdir_batches_enumerate_exactly_once),
+	KUNIT_CASE(d_offs_are_unique_and_seekable),
+	KUNIT_CASE(batches_through_fresh_opens_see_every_name_once),
 	{}
 };
 

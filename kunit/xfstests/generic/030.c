@@ -6,10 +6,13 @@
  * generic/029's sibling. Same idea -- mapped writes interleaved with
  * truncates -- but the boundary is deliberately awkward: the file is 5017k,
  * which is 1254.25 pages, so every mapped write lands inside the partial
- * last page rather than on a page boundary. Both scenarios grow the file,
- * write through the mapping into the new tail, shrink the file again, then
- * grow it and write again. The first mapped write must be discarded by the
- * truncate down; the second must survive.
+ * last page rather than on a page boundary. The first two scenarios grow
+ * the file, write through the mapping into the new tail, shrink the file
+ * again, then grow it and write again. The first mapped write must be
+ * discarded by the truncate down; the second must survive. The third is
+ * the same on byte-unaligned sizes (5136912 and 5139720 bytes), with the
+ * repeated mapped writes of the application that exposed the bug, a final
+ * grow to the page boundary (5140480) and an msync -s before unmapping.
  *
  * The distinctive thing about 030 is not mremap. Upstream resizes the
  * mapping with "mremap -m 5020k" and "mremap 5017k" around the truncates,
@@ -54,6 +57,9 @@
  * which allocates an mm, runs arch_pick_mmap_layout() and attaches it with
  * kthread_use_mm(); see generic/029. Writes go through copy_to_user(), the
  * correct way to touch user addresses with a borrowed mm.
+ *
+ * The third scenario's sizes round the same way: 5136912, 5139720 and
+ * 5140480 bytes are all 1255 pages, so its mremaps are no-ops too.
  *
  * Deviations: upstream's per-scenario "cycle the mount" cold re-read is
  * done by reading through the tmpfs export instead (the server's own
@@ -169,7 +175,7 @@ static void g030_scenario(struct kunit *test, loff_t zlen, const char *ctx)
 			       PTR_ERR(f));
 
 	/* truncate 5017k; pwrite X 0 5017k */
-	KUNIT_ASSERT_EQ(test, xfs_truncate(G030_FILE, G030_SMALL), 0);
+	KUNIT_ASSERT_EQ(test, xfs_ftruncate(f, G030_SMALL), 0);
 	memset(scratch, G030_X, G030_CHUNK);
 	for (pos = 0; pos < G030_SMALL; ) {
 		size_t n = min_t(loff_t, G030_SMALL - pos, G030_CHUNK);
@@ -203,11 +209,11 @@ static void g030_scenario(struct kunit *test, loff_t zlen, const char *ctx)
 			    ctx);
 
 	/* truncate up, then write W through the mapped tail */
-	KUNIT_ASSERT_EQ(test, xfs_truncate(G030_FILE, G030_LARGE), 0);
+	KUNIT_ASSERT_EQ(test, xfs_ftruncate(f, G030_LARGE), 0);
 	g030_mwrite(test, addr, scratch, G030_SMALL, G030_TAIL, G030_W, ctx);
 
 	/* truncate down: W must be discarded */
-	KUNIT_ASSERT_EQ(test, xfs_truncate(G030_FILE, G030_SMALL), 0);
+	KUNIT_ASSERT_EQ(test, xfs_ftruncate(f, G030_SMALL), 0);
 
 	/*
 	 * Upstream's second scenario writes through the mapping while the
@@ -218,7 +224,7 @@ static void g030_scenario(struct kunit *test, loff_t zlen, const char *ctx)
 		g030_mwrite(test, addr, scratch, G030_ZOFF, zlen, G030_Z, ctx);
 
 	/* grow again and write Y into the re-extended tail */
-	KUNIT_ASSERT_EQ(test, xfs_truncate(G030_FILE, G030_LARGE), 0);
+	KUNIT_ASSERT_EQ(test, xfs_ftruncate(f, G030_LARGE), 0);
 
 	/*
 	 * Upstream never looks here: it dumps the file only at the end, by
@@ -268,6 +274,101 @@ static void g030_scenario(struct kunit *test, loff_t zlen, const char *ctx)
 				 "client");
 }
 
+/*
+ * The third scenario, "the exact mmap write patterns of the application
+ * that exposed the bug in the first place":
+ *
+ *	truncate 5136912; pwrite X 0 5136912; mmap -rw 0 5136912
+ *	mremap 5136912; truncate 5136912; truncate 5139720; mremap -m 5139720
+ *	mwrite -S 0 5136912 2808 (three times)
+ *	mremap 5136912; truncate 5136912; truncate 5139720; mremap -m 5139720
+ *	mwrite -S 0 5136912 2808 (twice); mwrite -S 0x59 5136912 2808
+ *	truncate 5140480; mremap 5140480; msync -s 0 5140480; mremap 5139720
+ *	munmap; close
+ *
+ * Every mremap is between lengths of 1255 pages, so none is performed.
+ * msync -s is MS_SYNC over a shared file mapping, which the kernel turns
+ * into vfs_fsync_range() over the range with datasync set.
+ */
+#define G030_U_SIZE	5136912
+#define G030_U_GROWN	5139720
+#define G030_U_PAGE	5140480
+#define G030_U_TAIL	(G030_U_GROWN - G030_U_SIZE)	/* 2808 */
+
+static void g030_unaligned_scenario(struct kunit *test)
+{
+	const char *ctx = "3. unaligned sizes";
+	struct kstat st;
+	struct file *f;
+	unsigned long addr;
+	u8 *scratch;
+	loff_t pos;
+	int i;
+
+	scratch = kunit_kmalloc(test, G030_CHUNK, GFP_KERNEL);
+	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, scratch);
+
+	xfs_unlink(G030_FILE);
+	f = filp_open(G030_FILE, O_RDWR | O_CREAT | O_TRUNC, 0644);
+	KUNIT_ASSERT_FALSE_MSG(test, IS_ERR(f), "%s: open: %ld", ctx,
+			       PTR_ERR(f));
+	KUNIT_ASSERT_EQ(test, xfs_ftruncate(f, G030_U_SIZE), 0);
+	memset(scratch, G030_X, G030_CHUNK);
+	for (pos = 0; pos < G030_U_SIZE; ) {
+		size_t n = min_t(loff_t, G030_U_SIZE - pos, G030_CHUNK);
+		loff_t p = pos;
+
+		KUNIT_ASSERT_EQ(test, kernel_write(f, scratch, n, &p),
+				(ssize_t)n);
+		pos += n;
+	}
+
+	addr = kunit_vm_mmap(test, f, 0, G030_U_SIZE, PROT_READ | PROT_WRITE,
+			     MAP_SHARED, 0);
+	KUNIT_ASSERT_NE_MSG(test, addr, 0UL, "%s: kunit_vm_mmap failed", ctx);
+	KUNIT_ASSERT_EQ_MSG(test, PAGE_ALIGN((unsigned long)G030_U_SIZE),
+			    (unsigned long)G030_U_PAGE,
+			    "%s: the sizes no longer share a page count", ctx);
+	KUNIT_ASSERT_EQ(test, PAGE_ALIGN((unsigned long)G030_U_GROWN),
+			(unsigned long)G030_U_PAGE);
+
+	KUNIT_ASSERT_EQ(test, xfs_ftruncate(f, G030_U_SIZE), 0);
+	KUNIT_ASSERT_EQ(test, xfs_ftruncate(f, G030_U_GROWN), 0);
+	for (i = 0; i < 3; i++)
+		g030_mwrite(test, addr, scratch, G030_U_SIZE, G030_U_TAIL, 0,
+			    ctx);
+	KUNIT_ASSERT_EQ(test, xfs_ftruncate(f, G030_U_SIZE), 0);
+	KUNIT_ASSERT_EQ(test, xfs_ftruncate(f, G030_U_GROWN), 0);
+	for (i = 0; i < 2; i++)
+		g030_mwrite(test, addr, scratch, G030_U_SIZE, G030_U_TAIL, 0,
+			    ctx);
+	g030_mwrite(test, addr, scratch, G030_U_SIZE, G030_U_TAIL, G030_Y,
+		    ctx);
+	KUNIT_ASSERT_EQ(test, xfs_ftruncate(f, G030_U_PAGE), 0);
+	KUNIT_ASSERT_EQ_MSG(test, vfs_fsync_range(f, 0, G030_U_PAGE - 1, 1), 0,
+			    "%s: msync -s", ctx);
+	KUNIT_EXPECT_EQ_MSG(test, vm_munmap(addr, G030_U_SIZE), 0,
+			    "%s: munmap", ctx);
+	filp_close(f, NULL);
+
+	KUNIT_ASSERT_EQ(test, xfs_kstat(G030_FILE, &st), 0);
+	KUNIT_EXPECT_EQ_MSG(test, st.size, (loff_t)G030_U_PAGE,
+			    "%s: final size is %lld, expected %d", ctx,
+			    st.size, G030_U_PAGE);
+
+	/* 58 up to 0x4e6210, 59 up to 0x4e6d08, zeroes to 0x4e7000 */
+	g030_expect_fill(test, G030_SERVER, 0, G030_U_SIZE, G030_X, ctx,
+			 "SERVER");
+	g030_expect_fill(test, G030_SERVER, G030_U_SIZE, G030_U_TAIL, G030_Y,
+			 ctx, "SERVER");
+	g030_expect_fill(test, G030_SERVER, G030_U_GROWN,
+			 G030_U_PAGE - G030_U_GROWN, 0, ctx, "SERVER");
+	g030_expect_fill(test, G030_FILE, G030_U_SIZE, G030_U_TAIL, G030_Y,
+			 ctx, "client");
+	g030_expect_fill(test, G030_FILE, G030_U_GROWN,
+			 G030_U_PAGE - G030_U_GROWN, 0, ctx, "client");
+}
+
 static void unaligned_mapped_writes_survive_truncate_down_and_up(struct kunit *test)
 {
 	KUNIT_ASSERT_TRUE(test, xfstests_nfs_mounted());
@@ -278,6 +379,7 @@ static void unaligned_mapped_writes_survive_truncate_down_and_up(struct kunit *t
 
 	g030_scenario(test, 0, "1. no write while short");
 	g030_scenario(test, G030_ZLEN, "2. write while short");
+	g030_unaligned_scenario(test);
 }
 
 static int g030_suite_init(struct kunit_suite *suite)

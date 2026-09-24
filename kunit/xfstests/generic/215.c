@@ -3,9 +3,10 @@
  * xfstests generic/215 over a loopback NFS mount: c/mtime after a mapped
  * write (kernel.org bug 2645).
  *
- * Upstream creates a 2 MiB file with dd, samples mtime and ctime, sleeps a
- * second, maps the first page read-write and writes through it, then
- * requires both timestamps to have moved by a non-zero number of seconds.
+ * Upstream creates a 2 MiB file with dd, samples mtime and ctime, sleeps
+ * two seconds, then in an xfs_io maps the first page read-write and
+ * writes through it, and requires both timestamps to have moved by a
+ * non-zero number of seconds.
  *
  * generic/080 checks the same property; this one differs in what it does
  * first. There is no mapped read before the write, and the file is created
@@ -15,7 +16,7 @@
  * WRITE (via nfs_vm_page_mkwrite() recording the dirty range) rather than
  * riding on the earlier ones, or the server's timestamps never move.
  *
- * Deviations: upstream's sleep(1) is scaled down, and the timestamps are
+ * Deviations: upstream's sleep 2 is 20 ms here, and the timestamps are
  * compared as full timespec64s rather than whole seconds -- a stricter
  * check, since a client that updated them only in its own cache would
  * still fail the FORCE_SYNC stat used here.
@@ -37,7 +38,7 @@
 #define G215_FILE	G215_ROOT "/tst.mmap"
 
 #define G215_SIZE	(2 * 1024 * 1024)	/* dd count=4096 at bs=512 */
-#define G215_CHUNK	65536
+#define G215_BS		512	/* dd's default block size */
 #define G215_MAPLEN	4096
 
 static void g215_remove_tree(void *unused)
@@ -66,20 +67,24 @@ static void a_mapped_write_moves_both_times(struct kunit *test)
 			kunit_add_action_or_reset(test, g215_remove_tree, NULL),
 			0);
 
-	buf = kunit_kmalloc(test, G215_CHUNK, GFP_KERNEL);
+	buf = kunit_kmalloc(test, G215_MAPLEN, GFP_KERNEL);
 	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, buf);
-	memset(buf, 0, G215_CHUNK);
+	memset(buf, 0, G215_MAPLEN);
 
 	/* dd if=/dev/zero of=$testfile count=4096 */
-	f = filp_open(G215_FILE, O_RDWR | O_CREAT | O_TRUNC, 0644);
+	f = filp_open(G215_FILE, O_WRONLY | O_CREAT | O_TRUNC, 0644);
 	KUNIT_ASSERT_FALSE_MSG(test, IS_ERR(f), "open: %ld", PTR_ERR(f));
 	while (pos < G215_SIZE)
-		KUNIT_ASSERT_EQ(test, kernel_write(f, buf, G215_CHUNK, &pos),
-				(ssize_t)G215_CHUNK);
-	KUNIT_ASSERT_EQ(test, vfs_fsync(f, 0), 0);
+		KUNIT_ASSERT_EQ(test, kernel_write(f, buf, G215_BS, &pos),
+				(ssize_t)G215_BS);
+	filp_close(f, NULL);	/* the close flushes the file to the server */
 
 	KUNIT_ASSERT_EQ(test, xfs_kstat(G215_FILE, &before), 0);
 	msleep(20);	/* upstream's sleep 2, scaled */
+
+	/* xfs_io -f -c 'mmap 0 4096' -c 'mwrite 0 4096' */
+	f = filp_open(G215_FILE, O_RDWR | O_CREAT, 0644);
+	KUNIT_ASSERT_FALSE_MSG(test, IS_ERR(f), "reopen: %ld", PTR_ERR(f));
 
 	addr = kunit_vm_mmap(test, f, 0, G215_MAPLEN, PROT_READ | PROT_WRITE,
 			     MAP_SHARED, 0);

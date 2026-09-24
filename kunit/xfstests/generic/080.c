@@ -3,12 +3,13 @@
  * xfstests generic/080 over a loopback NFS mount: mtime and ctime after a
  * mapped write.
  *
- * Upstream writes 4k, fsyncs, samples mtime/ctime, sleeps a second, then
- * mmaps the file and does "mread 0 4k" followed by "mwrite 0 4k". When
- * xfs_io exits the mapping is torn down and the file closed; both
- * timestamps must have moved. A read through the mapping must not be what
- * moves them -- the read comes first precisely so that a filesystem which
- * dirties on fault-for-read is not credited with the update.
+ * Upstream writes 4k and fsyncs in one xfs_io, samples mtime/ctime, sleeps
+ * two seconds, then in a second xfs_io mmaps the file and does "mread 0
+ * 4k" followed by "mwrite 0 4k". When xfs_io exits the mapping is torn
+ * down and the file closed; both timestamps must have moved. A read
+ * through the mapping must not be what moves them -- the read comes first
+ * precisely so that a filesystem which dirties on fault-for-read is not
+ * credited with the update.
  *
  * Over NFS the timestamps live on the server, so the check is only
  * meaningful once the mapped write has reached it. That is what the
@@ -18,6 +19,10 @@
  * move mtime and ctime. The samples themselves are taken with
  * AT_STATX_FORCE_SYNC so they are the server's values and not the
  * client's cached ones.
+ *
+ * Deviation: 20 ms rather than two seconds between the samples, with the
+ * timestamps compared to the nanosecond rather than as whole seconds
+ * (stat -c %Y); the tmpfs export keeps nanosecond timestamps.
  */
 
 #include <kunit/test.h>
@@ -72,11 +77,16 @@ static void mapped_write_updates_mtime_and_ctime(struct kunit *test)
 	KUNIT_ASSERT_EQ(test, kernel_write(f, scratch, G080_LEN, &pos),
 			(ssize_t)G080_LEN);
 	KUNIT_ASSERT_EQ(test, vfs_fsync(f, 0), 0);
+	filp_close(f, NULL);
 
 	KUNIT_ASSERT_EQ(test, xfs_kstat(G080_FILE, &before), 0);
 
-	/* upstream's sleep 1, scaled: enough to separate two timestamps */
+	/* upstream's sleep 2, scaled: enough to separate two timestamps */
 	msleep(20);
+
+	/* the second xfs_io: mmap 0 4k, mread 0 4k, mwrite 0 4k */
+	f = filp_open(G080_FILE, O_RDWR, 0);
+	KUNIT_ASSERT_FALSE_MSG(test, IS_ERR(f), "reopen: %ld", PTR_ERR(f));
 
 	addr = kunit_vm_mmap(test, f, 0, G080_LEN, PROT_READ | PROT_WRITE,
 			     MAP_SHARED, 0);

@@ -8,19 +8,21 @@
  * outcome is checked against the model: O_EXCL create must succeed iff
  * the model says the name is free (and the inode number is recorded),
  * unlink must succeed iff it exists, and stat must agree on both
- * existence and inode number.
+ * existence and inode number. With -z it then removes every name the
+ * model says is left.
  *
  * Over NFS this pits the client's dcache (positive and negative entries)
  * and inode-number handling (fileids from GETATTR) against the server's
- * truth across thousands of CREATE/REMOVE/LOOKUP RPCs. A stale negative
+ * truth across 100,000 CREATE/REMOVE/LOOKUP RPCs. A stale negative
  * dentry, a mis-cached fileid, or a lost REMOVE shows up as a model
  * mismatch.
  *
- * Deviations: 20,000 iterations rather than upstream's 100,000 (documented
- * cut; the phase pattern below cycles the directory through the same
- * grow/shrink shape). Upstream drifts its create/remove mix over time
- * ("zones"); the port uses three explicit phases -- balanced, create-heavy,
- * remove-heavy -- with a 40% lookup share throughout.
+ * The run is upstream's exactly: seed 1, 100,000 iterations, and the
+ * transaction mix switching every 100 iterations through upstream's three
+ * zones (remove/create 20/60, 33/33, 60/20; the rest lookups). nametest
+ * draws from xfstests' lib/random.c, which xfs_random() reproduces, so the
+ * port replays upstream's sequence and its totals must equal the ones in
+ * generic/007.out.
  */
 
 #include <kunit/test.h>
@@ -28,23 +30,26 @@
 #include <linux/errno.h>
 #include <linux/fs.h>
 #include <linux/file.h>
-#include <linux/prandom.h>
 
 #include "xfstests_nfs_fixture.h"
 
 #define G007_ROOT	XFS_MNT "/g007"
-#define G007_NAMES	100	/* as upstream */
-#define G007_ITERS	20000	/* upstream: 100000 */
-#define G007_SEED	1	/* as upstream */
+#define G007_NAMES	100	/* nametest.1 .. nametest.100 */
+#define G007_ITERS	100000
+#define G007_SEED	1
 
 static struct {
 	bool	exists;
 	u64	ino;
 } g007_tab[G007_NAMES];
 
+/* nametest's good_/bad_ counters */
+static struct {
+	int good_adds, bad_adds, good_rms, bad_rms, good_looks, bad_looks;
+} g007_n;
+
 static const char *g007_name(char *buf, int i)
 {
-	/* upstream's input file: nametest.1 .. nametest.100 */
 	snprintf(buf, 64, G007_ROOT "/nametest.%d", i + 1);
 	return buf;
 }
@@ -69,10 +74,11 @@ static void g007_create(struct kunit *test, int i)
 	f = filp_open(g007_name(buf, i), O_RDWR | O_CREAT | O_EXCL, 0666);
 	if (!IS_ERR(f)) {
 		filp_close(f, NULL);
-		KUNIT_ASSERT_FALSE_MSG(test, g007_tab[i].exists,
-				       "\"%s\" created, but already existed as inumber %llu",
-				       buf, g007_tab[i].ino);
+		g007_n.good_adds++;
 		KUNIT_ASSERT_EQ(test, xfs_kstat(buf, &st), 0);
+		KUNIT_ASSERT_FALSE_MSG(test, g007_tab[i].exists,
+				       "\"%s\"(%llu) created, but already existed as inumber %llu",
+				       buf, st.ino, g007_tab[i].ino);
 		g007_tab[i].exists = true;
 		g007_tab[i].ino = st.ino;
 		return;
@@ -80,9 +86,9 @@ static void g007_create(struct kunit *test, int i)
 	KUNIT_ASSERT_EQ_MSG(test, PTR_ERR(f), (long)-EEXIST,
 			    "create \"%s\": unexpected error %ld", buf,
 			    PTR_ERR(f));
+	g007_n.bad_adds++;
 	KUNIT_ASSERT_TRUE_MSG(test, g007_tab[i].exists,
-			      "create \"%s\" failed EEXIST, but it should not exist",
-			      buf);
+			      "\"%s\" not created, should not exist", buf);
 }
 
 /* auto_remove(): unlink, checked against the model. */
@@ -92,17 +98,20 @@ static void g007_remove(struct kunit *test, int i)
 	int err = xfs_unlink(g007_name(buf, i));
 
 	if (!err) {
+		g007_n.good_rms++;
 		KUNIT_ASSERT_TRUE_MSG(test, g007_tab[i].exists,
 				      "\"%s\" removed, should not have existed",
 				      buf);
 		g007_tab[i].exists = false;
+		g007_tab[i].ino = 0;
 		return;
 	}
 	KUNIT_ASSERT_EQ_MSG(test, err, -ENOENT,
 			    "remove \"%s\": unexpected error %d", buf, err);
+	g007_n.bad_rms++;
 	KUNIT_ASSERT_FALSE_MSG(test, g007_tab[i].exists,
-			       "remove \"%s\" failed ENOENT, but it should exist",
-			       buf);
+			       "\"%s\"(%llu) not removed, should have existed",
+			       buf, g007_tab[i].ino);
 }
 
 /* auto_lookup(): stat, checked for existence and inode number. */
@@ -113,6 +122,7 @@ static void g007_lookup(struct kunit *test, int i)
 	int err = xfs_kstat(g007_name(buf, i), &st);
 
 	if (!err) {
+		g007_n.good_looks++;
 		KUNIT_ASSERT_TRUE_MSG(test, g007_tab[i].exists,
 				      "\"%s\"(%llu) lookup, should not exist",
 				      buf, st.ino);
@@ -123,45 +133,69 @@ static void g007_lookup(struct kunit *test, int i)
 	}
 	KUNIT_ASSERT_EQ_MSG(test, err, -ENOENT,
 			    "lookup \"%s\": unexpected error %d", buf, err);
+	g007_n.bad_looks++;
 	KUNIT_ASSERT_FALSE_MSG(test, g007_tab[i].exists,
-			       "\"%s\" lookup failed ENOENT, but it should exist",
-			       buf);
+			       "\"%s\"(%llu) lookup, should exist", buf,
+			       g007_tab[i].ino);
 }
 
-static void random_names_stay_consistent_with_the_model(struct kunit *test)
+static void nametest_matches_the_model_and_the_golden_counts(struct kunit *test)
 {
-	struct rnd_state st;
-	int iter;
+	struct xfs_random rnd;
+	int pct_remove = 0, pct_create = 0, zone = -1;
+	int iter, i, op, cleanup = 0;
+	char buf[64];
 
 	KUNIT_ASSERT_TRUE(test, xfstests_nfs_mounted());
 	KUNIT_ASSERT_EQ(test, xfs_mkdir(G007_ROOT), 0);
 	KUNIT_ASSERT_EQ(test,
 			kunit_add_action_or_reset(test, g007_remove_tree,
 						  NULL), 0);
+
 	memset(g007_tab, 0, sizeof(g007_tab));
-
-	prandom_seed_state(&st, G007_SEED);
+	memset(&g007_n, 0, sizeof(g007_n));
+	xfs_srandom(&rnd, G007_SEED);
 	for (iter = 0; iter < G007_ITERS; iter++) {
-		u32 r = prandom_u32_state(&st);
-		int i = (r >> 8) % G007_NAMES;
-		u32 op = r % 100;
-		u32 create_pct;
-
-		/* balanced, then grow, then shrink -- upstream's "zones" */
-		if (iter < G007_ITERS / 3)
-			create_pct = 50;
-		else if (iter < (2 * G007_ITERS) / 3)
-			create_pct = 75;
-		else
-			create_pct = 25;
-
-		if (op < 40)
+		/* the distribution of transaction types changes over time */
+		if ((iter % G007_NAMES) == 0) {
+			zone++;
+			switch (zone % 3) {
+			case 0: pct_remove = 20; pct_create = 60; break;
+			case 1: pct_remove = 33; pct_create = 33; break;
+			case 2: pct_remove = 60; pct_create = 20; break;
+			}
+		}
+		i = xfs_random(&rnd) % G007_NAMES;
+		op = xfs_random(&rnd) % 100;
+		if (op > pct_remove + pct_create)
 			g007_lookup(test, i);
-		else if ((op - 40) % 60 < (create_pct * 60) / 100)
+		else if (op > pct_remove)
 			g007_create(test, i);
 		else
 			g007_remove(test, i);
 	}
+
+	/* -z: remove everything that is left */
+	for (i = 0; i < G007_NAMES; i++) {
+		int err;
+
+		if (!g007_tab[i].exists)
+			continue;
+		cleanup++;
+		err = xfs_unlink(g007_name(buf, i));
+		KUNIT_EXPECT_EQ_MSG(test, err, 0,
+				    "\"%s\"(%llu) not removed at cleanup: %d",
+				    buf, g007_tab[i].ino, err);
+	}
+
+	/* generic/007.out */
+	KUNIT_EXPECT_EQ(test, g007_n.good_adds, 18736);
+	KUNIT_EXPECT_EQ(test, g007_n.bad_adds, 18802);
+	KUNIT_EXPECT_EQ(test, g007_n.good_rms, 18675);
+	KUNIT_EXPECT_EQ(test, g007_n.bad_rms, 19927);
+	KUNIT_EXPECT_EQ(test, g007_n.good_looks, 12000);
+	KUNIT_EXPECT_EQ(test, g007_n.bad_looks, 11860);
+	KUNIT_EXPECT_EQ(test, cleanup, 61);
 }
 
 static int g007_suite_init(struct kunit_suite *suite)
@@ -175,7 +209,7 @@ static void g007_suite_exit(struct kunit_suite *suite)
 }
 
 static struct kunit_case g007_cases[] = {
-	KUNIT_CASE_SLOW(random_names_stay_consistent_with_the_model),
+	KUNIT_CASE_SLOW(nametest_matches_the_model_and_the_golden_counts),
 	{}
 };
 
