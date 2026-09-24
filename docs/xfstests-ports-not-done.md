@@ -1,7 +1,7 @@
 # xfstests generic/* that are not ported, and why
 
-[kunit/xfstests/](../kunit/xfstests/) holds 125 ports of upstream's 798
-`generic/*` cases. This file accounts for the other 673: every one of them
+[kunit/xfstests/](../kunit/xfstests/) holds 132 ports of upstream's 798
+`generic/*` cases. This file accounts for the other 666: every one of them
 has a reason, and the reason names what specifically cannot be reproduced
 rather than "it did not work".
 
@@ -214,15 +214,6 @@ generic/062 generic/093 generic/097 generic/270 generic/403 generic/513
 generic/631 generic/675 generic/688 generic/727
 ```
 
-### DAX
-
-10 tests:
-
-```
-generic/413 generic/428 generic/437 generic/452 generic/462 generic/470
-generic/605 generic/606 generic/607 generic/608
-```
-
 ### Swapfile on NFS is not supported
 
 10 tests:
@@ -248,6 +239,15 @@ generic/624 generic/625 generic/692 generic/788
 ```
 generic/024 generic/025 generic/078 generic/398 generic/419 generic/585
 generic/621 generic/626 generic/700
+```
+
+### DAX
+
+7 tests:
+
+```
+generic/413 generic/462 generic/470 generic/605 generic/606 generic/607
+generic/608
 ```
 
 ### Libaio/io_submit: no in-kernel equivalent
@@ -282,22 +282,6 @@ generic/079 generic/277 generic/545 generic/596 generic/717
 generic/098 generic/426 generic/467 generic/477 generic/756
 ```
 
-### Xfs_io command with no NFS/VFS equivalent
-
-5 tests:
-
-```
-generic/365 generic/402 generic/492 generic/553 generic/555
-```
-
-### Reflink/clone: not an NFS operation
-
-5 tests:
-
-```
-generic/683 generic/684 generic/685 generic/686 generic/687
-```
-
 ### Atime mount options have no effect on NFS: upstream _require_atime notruns
 
 4 tests:
@@ -328,6 +312,14 @@ generic/067 generic/361 generic/563 generic/564
 
 ```
 generic/068 generic/390 generic/491 generic/738
+```
+
+### Xfs_io command with no NFS/VFS equivalent
+
+4 tests:
+
+```
+generic/365 generic/492 generic/553 generic/555
 ```
 
 ### Upstream excludes NFS from this test (_exclude_fs nfs)
@@ -468,26 +460,28 @@ generic/751
 | generic/241 | dbench, a userspace workload generator |
 | generic/339 | src/dirhash_collide generates names that collide in the XFS and btrfs directory hashes; the fixture's server is tmpfs, which has no such hash |
 | generic/345 | holetest -F: generic/340 and 344 with processes instead of threads. In a kernel test both markers are kthreads sharing one mm, so the port would duplicate generic/340 |
+| generic/402 | _require_timestamp_range notruns: _filesystem_timestamp_range() in common/rc has no nfs case, so the bounds are unknown |
 | generic/436 | seek_sanity_test cases 13-16 are gated on unwritten extents -- space fallocate has reserved that SEEK_HOLE still reports as a hole. ALLOCATE against the tmpfs export allocates real zeroed pages, so the program's own probe turns these cases off |
 | generic/445 | seek_sanity_test case 17, gated on unwritten extents for the same reason as generic/436 |
+| generic/452 | copies ls onto the mount and executes it, before and after a read-only remount; a KUnit case cannot exec a binary |
 | generic/460 | the bug is XFS's delalloc indirect-block reservation, reached by writing a 1 GiB file with dirty_ratio at 100; NFS has no delayed allocation and the file does not fit a 64 MiB export |
 | generic/478 | OFD locks across clone(2), dup(2) and close: the subject is file-descriptor ownership across processes and fd tables, which a KUnit case does not have |
-| generic/504 | the assertion is the contents of /proc/locks, which needs procfs mounted in the test kernel and a lock whose owning process has exited |
 | generic/524 | the race is between XFS writeback's cached extent mapping and a truncate; NFS has no block mapping to cache |
-| generic/565 | copy_file_range between two filesystems; the fixture has one mount |
 | generic/571 | the lease test is src/locktest's two-process client/server protocol; nfs4_setlease() exists, but what the test drives is the harness |
 | generic/590 | an 8 GiB file and XFS's extent-size limit; the export is a 64 MiB tmpfs and NFS has no extents |
 | generic/591 | src/splice-test's concurrent reader and writer are two processes sharing a pipe across a fork; the splice side itself is covered by the generic/249 port |
 | generic/597 | toggles fs.protected_symlinks and fs.protected_hardlinks, which are static ints in fs/namei.c with no in-kernel setter; what they gate is enforced by the client's VFS (may_follow_link/may_linkat), not by NFS |
 | generic/598 | toggles fs.protected_regular and fs.protected_fifos, static ints in fs/namei.c; see generic/597 |
-| generic/604 | mounts and unmounts the filesystem under test to race umount against mount; the fixture's single deployment is shared by every suite in the run |
 | generic/632 | detached mounts and mount-namespace propagation |
+| generic/685 | fzero (FALLOC_FL_ZERO_RANGE): nfs42_fallocate() accepts only mode 0 and PUNCH_HOLE with KEEP_SIZE; the suid/sgid rule itself is covered by the generic/683 and 684 ports |
+| generic/686 | finsert (FALLOC_FL_INSERT_RANGE): not accepted by nfs42_fallocate(); see generic/685 |
+| generic/687 | fcollapse (FALLOC_FL_COLLAPSE_RANGE): not accepted by nfs42_fallocate(); see generic/685 |
 | generic/754 | the attributes are set in the trusted namespace (attr -R) on symlinks, which NFSv4.2 does not carry; what remains is symlink-target length coverage, which generic/309 and generic/360 already provide |
 | generic/759 | fsx on hugepage-backed userspace buffers |
 | generic/760 | fsx with O_DIRECT on hugepage-backed userspace buffers |
 | generic/761 | the property is that a filesystem which checksums data falls back to buffered writes when the source buffer changes mid-write; NFS does not checksum data |
 | generic/772 | file_getattr()/file_setattr() work on fsxattr -- project id, extent-size hints -- which NFS does not have |
-| generic/777 | the property is decoding a connectable file handle after a mount cycle; the fixture's single deployment is shared by every suite, so the cycle is not available (handle encode/decode itself would be portable: the client does implement export_operations, fs/nfs/export.c) |
+| generic/777 | _require_open_by_handle -N notruns: fs/nfs/export.c has no .fh_to_parent, so exportfs_can_encode_fh() refuses EXPORT_FH_CONNECTABLE and name_to_handle_at(AT_HANDLE_CONNECTABLE) returns EOPNOTSUPP |
 | generic/780 | file_getattr()/file_setattr() on special files; see generic/772 |
 | generic/786 | directory delegations via the F_SETDELEG fcntl, which does not exist on v6.12.57 -- one of the kernels this repo's CI builds against -- and src/locktest's two-process harness |
 | generic/787 | file delegations via F_SETDELEG; see generic/786 |
@@ -509,12 +503,13 @@ generic/258 generic/285 generic/286 generic/306 generic/308 generic/309
 generic/310 generic/313 generic/314 generic/337 generic/340 generic/344
 generic/346 generic/354 generic/355 generic/360 generic/364 generic/377
 generic/378 generic/391 generic/393 generic/394 generic/401 generic/406
-generic/412 generic/420 generic/423 generic/430 generic/431 generic/432
-generic/433 generic/434 generic/438 generic/439 generic/443 generic/446
-generic/448 generic/450 generic/453 generic/454 generic/464 generic/471
-generic/486 generic/490 generic/523 generic/525 generic/528 generic/532
-generic/533 generic/539 generic/567 generic/568 generic/609 generic/611
-generic/615 generic/618 generic/637 generic/638 generic/639 generic/647
-generic/676 generic/680 generic/706 generic/707 generic/708 generic/728
-generic/729 generic/736 generic/749 generic/755 generic/763
+generic/412 generic/420 generic/423 generic/428 generic/430 generic/431
+generic/432 generic/433 generic/434 generic/437 generic/438 generic/439
+generic/443 generic/446 generic/448 generic/450 generic/453 generic/454
+generic/464 generic/471 generic/486 generic/490 generic/504 generic/523
+generic/525 generic/528 generic/532 generic/533 generic/539 generic/565
+generic/567 generic/568 generic/604 generic/609 generic/611 generic/615
+generic/618 generic/637 generic/638 generic/639 generic/647 generic/676
+generic/680 generic/683 generic/684 generic/706 generic/707 generic/708
+generic/728 generic/729 generic/736 generic/749 generic/755 generic/763
 ```

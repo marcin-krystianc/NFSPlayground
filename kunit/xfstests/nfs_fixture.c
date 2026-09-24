@@ -106,6 +106,7 @@ int do_mknodat(int dfd, struct filename *name, umode_t mode, unsigned int dev);
 #define XFS_DOMAIN	"localhost"
 /* NFSEXP_INSECURE_PORT | NFSEXP_NOSUBTREECHECK | NFSEXP_FSID */
 #define XFS_EXPFLAGS	0x2402
+#define XFS_CLIENT_OPTS	"addr=127.0.0.1,clientaddr=127.0.0.1,vers=4.2,sec=sys"
 
 /*
  * ---------------------------------------------------------------------
@@ -692,8 +693,8 @@ static int xfs_loopback_up(void)
 	return err;
 }
 
-static int xfs_mount_at(const char *dev, const char *mountpoint,
-			const char *type, const char *opts)
+int xfs_mount_at(const char *dev, const char *mountpoint, const char *type,
+		 const char *opts)
 {
 	struct path p;
 	char *data = NULL;
@@ -714,7 +715,7 @@ static int xfs_mount_at(const char *dev, const char *mountpoint,
 	return err;
 }
 
-static int xfs_umount(const char *mountpoint)
+int xfs_umount(const char *mountpoint)
 {
 	struct path p;
 	int err;
@@ -1007,8 +1008,7 @@ static int xfs_bringup(void)
 	}
 	xfs_env.nfsd_up = true;
 
-	err = xfs_mount_at("127.0.0.1:/", XFS_MNT, "nfs4",
-			   "addr=127.0.0.1,clientaddr=127.0.0.1,vers=4.2,sec=sys");
+	err = xfs_mount_at("127.0.0.1:/", XFS_MNT, "nfs4", XFS_CLIENT_OPTS);
 	if (err) {
 		pr_warn("xfstests-nfs: NFS client mount failed: %d\n", err);
 		return err;
@@ -1047,6 +1047,10 @@ static void xfs_teardown(void)
 {
 	int err;
 
+	err = xfs_scratch_umount();
+	if (err)
+		pr_err("xfstests-nfs: scratch umount failed: %d\n", err);
+	xfs_rmdir(XFS_SCRATCH_MNT);
 	if (xfs_env.client_mounted) {
 		err = xfs_umount_settled(XFS_MNT);
 		if (err)
@@ -1104,6 +1108,27 @@ int xfs_remount_client(bool ro)
 			msleep(100);
 	}
 	return err;
+}
+
+int xfs_scratch_mount(void)
+{
+	int err = xfs_mkdir_tolerant(XFS_SCRATCH_MNT);
+
+	if (err)
+		return err;
+	return xfs_mount_at("127.0.0.1:/", XFS_SCRATCH_MNT, "nfs4",
+			    XFS_CLIENT_OPTS ",nosharecache");
+}
+
+int xfs_scratch_umount(void)
+{
+	int err = 0;
+	int tries;
+
+	/* path_umount() on a directory that is not a mount point: -EINVAL */
+	for (tries = 0; tries < 8 && !err; tries++)
+		err = xfs_umount_settled(XFS_SCRATCH_MNT);
+	return err == -EINVAL || err == -ENOENT ? 0 : err;
 }
 
 int xfstests_nfs_get(void)

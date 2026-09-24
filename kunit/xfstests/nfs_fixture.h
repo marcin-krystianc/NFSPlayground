@@ -48,6 +48,23 @@ void xfstests_nfs_export_opts(const char *opts);
 int xfs_remount_client(bool ro);
 
 /*
+ * A second client mount of the same export, upstream's SCRATCH_MNT, for
+ * ports that need two mounts or a mount cycle. nosharecache gives it its
+ * own superblock, so it shares no dentries, inodes or page cache with
+ * XFS_MNT. Bring-up does not mount it: a suite mounts it and must call
+ * xfs_scratch_umount() before it ends; teardown unmounts leftovers.
+ */
+#define XFS_SCRATCH_MNT	"/mnt/scratch"
+int xfs_scratch_mount(void);
+/* Unmount every mount stacked on XFS_SCRATCH_MNT; 0 once none is left. */
+int xfs_scratch_umount(void);
+
+/* mount(2)/umount(2) by path, e.g. for procfs */
+int xfs_mount_at(const char *dev, const char *mountpoint, const char *type,
+		 const char *opts);
+int xfs_umount(const char *mountpoint);
+
+/*
  * Path-based helpers over the fs/namei.c syscall bodies. All return 0 or a
  * negative errno; the filename references are consumed by the callees.
  */
