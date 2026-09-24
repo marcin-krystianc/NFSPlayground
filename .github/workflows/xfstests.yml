@@ -1,0 +1,131 @@
+name: NFS xfstests
+
+# Runs real xfstests against a real NFS mount, on whatever NFS client and
+# server modules the runner's own kernel already has. No kernel is built and
+# nothing is installed into the kernel: the runner exports two directories
+# from its own knfsd over the loopback interface and mounts them back with
+# its own NFS client.
+#
+# Everything is in scripts/00-run-xfstests-on-gh-ci.sh, deliberately: the job is
+# one line, so a failure here reproduces on any throwaway Ubuntu box with the
+# same single command instead of by reading YAML and replaying steps by hand.
+# Its sibling scripts/00-run-xfstests-on-vm-and-docker.sh does the same
+# against the docker servers.
+#
+# This is the complement to the NFS KUnit workflow. KUnit tests kernel
+# functions directly under UML; this exercises the shipped client/server pair
+# through the userspace test suite they are actually validated with. What it
+# cannot do is test a *different* kernel -- the runner's is fixed, so this
+# says nothing about VAST's modules or about any kernel but the runner's.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      check_args:
+        description: 'Arguments for xfstests check. Default matches CI; "-g quick" is 645 tests and runs for hours.'
+        required: false
+        default: '-g quick'
+
+jobs:
+  xfstests:
+    name: xfstests (delegations ${{ matrix.delegations }})
+    runs-on: ubuntu-latest
+    # Two runs of the same suite. With one client on loopback knfsd delegates
+    # nearly every file, so the client answers timestamp, lock and attribute
+    # questions itself; with delegations off every one of those reaches the
+    # server. Failures that differ between the two point at the delegated
+    # path in fs/nfs (the ctime and timestamp tests), the rest at knfsd.
+    strategy:
+      fail-fast: false
+      matrix:
+        delegations: ['on', 'off']
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # xfstests is a submodule and is the thing being run here.
+          submodules: true
+
+      - name: Run xfstests against loopback NFS
+        id: run
+        timeout-minutes: 50
+        shell: bash
+        env:
+          CHECK_ARGS: ${{ inputs.check_args || '-g quick' }}
+          # Left off: a measured runner had / as 145G ext4 with 84G available,
+          # so there is nothing to reclaim. Set to 1 if the "disk space before
+          # setup" report in the log ever shows otherwise -- the script will
+          # then delete the preinstalled toolchains and report what each was
+          # worth. (GitHub documents 14GB of storage; that is not what the
+          # runner actually provides, so trust the log over the docs.)
+          RECLAIM_DISK: '0'
+          NFS_DELEGATIONS: ${{ matrix.delegations == 'on' && '1' || '0' }}
+        run: |
+          set -o pipefail
+          bash scripts/00-run-xfstests-in-container.sh $CHECK_ARGS 2>&1 \
+            | tee xfstests.log
+
+      - name: Summarise
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "### Environment"
+            echo
+            echo '```'
+            sed -n '/^==> under test/,/^$/p' xfstests.log 2>/dev/null | head -6
+            echo '```'
+            echo
+            echo "### Results"
+            echo
+            echo '```'
+            # check's trailer: the Ran/Not run/Failures/passed lines.
+            sed -n '/^Ran:/,$p' xfstests.log 2>/dev/null | head -40 \
+              || echo "no result trailer -- the run did not finish"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Everything needed to diagnose a failure from the job log alone, so
+      # nobody has to download the artifact first: the full diff for each
+      # failed test, the tail of its .full log, and the NFS state the inner
+      # script dumped after check finished.
+      - name: Show failure details
+        if: always()
+        shell: bash
+        run: |
+          shopt -s nullglob
+          bad=(xfstests/results/*/*.out.bad)
+          if [ ${#bad[@]} -eq 0 ]; then
+            echo "no .out.bad files -- no test failed with an output mismatch"
+          fi
+          for f in "${bad[@]}"; do
+            t=${f#xfstests/results/}; t=${t%.out.bad}
+            echo "::group::${t} diff"
+            diff -u "xfstests/tests/${t}.out" "$f" || true
+            echo "::endgroup::"
+            if [ -f "xfstests/results/${t}.full" ]; then
+              echo "::group::${t}.full (last 200 lines)"
+              tail -n 200 "xfstests/results/${t}.full"
+              echo "::endgroup::"
+            fi
+          done
+          for f in xfstests/results/ci-diagnostics/*; do
+            echo "::group::$(basename "$f")"
+            cat "$f"
+            echo "::endgroup::"
+          done
+
+      # results/ holds the .out.bad and .full files for every failure plus
+      # ci-diagnostics/ from the inner script.
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xfstests-results-delegations-${{ matrix.delegations }}
+          path: |
+            xfstests.log
+            xfstests/results/
+          if-no-files-found: warn

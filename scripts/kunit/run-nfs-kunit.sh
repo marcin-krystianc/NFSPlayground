@@ -21,25 +21,6 @@
 # Documentation/dev-tools/gcov.rst describes for other architectures) and,
 # after the run, turns the build dir's .gcda/.gcno files into
 # coverage/coverage.info and an HTML report under coverage/html via lcov.
-#
-# XFSTESTS_ONLY restricts which xfstests ports get wired into the tree at
-# all, for bisecting a bad port by build (not just by which tests execute
-# -- kunit.py's own filter_glob picks which *wired* suites run, but every
-# wired suite is still compiled and linked into the one shared vmlinux).
-# Space-separated generic/NNN numbers, e.g.:
-#   XFSTESTS_ONLY="001 023 084" scripts/kunit/run-nfs-kunit.sh
-# Unset or empty (the default) wires every port, unchanged from before
-# this existed. nfs_fixture is always wired: it defines no suite of its
-# own, and every xfstests port needs it as the shared deployment it
-# mounts through.
-#
-# The install loop below is additive only (grep-guarded, per the file
-# header): re-running with a narrower XFSTESTS_ONLY against a LINUX_DIR
-# that a previous, wider run already wired will not un-wire the ports
-# that dropped out, so they stay in the build. CI is unaffected -- every
-# job fetches a fresh tree -- but reusing one ./linux locally across
-# different XFSTESTS_ONLY values needs `rm -rf` between them (or a fresh
-# `scripts/fetch-sources.sh linux`) to get a clean subset.
 
 set -euo pipefail
 
@@ -48,7 +29,6 @@ LINUX_DIR="${LINUX_DIR:-${REPO_ROOT}/linux}"
 SUNRPC_DIR="${LINUX_DIR}/net/sunrpc"
 BUILD_DIR="${LINUX_DIR}/.kunit"
 COVERAGE="${COVERAGE:-0}"
-XFSTESTS_ONLY="${XFSTESTS_ONLY:-}"
 
 log()  { printf '\n==> %s\n' "$*"; }
 die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -108,14 +88,7 @@ XFSTESTS_ENTRY=":fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback 
 TESTS+=("xfstests/nfs_fixture${XFSTESTS_ENTRY}")
 for src in "${REPO_ROOT}"/kunit/xfstests/generic/*.c; do
     [ -e "$src" ] || continue
-    num="$(basename "$src" .c)"
-    if [ -n "$XFSTESTS_ONLY" ]; then
-        case " $XFSTESTS_ONLY " in
-            *" $num "*) ;;
-            *) continue ;;
-        esac
-    fi
-    TESTS+=("xfstests/generic/${num}${XFSTESTS_ENTRY}")
+    TESTS+=("xfstests/generic/$(basename "$src" .c)${XFSTESTS_ENTRY}")
 done
 
 # kunit.py is given --kunitconfig=net/sunrpc/.kunitconfig explicitly (below),
