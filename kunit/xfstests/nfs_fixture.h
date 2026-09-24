@@ -60,6 +60,12 @@ int xfs_rmdir(const char *path);
  */
 int xfs_rmdir_settled(const char *path);
 int xfs_unlink(const char *path);
+/*
+ * Flush the delayed fputs of files this thread has closed, so that a
+ * following unlink is a REMOVE rather than a sillyrename to .nfsXXXX.
+ * See nfs_fixture.c.
+ */
+void xfs_settle_fput(void);
 int xfs_rename(const char *from, const char *to);
 int xfs_link(const char *oldpath, const char *newpath);
 int xfs_symlink(const char *target, const char *linkpath);
@@ -79,6 +85,34 @@ ssize_t xfs_readlink(const char *path, char *buf, size_t size);
 /* Whole-file convenience wrappers (open/loop/close inside). */
 int xfs_write_new_file(const char *path, const void *data, size_t len);
 ssize_t xfs_read_range(const char *path, void *buf, size_t len, loff_t off);
+
+/*
+ * O_DIRECT I/O from a kmalloc'd buffer. kernel_read()/kernel_write() cannot
+ * do this over NFS -- their ITER_KVEC reaches iov_iter_get_pages_alloc2(),
+ * which returns -EFAULT for a kvec; see nfs_fixture.c. The buffer must come
+ * from kmalloc (kunit_kmalloc is fine), not vmalloc.
+ */
+ssize_t xfs_direct_write(struct file *f, const void *buf, size_t len,
+			 loff_t *pos);
+ssize_t xfs_direct_read(struct file *f, void *buf, size_t len, loff_t *pos);
+
+/*
+ * Writes sourced from a user address, for the ports that write out of a
+ * kunit_vm_mmap() mapping. The iovec form's iov_base values are user
+ * pointers; the array itself is an ordinary kernel one.
+ */
+struct iovec;
+ssize_t xfs_user_write(struct file *f, const void __user *buf, size_t len,
+		       loff_t *pos);
+/* the general form: reads too, and either the buffered or the direct path */
+ssize_t xfs_user_rw(struct file *f, void __user *buf, size_t len, loff_t *pos,
+		    bool write, bool direct);
+ssize_t xfs_user_writev(struct file *f, const struct iovec *iov,
+			unsigned long nr_segs, loff_t *pos);
+
+/* mknod(2): character/block/fifo/socket nodes, built from kern_path_create */
+int xfs_mknod(const char *path, umode_t mode, unsigned int major,
+	      unsigned int minor);
 
 int xfs_statfs(const char *path, struct kstatfs *st);
 /* poll until XFS_MNT reports at least this many bytes available */
@@ -101,6 +135,25 @@ int xfs_utimes_raw(const char *path, struct timespec64 times[2]);
  */
 int xfs_switch_creds(uid_t uid, gid_t gid);
 void xfs_restore_creds(void);
+
+/*
+ * seteuid(2)'s actual effect: only euid/fsuid move, uid/suid and
+ * capabilities are untouched by hand -- security_task_fix_setuid() decides
+ * what happens to cap_effective, the same LSM hook setresuid(2) goes
+ * through. Pairs with xfs_restore_creds(), same one-at-a-time rule as
+ * xfs_switch_creds().
+ */
+int xfs_seteuid(uid_t uid);
+
+/*
+ * access(2)'s in-kernel equivalent: POSIX requires the check to use the
+ * *real* uid/gid, not the effective ones, so this builds the same
+ * override cred access(2) itself builds (fs/open.c's
+ * access_override_creds()) before calling inode_permission() -- fsuid set
+ * to the real uid, and capabilities restored to cap_permitted if that
+ * real uid is 0, cleared otherwise. `mode` is R_OK/W_OK/X_OK, OR'd.
+ */
+int xfs_access(const char *path, int mode);
 
 /* xattrs by path, with the mnt_want_write dance callers of vfs_* owe */
 int xfs_setxattr(const char *path, const char *name, const void *value,

@@ -64,7 +64,8 @@ if [ "$COVERAGE" = "1" ]; then
 fi
 
 # Each entry is "stem:subdir:Kconfig symbol:Kconfig depends:description".
-# Adding a suite means dropping the .c in kunit/ and adding a line here.
+# Adding a unit suite means dropping the .c in kunit/ and adding a line here;
+# the xfstests ports below are discovered from the directory instead.
 TESTS=(
     "addr_test:net/sunrpc:SUNRPC_ADDR_KUNIT_TEST:SUNRPC:SunRPC address conversion"
     "timer_test:net/sunrpc:SUNRPC_TIMER_KUNIT_TEST:SUNRPC:SunRPC RTT estimator"
@@ -76,55 +77,19 @@ TESTS=(
     "pnfs_layout_test:fs/nfs:NFS_PNFS_LAYOUT_KUNIT_TEST:NFS_V4:pNFS layout segment bookkeeping"
     "nfs4namespace_test:fs/nfs:NFS_V4_NAMESPACE_KUNIT_TEST:NFS_V4:NFSv4 namespace pathname handling"
     "pagelist_test:fs/nfs:NFS_PAGELIST_KUNIT_TEST:NFS_FS:NFS page request coalescing"
-    "nfs4proc_test:fs/nfs:NFS_V4_PROC_KUNIT_TEST:NFS_V4:NFSv4 protocol decision logic"
-    # The xfstests ports share one Kconfig symbol and the loopback NFS
-    # fixture object; nfs_fixture must be listed (it has no suite, it is
-    # the shared deployment the generic/* suites mount through).
-    "xfstests/nfs_fixture:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
-    "xfstests/generic/001:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
-    "xfstests/generic/002:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
-    "xfstests/generic/005:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
-    "xfstests/generic/006:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
-    "xfstests/generic/007:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
-    "xfstests/generic/011:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
-    "xfstests/generic/013:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
-    "xfstests/generic/014:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
-    "xfstests/generic/023:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
-    "xfstests/generic/028:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
-    "xfstests/generic/029:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
-    "xfstests/generic/030:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
-    "xfstests/generic/035:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
-    "xfstests/generic/069:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
-    "xfstests/generic/089:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
-    "xfstests/generic/109:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
-    "xfstests/generic/245:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
-    "xfstests/generic/075:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
-    "xfstests/generic/129:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
-    "xfstests/generic/132:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
-    "xfstests/generic/169:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
-    "xfstests/generic/213:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
-    "xfstests/generic/308:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
-    "xfstests/generic/131:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
-    "xfstests/generic/221:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
-    "xfstests/generic/236:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
-    "xfstests/generic/257:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
-    "xfstests/generic/285:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
-    "xfstests/generic/286:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
-    "xfstests/generic/309:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
-    "xfstests/generic/313:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
-    "xfstests/generic/360:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
-    "xfstests/generic/020:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
-    "xfstests/generic/037:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
-    "xfstests/generic/070:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
-    "xfstests/generic/074:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
-    "xfstests/generic/087:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
-    "xfstests/generic/088:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
-    "xfstests/generic/123:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
-    "xfstests/generic/126:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
-    "xfstests/generic/193:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
-    "xfstests/generic/228:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
-    "xfstests/generic/314:fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
-)
+    "nfs4proc_test:fs/nfs:NFS_V4_PROC_KUNIT_TEST:NFS_V4:NFSv4 protocol decision logic")
+
+# The xfstests ports all share one Kconfig symbol and the loopback NFS
+# fixture object, so they are discovered rather than listed: dropping a .c
+# in kunit/xfstests/generic/ is the whole of adding one. nfs_fixture goes
+# first -- it defines no suite, it is the shared deployment the generic/*
+# suites mount through.
+XFSTESTS_ENTRY=":fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
+TESTS+=("xfstests/nfs_fixture${XFSTESTS_ENTRY}")
+for src in "${REPO_ROOT}"/kunit/xfstests/generic/*.c; do
+    [ -e "$src" ] || continue
+    TESTS+=("xfstests/generic/$(basename "$src" .c)${XFSTESTS_ENTRY}")
+done
 
 # kunit.py is given --kunitconfig=net/sunrpc/.kunitconfig explicitly (below),
 # so its own stock-config fallback (tools/testing/kunit/configs/default.config,
@@ -289,6 +254,22 @@ UNSTATIC=(
     "fs/nfsd/nfs4state.c:void:nfsd4_end_grace"
 )
 
+# mknod(2)'s syscall body, which the xfstests fixture calls the same way it
+# calls the other fs/namei.c bodies. Conditional, unlike the rest: it is
+# static on v6.12.57, and on current mainline it is renamed
+# filename_mknodat() and already public in fs/internal.h, where there is
+# nothing to un-static and appending an EXPORT_SYMBOL_IF_KUNIT() for a name
+# that file no longer has would not compile.
+if grep -qE '^static .*\bdo_mknodat\(' "${LINUX_DIR}/fs/namei.c"; then
+    UNSTATIC+=("fs/namei.c:int:do_mknodat")
+    # Declare it where mainline declares its successor (filename_mknodat),
+    # so dropping the `static` does not leave namei.c with a definition and
+    # no prototype: -Wmissing-prototypes is on for fs/.
+    grep -q '\bdo_mknodat\b' "${LINUX_DIR}/fs/internal.h" ||
+        printf '\nint do_mknodat(int dfd, struct filename *name, umode_t mode, unsigned int dev);\n' \
+            >> "${LINUX_DIR}/fs/internal.h"
+fi
+
 for entry in "${UNSTATIC[@]}"; do
     IFS=: read -r relpath rettype func <<< "$entry"
     src="${LINUX_DIR}/${relpath}"
@@ -342,6 +323,7 @@ NAMEI_RENAMES=(
     do_renameat2:filename_renameat2
     do_linkat:filename_linkat
     do_symlinkat:filename_symlinkat
+    do_mknodat:filename_mknodat
 )
 namei_sed_args=()
 for pair in "${NAMEI_RENAMES[@]}"; do

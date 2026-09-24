@@ -20,7 +20,7 @@ show that the NFS client is well tested.
 
 | | Covered | Out of |
 |---|---|---|
-| xfstests `generic/*` cases ported | 43 | 798 upstream |
+| xfstests `generic/*` cases ported | 120 | 798 upstream |
 | `net/sunrpc` files with unit tests | 3 | 27 |
 | `fs/nfs` files with unit tests | 6 | 56 |
 
@@ -43,8 +43,12 @@ Known gaps worth naming:
   and Kerberos coverage that exists is pure logic: layout-range arithmetic
   here, plus upstream's own `gss_krb5_test.c`, which the runner enables via
   `CONFIG_KUNIT_ALL_TESTS=y` but which is not this repo's work.
-- The ported xfstests cases are chosen for being reachable, not for being
-  the most valuable 43 of the 798.
+- The ported xfstests cases are the ones that are reachable, not a
+  selection by value. The other 678 are accounted for one by one in
+  [xfstests-ports-not-done.md](xfstests-ports-not-done.md): most ask for
+  something NFS does not have (reflink, quota, fsverity, a block device,
+  a filesystem of a chosen size), and the rest name what this fixture
+  cannot do.
 
 ## Running
 

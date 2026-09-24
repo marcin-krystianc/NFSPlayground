@@ -26,6 +26,8 @@ the docs.
 - [docs/kunit-nfs-reference.md](docs/kunit-nfs-reference.md) — implementation
   notes: fixture mechanics, which seams make each area reachable, the
   constraints on what can be tested this way. Read before changing a test.
+- [docs/xfstests-ports-not-done.md](docs/xfstests-ports-not-done.md) — the
+  `generic/*` cases that are **not** ported, each with the reason.
 
 ```sh
 scripts/fetch-sources.sh linux       # once
