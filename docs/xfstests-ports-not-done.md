@@ -1,7 +1,7 @@
 # xfstests generic/* that are not ported, and why
 
-[kunit/xfstests/](../kunit/xfstests/) holds 120 ports of upstream's 798
-`generic/*` cases. This file accounts for the other 678: every one of them
+[kunit/xfstests/](../kunit/xfstests/) holds 125 ports of upstream's 798
+`generic/*` cases. This file accounts for the other 673: every one of them
 has a reason, and the reason names what specifically cannot be reproduced
 rather than "it did not work".
 
@@ -111,18 +111,6 @@ generic/603 generic/681 generic/682 generic/691 generic/709 generic/710
 generic/762
 ```
 
-### Fallocate mode unsupported over NFSv4.2 (only ALLOCATE/DEALLOCATE exist)
-
-30 tests:
-
-```
-generic/008 generic/031 generic/033 generic/071 generic/072 generic/096
-generic/256 generic/274 generic/300 generic/315 generic/349 generic/350
-generic/351 generic/365 generic/404 generic/420 generic/422 generic/439
-generic/446 generic/469 generic/485 generic/499 generic/503 generic/511
-generic/539 generic/567 generic/610 generic/735 generic/748 generic/758
-```
-
 ### Fscrypt: not an NFS operation
 
 26 tests:
@@ -146,26 +134,37 @@ generic/092 generic/094 generic/225 generic/255 generic/316 generic/425
 generic/473 generic/679 generic/742 generic/746 generic/796 generic/797
 ```
 
+### Fallocate mode unsupported over NFSv4.2 (only ALLOCATE/DEALLOCATE exist)
+
+21 tests:
+
+```
+generic/008 generic/031 generic/033 generic/071 generic/072 generic/096
+generic/274 generic/315 generic/349 generic/351 generic/404 generic/422
+generic/469 generic/485 generic/499 generic/503 generic/511 generic/610
+generic/735 generic/748 generic/758
+```
+
 ### Mkfs of a sized/geometried filesystem: upstream notruns on NFS (_scratch_mkfs_sized: "Filesystem nfs not supported")
 
-20 tests:
+21 tests:
 
 ```
 generic/015 generic/027 generic/083 generic/102 generic/204 generic/211
-generic/223 generic/224 generic/226 generic/269 generic/273 generic/275
-generic/312 generic/320 generic/371 generic/416 generic/488 generic/558
-generic/619 generic/747
+generic/223 generic/224 generic/226 generic/256 generic/269 generic/273
+generic/275 generic/312 generic/320 generic/371 generic/416 generic/488
+generic/558 generic/619 generic/747
 ```
 
 ### Libaio: no in-kernel equivalent
 
-19 tests:
+20 tests:
 
 ```
 generic/095 generic/112 generic/113 generic/114 generic/198 generic/239
-generic/240 generic/299 generic/323 generic/366 generic/427 generic/451
-generic/465 generic/538 generic/551 generic/586 generic/627 generic/773
-generic/774
+generic/240 generic/299 generic/300 generic/323 generic/366 generic/427
+generic/451 generic/465 generic/538 generic/551 generic/586 generic/627
+generic/773 generic/774
 ```
 
 ### POSIX ACLs are NFSv3-only in the Linux client (nfs3proc.c wires .set_acl); the fixture mounts v4.2
@@ -180,12 +179,12 @@ generic/449 generic/529 generic/633 generic/689 generic/697
 
 ### Needs a real block device
 
-16 tests:
+17 tests:
 
 ```
-generic/076 generic/108 generic/409 generic/410 generic/411 generic/418
-generic/466 generic/570 generic/589 generic/704 generic/730 generic/731
-generic/740 generic/767 generic/768 generic/770
+generic/076 generic/108 generic/350 generic/409 generic/410 generic/411
+generic/418 generic/466 generic/570 generic/589 generic/704 generic/730
+generic/731 generic/740 generic/767 generic/768 generic/770
 ```
 
 ### Driven by a userspace random-operation generator (fsstress/fsx): the port would be a reimplementation of the generator, and 011/013 (dirstress) and 075 (fsx) already cover that shape
@@ -283,6 +282,14 @@ generic/079 generic/277 generic/545 generic/596 generic/717
 generic/098 generic/426 generic/467 generic/477 generic/756
 ```
 
+### Xfs_io command with no NFS/VFS equivalent
+
+5 tests:
+
+```
+generic/365 generic/402 generic/492 generic/553 generic/555
+```
+
 ### Reflink/clone: not an NFS operation
 
 5 tests:
@@ -321,14 +328,6 @@ generic/067 generic/361 generic/563 generic/564
 
 ```
 generic/068 generic/390 generic/491 generic/738
-```
-
-### Xfs_io command with no NFS/VFS equivalent
-
-4 tests:
-
-```
-generic/402 generic/492 generic/553 generic/555
 ```
 
 ### Upstream excludes NFS from this test (_exclude_fs nfs)
@@ -510,11 +509,12 @@ generic/258 generic/285 generic/286 generic/306 generic/308 generic/309
 generic/310 generic/313 generic/314 generic/337 generic/340 generic/344
 generic/346 generic/354 generic/355 generic/360 generic/364 generic/377
 generic/378 generic/391 generic/393 generic/394 generic/401 generic/406
-generic/412 generic/423 generic/430 generic/431 generic/432 generic/433
-generic/434 generic/438 generic/443 generic/448 generic/450 generic/453
-generic/454 generic/464 generic/471 generic/486 generic/490 generic/523
-generic/525 generic/528 generic/532 generic/533 generic/568 generic/609
-generic/611 generic/615 generic/618 generic/637 generic/638 generic/639
-generic/647 generic/676 generic/680 generic/706 generic/707 generic/708
-generic/728 generic/729 generic/736 generic/749 generic/755 generic/763
+generic/412 generic/420 generic/423 generic/430 generic/431 generic/432
+generic/433 generic/434 generic/438 generic/439 generic/443 generic/446
+generic/448 generic/450 generic/453 generic/454 generic/464 generic/471
+generic/486 generic/490 generic/523 generic/525 generic/528 generic/532
+generic/533 generic/539 generic/567 generic/568 generic/609 generic/611
+generic/615 generic/618 generic/637 generic/638 generic/639 generic/647
+generic/676 generic/680 generic/706 generic/707 generic/708 generic/728
+generic/729 generic/736 generic/749 generic/755 generic/763
 ```

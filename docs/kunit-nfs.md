@@ -20,7 +20,7 @@ show that the NFS client is well tested.
 
 | | Covered | Out of |
 |---|---|---|
-| xfstests `generic/*` cases ported | 120 | 798 upstream |
+| xfstests `generic/*` cases ported | 125 | 798 upstream |
 | `net/sunrpc` files with unit tests | 3 | 27 |
 | `fs/nfs` files with unit tests | 6 | 56 |
 

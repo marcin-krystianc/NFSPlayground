@@ -152,7 +152,7 @@ appended only for link-local addresses and only when non-zero.
 
 ## The xfstests ports
 
-The `kunit/xfstests/` tree holds ports of **120 xfstests generic cases**,
+The `kunit/xfstests/` tree holds ports of **125 xfstests generic cases**,
 each a KUnit suite named after its original (`xfstests/generic/001` ...),
 each running against a real NFS mount served by knfsd inside the same UML
 kernel. The deployment lives in `kunit/xfstests/nfs_fixture.{c,h}`: tmpfs
@@ -190,7 +190,7 @@ Ported:
 647 676 680 706 707 708 728 729 736 749 755 763
 ```
 
-120 of upstream's 798 `generic/` cases. Every one of the other 678 is
+125 of upstream's 798 `generic/` cases. Every one of the other 673 is
 accounted for in
 [xfstests-ports-not-done.md](xfstests-ports-not-done.md), which names,
 per test, what cannot be reproduced -- generated from the test sources so
