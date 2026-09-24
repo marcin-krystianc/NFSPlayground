@@ -435,18 +435,13 @@ nfs-inode-pagecache unit tests and 014/075.
 An audit compared all 120 ports against their `xfstests/tests/generic/NNN`
 originals, checking not just whether a port's header discloses a scale
 reduction but whether the reduced or altered version can still fail the way
-the original would. Five ports have a gap; the rest -- including every
+the original would. Four ports have a gap; the rest -- including every
 concurrency port that races a real second kthread (028, 084, 133, 247, 340,
 344, 346, 354, 391, 707) -- hold up: the reduced scale still exercises the
 same code path and can still fail the same way the original does.
 
 **Tests a different, weaker property than the original, undisclosed:**
 
-- **132**: upstream is a growing-block-size sweep, 512B up to 10MB across 14
-  stages (~94MB total) -- that progression is the test's actual subject
-  ("aligned vector rw"). The port only ever uses fixed 512-byte blocks in a
-  rewrite/verify loop of its own design; no block size above 512B is
-  exercised.
 - **193**: roughly two-thirds of upstream -- suid/sgid clearing on
   chmod/chown/truncate, a POSIX privilege-escalation-class property -- is
   dropped. The port keeps only basic ownership/permission checks, with no
