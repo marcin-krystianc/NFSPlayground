@@ -223,11 +223,12 @@ The families, by what they exercise:
   byte strings rather than text, 736 readdir while every entry is being
   renamed, 707 a directory moved while it grows.
 - **Data integrity**: 001 chain copier, 014 truncfile, 075 mini-fsx with a
-  shadow model, 029/030 mapped writes, 069 O_APPEND, 074, 100 a copied
-  tree, 124 positional patterns, 129, 132, 169, 213 ALLOCATE boundaries,
-  214 writes into preallocated ranges, 286 seek-driven sparse copy, 308
-  1TB offsets, 525 the top of the 64-bit offset range, 406 one large
-  direct write, 639 a write beside uncached data.
+  shadow model, 029/030 mapped writes, 069 O_APPEND, 074 fstest with
+  three writer kthreads, 100 a copied tree, 124 positional patterns, 129,
+  132, 169, 213 ALLOCATE boundaries, 214 writes into preallocated ranges,
+  286 seek-driven sparse copy, 308 1TB offsets, 525 the top of the 64-bit
+  offset range, 406 one large direct write, 639 a write beside uncached
+  data.
 - **Direct I/O**: 130 the buffered/direct battery, 135 the three write
   paths, 412 a truncate into a hole between them, 450 reads at and past
   EOF, 609 O_DIRECT with O_DSYNC, 125 direct reads after a truncate, 355
@@ -332,7 +333,7 @@ writing another one:
   directory (310) therefore goes through `vfs_write()`/`vfs_read()` with a
   user address, which is the syscall's own path.
 - **A worker kthread cannot use KUnit assertions**: they unwind through
-  the test thread's try_catch. The concurrency ports (084, 133, 247,
+  the test thread's try_catch. The concurrency ports (074, 084, 133, 247,
   310, 340, 344, 346, 354, 364, 391, 438, 464, 615, 707) record the
   worker's first error in a struct and let the test thread assert on it.
   A worker that has to touch a `kunit_vm_mmap()` mapping calls
@@ -435,17 +436,13 @@ nfs-inode-pagecache unit tests and 014/075.
 An audit compared all 120 ports against their `xfstests/tests/generic/NNN`
 originals, checking not just whether a port's header discloses a scale
 reduction but whether the reduced or altered version can still fail the way
-the original would. Three ports have a gap; the rest -- including every
+the original would. Two ports have a gap; the rest -- including every
 concurrency port that races a real second kthread (028, 084, 133, 247, 340,
 344, 346, 354, 391, 707) -- hold up: the reduced scale still exercises the
 same code path and can still fail the same way the original does.
 
 **Scope reduction, understated but not structurally broken:**
 
-- **074**: upstream runs 5 configurations (baseline, mmap I/O, and three
-  multi-process concurrent-write variants). The port implements only the
-  single-threaded baseline. The header says "single-threaded port," which
-  undersells losing 4 of 5 configurations.
 - **286**: keeps only upstream's test01 (pure holes+data); drops test02-04
   (falloc'd unwritten-extent layouts). Likely justified -- ALLOCATE against
   the tmpfs export produces real zeroed pages, not unwritten extents, the
