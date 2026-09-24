@@ -3,11 +3,12 @@
  * xfstests generic/364 over a loopback NFS mount: direct writes and
  * fsync on the same open file at the same time.
  *
- * src/dio-write-fsync-same-fd runs two threads sharing one file
- * descriptor: one does O_DIRECT writes in a loop, the other fsyncs in a
- * loop. Upstream runs it under a ten-second timeout, because the failure
- * mode it was written for (btrfs commit cd9253c23aed) is a deadlock, not
- * a wrong answer.
+ * src/dio-write-fsync-same-fd opens a file O_WRONLY | O_CREAT | O_TRUNC |
+ * O_DIRECT, starts a thread that fsync()s it in a loop, and pwrite()s one
+ * page at offset 0 over and over on the same descriptor. Upstream runs it
+ * under a ten-second timeout, because the failure it was written for
+ * (btrfs commit cd9253c23aed) is a deadlock, not a wrong answer: the
+ * program only exits on an error.
  *
  * Over NFS an fsync is nfs_file_fsync() -> a COMMIT, and a direct write
  * is nfs_direct_write() with its own requests; both touch the same
@@ -15,7 +16,9 @@
  * needing a commit while a commit is already in flight is the
  * interesting overlap. As upstream, a hang is the failure -- KUnit's
  * per-case timeout is what reports it -- but the port also checks the
- * file's contents afterwards, which the original does not.
+ * page on the server afterwards, which the original does not.
+ *
+ * Deviation: the loops run for 5 s rather than until a 10 s timeout.
  */
 
 #include <kunit/test.h>
@@ -26,6 +29,7 @@
 #include <linux/slab.h>
 #include <linux/kthread.h>
 #include <linux/completion.h>
+#include <linux/jiffies.h>
 
 #include "xfstests_nfs_fixture.h"
 
@@ -34,40 +38,33 @@
 #define G364_SERVER	XFS_EXPORT "/g364/dio-write-fsync-same-fd"
 
 #define G364_CHUNK	4096
-#define G364_ROUNDS	256
+#define G364_RUN_MS	5000
 #define G364_BYTE	0x64
 
-struct g364_writer {
+struct g364_fsyncer {
 	struct file		*f;
+	atomic_t		stop;
+	unsigned long		syncs;
 	int			err;
 	struct completion	done;
 };
 
-static int g364_write_loop(void *arg)
+/* fsync_loop() */
+static int g364_fsync_loop(void *arg)
 {
-	struct g364_writer *w = arg;
-	u8 *buf;
-	int i;
+	struct g364_fsyncer *s = arg;
 
-	buf = kmalloc(G364_CHUNK, GFP_KERNEL);
-	if (!buf) {
-		w->err = -ENOMEM;
-		complete(&w->done);
-		return 0;
-	}
-	memset(buf, G364_BYTE, G364_CHUNK);
+	while (!atomic_read(&s->stop)) {
+		int err = vfs_fsync(s->f, 0);
 
-	for (i = 0; i < G364_ROUNDS; i++) {
-		loff_t pos = (loff_t)i * G364_CHUNK;
-		ssize_t n = xfs_direct_write(w->f, buf, G364_CHUNK, &pos);
-
-		if (n != G364_CHUNK) {
-			w->err = n < 0 ? (int)n : -EIO;
+		if (err) {
+			s->err = err;
 			break;
 		}
+		s->syncs++;
+		cond_resched();
 	}
-	kfree(buf);
-	complete(&w->done);
+	complete(&s->done);
 	return 0;
 }
 
@@ -79,60 +76,58 @@ static void g364_remove_tree(void *unused)
 
 static void direct_writes_and_fsyncs_on_one_fd(struct kunit *test)
 {
-	struct g364_writer w = {};
+	struct g364_fsyncer s = {};
 	struct task_struct *t;
+	unsigned long end, writes = 0;
 	struct file *f;
 	u8 *buf;
-	int i, syncs = 0;
 
 	KUNIT_ASSERT_TRUE(test, xfstests_nfs_mounted());
 	KUNIT_ASSERT_EQ(test, xfs_mkdir(G364_ROOT), 0);
 	KUNIT_ASSERT_EQ(test,
 			kunit_add_action_or_reset(test, g364_remove_tree, NULL),
 			0);
+	buf = kunit_kmalloc(test, G364_CHUNK, GFP_KERNEL);
+	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, buf);
+	memset(buf, G364_BYTE, G364_CHUNK);
 
-	f = filp_open(G364_FILE, O_RDWR | O_CREAT | O_TRUNC | O_DIRECT, 0644);
+	f = filp_open(G364_FILE, O_WRONLY | O_CREAT | O_TRUNC | O_DIRECT, 0666);
 	KUNIT_ASSERT_FALSE_MSG(test, IS_ERR(f), "open: %ld", PTR_ERR(f));
 
-	init_completion(&w.done);
-	w.f = f;
-	t = kthread_run(g364_write_loop, &w, "g364-writer");
+	init_completion(&s.done);
+	atomic_set(&s.stop, 0);
+	s.f = f;
+	t = kthread_run(g364_fsync_loop, &s, "g364-fsync");
 	KUNIT_ASSERT_FALSE_MSG(test, IS_ERR(t), "kthread_run: %ld",
 			       PTR_ERR(t));
 
-	/* the other thread: fsync the same file until the writer is done */
-	while (!completion_done(&w.done)) {
-		KUNIT_ASSERT_EQ_MSG(test, vfs_fsync(f, 0), 0,
-				    "fsync failed after %d syncs", syncs);
-		syncs++;
+	/* while (1) do_write(fd, write_buf, pagesize, 0); */
+	end = jiffies + msecs_to_jiffies(G364_RUN_MS);
+	while (time_before(jiffies, end)) {
+		loff_t pos = 0;
+		ssize_t n = xfs_direct_write(f, buf, G364_CHUNK, &pos);
+
+		if (n != G364_CHUNK) {
+			KUNIT_FAIL(test, "Write failed: %zd", n);
+			break;
+		}
+		writes++;
 		cond_resched();
 	}
-	wait_for_completion(&w.done);
-	KUNIT_EXPECT_EQ_MSG(test, w.err, 0, "the writer failed: %d", w.err);
-	KUNIT_EXPECT_GT_MSG(test, syncs, 0, "no fsync ever ran");
-
-	KUNIT_EXPECT_EQ(test, vfs_fsync(f, 0), 0);
+	atomic_set(&s.stop, 1);
+	wait_for_completion(&s.done);
 	filp_close(f, NULL);
 
-	/* every byte the writer wrote is on the server */
-	buf = kunit_kmalloc(test, G364_CHUNK, GFP_KERNEL);
-	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, buf);
-	for (i = 0; i < G364_ROUNDS; i++) {
-		int j;
+	KUNIT_EXPECT_EQ_MSG(test, s.err, 0, "Fsync failed: %d", s.err);
+	KUNIT_EXPECT_GT(test, writes, 0UL);
+	KUNIT_EXPECT_GT_MSG(test, s.syncs, 0UL, "no fsync ever ran");
 
-		KUNIT_ASSERT_EQ(test,
-				xfs_read_range(G364_SERVER, buf, G364_CHUNK,
-					       (loff_t)i * G364_CHUNK),
-				(ssize_t)G364_CHUNK);
-		for (j = 0; j < G364_CHUNK; j++)
-			if (buf[j] != G364_BYTE) {
-				KUNIT_FAIL(test,
-					   "server byte %lld is %02x, expected %02x",
-					   (loff_t)i * G364_CHUNK + j, buf[j],
-					   G364_BYTE);
-				return;
-			}
-	}
+	/* not upstream: the page is on the server */
+	memset(buf, 0, G364_CHUNK);
+	KUNIT_ASSERT_EQ(test, xfs_read_range(G364_SERVER, buf, G364_CHUNK, 0),
+			(ssize_t)G364_CHUNK);
+	KUNIT_EXPECT_TRUE_MSG(test, !memchr_inv(buf, G364_BYTE, G364_CHUNK),
+			      "the server does not hold the written page");
 }
 
 static int g364_suite_init(struct kunit_suite *suite)

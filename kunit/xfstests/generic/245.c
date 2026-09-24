@@ -2,10 +2,22 @@
 /*
  * xfstests generic/245 over a loopback NFS mount: rename onto non-empty targets.
  *
- * Upstream checks that renaming a directory onto a non-empty directory
- * fails. The port pins the errno (ENOTEMPTY over NFS) from both an empty
- * and a populated source, confirms nothing moved, and confirms the
- * positive case (empty target) still works afterwards.
+ * Upstream (from a bug report and testcase by Vlado Plaga):
+ *
+ *	mkdir test-mv test-mv/aa test-mv/ab
+ *	touch test-mv/aa/1
+ *	mkdir test-mv/ab/aa
+ *	touch test-mv/ab/aa/2
+ *	mv test-mv/ab/aa/ test-mv
+ *
+ * mv turns the last line into rename("test-mv/ab/aa", "test-mv/aa"): a
+ * non-empty directory moved to another directory, onto a non-empty
+ * directory of the same name. rename(2) allows either EEXIST or ENOTEMPTY
+ * for that, and the golden output accepts either. Nothing may move.
+ *
+ * A second case, not in upstream, is the same rule within one directory:
+ * an empty and then a populated source onto a non-empty target, and the
+ * positive case (an empty target) still working afterwards.
  */
 
 #include <kunit/test.h>
@@ -20,14 +32,49 @@
 
 static void g245_remove_tree(void *unused)
 {
+	xfs_settle_fput();
+	xfs_unlink(G245_ROOT "/test-mv/aa/1");
+	xfs_unlink(G245_ROOT "/test-mv/ab/aa/2");
+	xfs_rmdir(G245_ROOT "/test-mv/ab/aa");
+	xfs_rmdir(G245_ROOT "/test-mv/aa");
+	xfs_rmdir(G245_ROOT "/test-mv/ab");
+	xfs_rmdir(G245_ROOT "/test-mv");
 	xfs_unlink(G245_ROOT "/dst/keep");
 	xfs_unlink(G245_ROOT "/src/mine");
 	xfs_rmdir(G245_ROOT "/src");
 	xfs_rmdir(G245_ROOT "/dst");
 	xfs_rmdir(G245_ROOT "/empty");
-	xfs_rmdir(G245_ROOT);
+	xfs_rmdir_settled(G245_ROOT);
 }
 
+static void moving_a_directory_onto_a_nonempty_namesake_fails(struct kunit *test)
+{
+	int err;
+
+	KUNIT_ASSERT_TRUE(test, xfstests_nfs_mounted());
+	KUNIT_ASSERT_EQ(test, xfs_mkdir(G245_ROOT), 0);
+	KUNIT_ASSERT_EQ(test,
+			kunit_add_action_or_reset(test, g245_remove_tree, NULL),
+			0);
+	KUNIT_ASSERT_EQ(test, xfs_mkdir(G245_ROOT "/test-mv"), 0);
+	KUNIT_ASSERT_EQ(test, xfs_mkdir(G245_ROOT "/test-mv/aa"), 0);
+	KUNIT_ASSERT_EQ(test, xfs_mkdir(G245_ROOT "/test-mv/ab"), 0);
+	KUNIT_ASSERT_EQ(test, xfs_write_new_file(G245_ROOT "/test-mv/aa/1",
+						 "", 0), 0);
+	KUNIT_ASSERT_EQ(test, xfs_mkdir(G245_ROOT "/test-mv/ab/aa"), 0);
+	KUNIT_ASSERT_EQ(test, xfs_write_new_file(G245_ROOT "/test-mv/ab/aa/2",
+						 "", 0), 0);
+
+	/* mv test-mv/ab/aa/ test-mv */
+	err = xfs_rename(G245_ROOT "/test-mv/ab/aa", G245_ROOT "/test-mv/aa");
+	KUNIT_EXPECT_TRUE_MSG(test, err == -EEXIST || err == -ENOTEMPTY,
+			      "mv: cannot overwrite 'test-mv/aa': got %d, expected EEXIST or ENOTEMPTY",
+			      err);
+	KUNIT_EXPECT_TRUE(test, xfs_exists(G245_ROOT "/test-mv/aa/1"));
+	KUNIT_EXPECT_TRUE(test, xfs_exists(G245_ROOT "/test-mv/ab/aa/2"));
+}
+
+/* not in upstream: the same rule within one directory */
 static void nonempty_rename_targets_are_refused(struct kunit *test)
 {
 	KUNIT_ASSERT_TRUE(test, xfstests_nfs_mounted());
@@ -77,6 +124,7 @@ static void g245_suite_exit(struct kunit_suite *suite)
 }
 
 static struct kunit_case g245_cases[] = {
+	KUNIT_CASE(moving_a_directory_onto_a_nonempty_namesake_fails),
 	KUNIT_CASE(nonempty_rename_targets_are_refused),
 	{}
 };

@@ -1,11 +1,20 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * xfstests generic/314 over a loopback NFS mount: SGID directory inheritance.
+ * xfstests generic/314 over a loopback NFS mount: SGID inheritance on
+ * subdirectories.
  *
- * Upstream: entries created inside a setgid directory inherit its group;
- * subdirectories also inherit the setgid bit. Created here over NFS by an
- * identity whose own gid differs, so the inheritance decision is the
- * server's (CREATE/MKDIR against tmpfs), observed through GETATTR.
+ * Upstream makes a directory owned by qa_user and an unrelated group
+ * (12345), chmods it 2775, and has qa_user -- who is not in group 12345 --
+ * mkdir a subdirectory under umask 022. The golden output is the
+ * subdirectory's mode, "drwxr-sr-x": 0755 from the mkdir and the umask,
+ * plus the setgid bit inherited from the parent.
+ *
+ * Over NFS the inheritance is the server's decision (MKDIR against tmpfs),
+ * observed through GETATTR. The port also checks the subdirectory's group,
+ * which setgid inheritance implies but upstream does not print.
+ *
+ * A second case, not in upstream, creates a regular file in the same kind
+ * of directory: it must take the directory's group and its creator's uid.
  */
 
 #include <kunit/test.h>
@@ -17,66 +26,91 @@
 #include "xfstests_nfs_fixture.h"
 
 #define G314_ROOT	XFS_MNT "/g314"
+#define G314_DIR	G314_ROOT "/314-dir"
+#define G314_SUBDIR	G314_DIR "/subdir"
+#define G314_FILE	G314_DIR "/file"
+#define G314_QA_USER	1000
+#define G314_QA_GROUP	1000
+#define G314_GROUP	12345
 
 static void g314_creds_action(void *unused)
 {
 	xfs_restore_creds();
 }
 
-#define G314_PARENT	G314_ROOT "/sgid"
-
 static void g314_remove_tree(void *unused)
 {
-	xfs_unlink(G314_PARENT "/file");
-	xfs_rmdir(G314_PARENT "/subdir");
-	xfs_rmdir(G314_PARENT);
-	xfs_rmdir(G314_ROOT);
+	xfs_settle_fput();
+	xfs_unlink(G314_FILE);
+	xfs_rmdir(G314_SUBDIR);
+	xfs_rmdir(G314_DIR);
+	xfs_rmdir_settled(G314_ROOT);
 }
 
-static void sgid_group_and_bit_are_inherited(struct kunit *test)
+static void a_subdirectory_inherits_sgid(struct kunit *test)
 {
 	struct kstat st;
-	struct file *f;
 
 	KUNIT_ASSERT_TRUE(test, xfstests_nfs_mounted());
 	KUNIT_ASSERT_EQ(test, xfs_mkdir(G314_ROOT), 0);
-	KUNIT_ASSERT_EQ(test, xfs_mkdir(G314_PARENT), 0);
 	KUNIT_ASSERT_EQ(test,
 			kunit_add_action_or_reset(test, g314_remove_tree, NULL),
 			0);
 	KUNIT_ASSERT_EQ(test,
 			kunit_add_action_or_reset(test, g314_creds_action, NULL),
 			0);
-	KUNIT_ASSERT_EQ(test, xfs_chown(G314_PARENT, 0, 12345), 0);
-	KUNIT_ASSERT_EQ(test, xfs_chmod(G314_PARENT, 02777), 0);
 
-	KUNIT_ASSERT_EQ(test, xfs_kstat(G314_PARENT, &st), 0);
-	KUNIT_ASSERT_TRUE_MSG(test, st.mode & S_ISGID,
-			      "the parent lost its setgid bit (%o)", st.mode);
+	/* dir owned by qa user, and an unrelated group; made sgid */
+	KUNIT_ASSERT_EQ(test, xfs_mkdir(G314_DIR), 0);
+	KUNIT_ASSERT_EQ(test, xfs_chown(G314_DIR, G314_QA_USER, G314_GROUP), 0);
+	KUNIT_ASSERT_EQ(test, xfs_chmod(G314_DIR, 02775), 0);
 
-	/* create as an identity whose gid is decidedly not 12345 */
-	KUNIT_ASSERT_EQ(test, xfs_switch_creds(100, 500), 0);
-	f = filp_open(G314_PARENT "/file", O_WRONLY | O_CREAT | O_EXCL, 0644);
-	if (!IS_ERR(f))
-		filp_close(f, NULL);
-	KUNIT_EXPECT_FALSE(test, IS_ERR(f));
-	KUNIT_EXPECT_EQ(test, xfs_mkdir(G314_PARENT "/subdir"), 0);
+	/* _su $qa_user -c "umask 022; mkdir $TEST_DIR/$seq-dir/subdir" */
+	KUNIT_ASSERT_EQ(test, xfs_switch_creds(G314_QA_USER, G314_QA_GROUP), 0);
+	KUNIT_EXPECT_EQ(test, xfs_mkdir(G314_SUBDIR), 0);
 	xfs_restore_creds();
 
-	KUNIT_ASSERT_EQ(test, xfs_kstat(G314_PARENT "/file", &st), 0);
-	KUNIT_EXPECT_EQ_MSG(test, (int)__kgid_val(KGIDT_INIT(0)) * 0 +
-			    (int)st.gid.val, 12345,
-			    "the file's group is %d, not the sgid parent's",
-			    (int)st.gid.val);
-	KUNIT_EXPECT_EQ_MSG(test, (int)st.uid.val, 100,
-			    "the file's owner is %d, not the creator",
-			    (int)st.uid.val);
+	/* drwxr-sr-x subdir */
+	KUNIT_ASSERT_EQ(test, xfs_kstat(G314_SUBDIR, &st), 0);
+	KUNIT_EXPECT_EQ_MSG(test, st.mode, (umode_t)(S_IFDIR | 02755),
+			    "subdir mode is %o, expected drwxr-sr-x (%o)",
+			    st.mode, S_IFDIR | 02755);
+	KUNIT_EXPECT_EQ_MSG(test, from_kgid(&init_user_ns, st.gid),
+			    (gid_t)G314_GROUP,
+			    "subdir group is %u, not the sgid parent's",
+			    from_kgid(&init_user_ns, st.gid));
+}
 
-	KUNIT_ASSERT_EQ(test, xfs_kstat(G314_PARENT "/subdir", &st), 0);
-	KUNIT_EXPECT_EQ(test, (int)st.gid.val, 12345);
-	KUNIT_EXPECT_TRUE_MSG(test, st.mode & S_ISGID,
-			      "the subdirectory did not inherit setgid (%o)",
-			      st.mode);
+/* not in upstream: a regular file takes the sgid directory's group */
+static void a_file_inherits_the_group(struct kunit *test)
+{
+	struct kstat st;
+	struct file *f;
+
+	KUNIT_ASSERT_TRUE(test, xfstests_nfs_mounted());
+	KUNIT_ASSERT_EQ(test, xfs_mkdir(G314_ROOT), 0);
+	KUNIT_ASSERT_EQ(test,
+			kunit_add_action_or_reset(test, g314_remove_tree, NULL),
+			0);
+	KUNIT_ASSERT_EQ(test,
+			kunit_add_action_or_reset(test, g314_creds_action, NULL),
+			0);
+	KUNIT_ASSERT_EQ(test, xfs_mkdir(G314_DIR), 0);
+	KUNIT_ASSERT_EQ(test, xfs_chown(G314_DIR, G314_QA_USER, G314_GROUP), 0);
+	KUNIT_ASSERT_EQ(test, xfs_chmod(G314_DIR, 02775), 0);
+
+	KUNIT_ASSERT_EQ(test, xfs_switch_creds(G314_QA_USER, G314_QA_GROUP), 0);
+	f = filp_open(G314_FILE, O_WRONLY | O_CREAT | O_EXCL, 0644);
+	if (!IS_ERR(f))
+		filp_close(f, NULL);
+	xfs_restore_creds();
+	KUNIT_ASSERT_FALSE_MSG(test, IS_ERR(f), "create: %ld", PTR_ERR(f));
+
+	KUNIT_ASSERT_EQ(test, xfs_kstat(G314_FILE, &st), 0);
+	KUNIT_EXPECT_EQ(test, from_kgid(&init_user_ns, st.gid),
+			(gid_t)G314_GROUP);
+	KUNIT_EXPECT_EQ(test, from_kuid(&init_user_ns, st.uid),
+			(uid_t)G314_QA_USER);
 }
 
 static int g314_suite_init(struct kunit_suite *suite)
@@ -90,7 +124,8 @@ static void g314_suite_exit(struct kunit_suite *suite)
 }
 
 static struct kunit_case g314_cases[] = {
-	KUNIT_CASE(sgid_group_and_bit_are_inherited),
+	KUNIT_CASE(a_subdirectory_inherits_sgid),
+	KUNIT_CASE(a_file_inherits_the_group),
 	{}
 };
 

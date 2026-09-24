@@ -3,10 +3,11 @@
  * xfstests generic/133 over a loopback NFS mount: a reader and a writer on
  * the same file, in all four combinations of buffered and direct.
  *
- * Upstream writes a 512 MiB file, then runs four rounds: a writer in the
- * background and a reader in the foreground over the whole file, with
- * each of them buffered or O_DIRECT. Its golden output is the four round
- * names -- the assertion is that nothing deadlocks, crashes or errors.
+ * Upstream runs four rounds. Each writes a 512 MiB file with O_DIRECT,
+ * then starts a writer in the background and a reader in the foreground
+ * over the whole file, each buffered or O_DIRECT, waits, and removes the
+ * file. Its golden output is the four round names -- the assertion is
+ * that nothing deadlocks, crashes or errors.
  *
  * Over NFS the interesting pair is mixed: a direct write invalidates the
  * client's pages for its range while a buffered reader is filling them,
@@ -14,10 +15,12 @@
  * flush before it can read (nfs_file_direct_read() calls
  * filemap_write_and_wait_range() first). Getting that wrong shows up as
  * stale or torn data rather than as an error, so this port checks the
- * bytes the reader saw as well: every 64 KiB block it reads must be one
- * of the two patterns the file ever holds, never a mixture.
+ * bytes the reader saw as well. Upstream writes the same bytes every
+ * time; here the file is created with one pattern and overwritten with
+ * another, and every byte read must be one of the two.
  *
- * Deviations: 8 MiB rather than 512 MiB (the export is a 64 MiB tmpfs),
+ * Deviations: 64 MiB rather than 512 MiB -- the size only sets how long
+ * the two sides overlap, and 256 MiB already takes half a minute here --
  * and the background writer is a kthread rather than a second process.
  * A kthread cannot use KUnit assertions -- they unwind through the test
  * thread's try_catch -- so the worker records its first error and the
@@ -38,7 +41,8 @@
 #define G133_ROOT	XFS_MNT "/g133"
 #define G133_FILE	G133_ROOT "/io_test"
 
-#define G133_SIZE	(8 * 1024 * 1024)
+#define G133_SIZE	(64 * 1024 * 1024)
+#define G133_EXPORT	"size=335544320,nr_inodes=32768"
 #define G133_CHUNK	(64 * 1024)		/* upstream's -b 64k */
 #define G133_PATTERN_A	0x41
 #define G133_PATTERN_B	0x42
@@ -103,6 +107,19 @@ static void g133_round(struct kunit *test, bool write_direct,
 	int i;
 
 	init_completion(&w.done);
+	buf = kunit_kmalloc(test, G133_CHUNK, GFP_KERNEL);
+	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, buf);
+
+	/* xfs_io -f -d -c 'pwrite -b 64k 0 512m' */
+	memset(buf, G133_PATTERN_A, G133_CHUNK);
+	wf = filp_open(G133_FILE, O_RDWR | O_CREAT | O_DIRECT, 0644);
+	KUNIT_ASSERT_FALSE_MSG(test, IS_ERR(wf), "%s: create: %ld", what,
+			       PTR_ERR(wf));
+	while (pos < G133_SIZE)
+		KUNIT_ASSERT_EQ(test, xfs_direct_write(wf, buf, G133_CHUNK, &pos),
+				(ssize_t)G133_CHUNK);
+	filp_close(wf, NULL);
+	pos = 0;
 
 	wf = filp_open(G133_FILE, O_RDWR | (write_direct ? O_DIRECT : 0), 0);
 	KUNIT_ASSERT_FALSE_MSG(test, IS_ERR(wf), "%s: writer open: %ld", what,
@@ -111,9 +128,6 @@ static void g133_round(struct kunit *test, bool write_direct,
 	KUNIT_ASSERT_FALSE_MSG(test, IS_ERR(rf), "%s: reader open: %ld", what,
 			       PTR_ERR(rf));
 	w.f = wf;
-
-	buf = kunit_kmalloc(test, G133_CHUNK, GFP_KERNEL);
-	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, buf);
 
 	t = kthread_run(g133_write_all, &w, "g133-writer");
 	KUNIT_ASSERT_FALSE_MSG(test, IS_ERR(t), "%s: kthread_run: %ld", what,
@@ -157,44 +171,34 @@ static void g133_round(struct kunit *test, bool write_direct,
 
 	filp_close(rf, NULL);
 	filp_close(wf, NULL);
+
+	/* rm $TEST_DIR/io_test */
+	xfs_settle_fput();
+	KUNIT_EXPECT_EQ(test, xfs_unlink(G133_FILE), 0);
+	KUNIT_EXPECT_EQ(test, xfs_wait_for_free_bytes(G133_SIZE), 0);
 }
 
 static void a_reader_and_a_writer_share_the_file(struct kunit *test)
 {
-	struct file *f;
-	loff_t pos = 0;
-	u8 *buf;
-
 	KUNIT_ASSERT_TRUE(test, xfstests_nfs_mounted());
 	KUNIT_ASSERT_EQ(test, xfs_mkdir(G133_ROOT), 0);
 	KUNIT_ASSERT_EQ(test,
 			kunit_add_action_or_reset(test, g133_remove_tree, NULL),
 			0);
 
-	/* the file both sides work on, filled with the first pattern */
-	buf = kunit_kmalloc(test, G133_CHUNK, GFP_KERNEL);
-	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, buf);
-	memset(buf, G133_PATTERN_A, G133_CHUNK);
-	f = filp_open(G133_FILE, O_RDWR | O_CREAT | O_TRUNC, 0644);
-	KUNIT_ASSERT_FALSE_MSG(test, IS_ERR(f), "open: %ld", PTR_ERR(f));
-	while (pos < G133_SIZE)
-		KUNIT_ASSERT_EQ(test, kernel_write(f, buf, G133_CHUNK, &pos),
-				(ssize_t)G133_CHUNK);
-	KUNIT_ASSERT_EQ(test, vfs_fsync(f, 0), 0);
-	filp_close(f, NULL);
-
 	g133_round(test, false, false, G133_PATTERN_B,
 		   "buffered writer, buffered reader");
-	g133_round(test, true, false, G133_PATTERN_A,
+	g133_round(test, true, false, G133_PATTERN_B,
 		   "direct writer, buffered reader");
 	g133_round(test, false, true, G133_PATTERN_B,
 		   "buffered writer, direct reader");
-	g133_round(test, true, true, G133_PATTERN_A,
+	g133_round(test, true, true, G133_PATTERN_B,
 		   "direct writer, direct reader");
 }
 
 static int g133_suite_init(struct kunit_suite *suite)
 {
+	xfstests_nfs_export_opts(G133_EXPORT);
 	return xfstests_nfs_get();
 }
 

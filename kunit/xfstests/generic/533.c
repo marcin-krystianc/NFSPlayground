@@ -2,20 +2,22 @@
 /*
  * xfstests generic/533 over a loopback NFS mount: a user xattr smoke test.
  *
- * Upstream's sequence on one file: no attributes to start with, set
- * user.NOISE, user.COLOUR and user.SIZE, list them, cycle the mount and
- * list them again, remove user.COLOUR, list again, fetch each value
- * individually, and fetch the removed one -- which must report "No such
- * attribute". It is generic/097 without the trusted namespace, so unlike
- * 097 it runs on NFS.
+ * Upstream's sequence on one file: no attributes to start with; set
+ * user.NOISE, user.COLOUR and user.SIZE; list them, cycle the mount and
+ * list them again; remove user.COLOUR and list; fetch each value, the
+ * removed one reporting "No such attribute"; change user.SIZE from small
+ * to huge and read it back; remove user.SIZE; try to remove user.WOOF,
+ * which never existed, and user.SIZE and user.COLOUR again -- all "No
+ * such attribute"; remove user.NOISE, and require the list to be empty
+ * before and after another mount cycle. It is generic/097 without the
+ * trusted namespace, so unlike 097 it runs on NFS.
  *
  * Over NFSv4.2 each step is its own operation (RFC 8276): SETXATTR,
  * LISTXATTRS, GETXATTR, REMOVEXATTR. The client caches attributes, so
- * every check here is made twice -- once through the client and once
- * against the server's own copy through the tmpfs export -- which is
- * what upstream's mount cycle is for and what the 020/037/070 ports found
- * to be necessary: a GETXATTR answered from the client's cache proves
- * nothing about what the server stored.
+ * the states upstream re-checks after a mount cycle, and the changes that
+ * lead to them, are checked against the server's own copy through the
+ * tmpfs export as well as through the client: a GETXATTR answered from
+ * the client's cache proves nothing about what the server stored.
  */
 
 #include <kunit/test.h>
@@ -117,6 +119,36 @@ static void user_xattrs_are_set_listed_and_removed(struct kunit *test)
 			    xfs_getxattr(G533_SERVER, "user.COLOUR", NULL, 0),
 			    (ssize_t)-ENODATA,
 			    "the server still answers for user.COLOUR");
+
+	/* change the value of the SIZE EA from small to huge */
+	KUNIT_ASSERT_EQ(test,
+			xfs_setxattr(G533_FILE, "user.SIZE", "huge", 4, 0), 0);
+	g533_expect_value(test, G533_FILE, "user.SIZE", "huge", "client");
+	g533_expect_value(test, G533_SERVER, "user.SIZE", "huge", "server");
+	g533_expect_value(test, G533_FILE, "user.NOISE", "woof", "client");
+	KUNIT_EXPECT_EQ(test, g533_count(test, G533_FILE), 2);
+
+	/* remove the SIZE EA */
+	KUNIT_ASSERT_EQ(test, xfs_removexattr(G533_FILE, "user.SIZE"), 0);
+	KUNIT_EXPECT_EQ(test, g533_count(test, G533_FILE), 1);
+	g533_expect_value(test, G533_FILE, "user.NOISE", "woof", "client");
+
+	/* removing what is not there: "No such attribute" */
+	KUNIT_EXPECT_EQ_MSG(test, xfs_removexattr(G533_FILE, "user.WOOF"),
+			    -ENODATA, "removing non-existent EA named woof");
+	KUNIT_EXPECT_EQ_MSG(test, xfs_removexattr(G533_FILE, "user.SIZE"),
+			    -ENODATA, "removing already removed EA SIZE");
+	KUNIT_EXPECT_EQ(test, g533_count(test, G533_FILE), 1);
+	KUNIT_EXPECT_EQ_MSG(test, xfs_removexattr(G533_FILE, "user.COLOUR"),
+			    -ENODATA, "removing already removed EA COLOUR");
+	KUNIT_EXPECT_EQ(test, g533_count(test, G533_FILE), 1);
+
+	/* remove remaining EA NOISE: none left, and none on the server */
+	KUNIT_ASSERT_EQ(test, xfs_removexattr(G533_FILE, "user.NOISE"), 0);
+	KUNIT_EXPECT_EQ_MSG(test, g533_count(test, G533_FILE), 0,
+			    "the client still lists attributes");
+	KUNIT_EXPECT_EQ_MSG(test, g533_count(test, G533_SERVER), 0,
+			    "the server still holds attributes");
 }
 
 static int g533_suite_init(struct kunit_suite *suite)

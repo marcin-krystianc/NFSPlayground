@@ -145,6 +145,10 @@ static void seek_data_from_inside_a_huge_hole(struct kunit *test)
 			3 * (G490_BSZ / 4) + 5) * G490_BSZ, data,
 		       "triple indirect tier");
 	g490_seek_data(test, f,
+		       (12 + G490_BSZ / 4 + 7 * (G490_BSZ / 4) * (G490_BSZ / 4) +
+			5 * (G490_BSZ / 4)) * G490_BSZ, data,
+		       "triple indirect tier, later");
+	g490_seek_data(test, f,
 		       (12 + G490_BSZ / 4 + 8 * (G490_BSZ / 4) * (G490_BSZ / 4) +
 			G490_BSZ / 4 + 11) * G490_BSZ, data,
 		       "last tier");

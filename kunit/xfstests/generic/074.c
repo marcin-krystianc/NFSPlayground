@@ -23,10 +23,11 @@
  * kthread_use_mm() to call vm_mmap() on its file.
  *
  * Deviations: upstream picks loops/files/children by `uname -a | grep
- * SMP`: 10/5/3 on SMP, 2/3/3 otherwise. The port always uses the 2/3/3
- * set; the SMP set would need 450 MiB of export for runs 2 and 3, inside
- * a UML kernel booted with mem=1G that also holds the client's page
- * cache. The export is 320 MiB instead of the fixture's 64 MiB default:
+ * SMP`: 10/5/3 on SMP, 2/3/3 otherwise. The KUnit UML kernel is built
+ * with CONFIG_SMP=y, so upstream would pick 10/5/3 here. The port uses
+ * the 2/3/3 set; the SMP set would need 450 MiB of export for runs 2 and
+ * 3, inside a UML kernel booted with mem=1G that also holds the client's
+ * page cache. The export is 320 MiB instead of the fixture's 64 MiB default:
  * -F with 512-byte blocks still writes every 4 KiB page, so runs 2 and 3
  * hold three children's three full 30 MiB files, 270 MiB. On a smaller
  * export the WRITEs fail with ENOSPC at writeback, which fstest never

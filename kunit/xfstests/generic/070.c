@@ -2,11 +2,17 @@
 /*
  * xfstests generic/070 over a loopback NFS mount: xattr storm with a model.
  *
- * Upstream runs fsstress in xattr mode. The port is a model-checked
+ * Upstream runs fsstress -p 1 -n 10000 (scaled by _scale_fsstress_args)
+ * with attr_set and attr_remove weighted 100 on top of fsstress's default
+ * operation mix, bulkstat, resvsp and unresvsp disabled; the pass
+ * criterion is that fsstress completes.
+ *
+ * Deviation: this is not fsstress. The port is a model-checked xattr
  * storm: thirty files, ten possible attribute names each, 1500 seeded
  * set/get/remove/list operations where a small model tracks which
  * (file, name) pairs exist and with which generation; every get must
  * match the model exactly and every list must have the model's count.
+ * fsstress's other operations are not run.
  */
 
 #include <kunit/test.h>

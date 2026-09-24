@@ -20,9 +20,11 @@
  * exactly the expected set, so a stray or missing name is caught rather
  * than only a differing file.
  *
- * Deviations: 2 dirs x 3 files x 3 deep at 4k, not 3 x 6 x 5 at 10k --
- * 45 files rather than about 1500, because every one of them is a
- * round-trip to the server and the export is a 64 MiB tmpfs.
+ * The tree is upstream's size: 3 subdirectories per level, 6 files in
+ * each directory, 5 levels deep, 10 KiB per file -- 364 directories and
+ * 2184 files, about 21 MiB. Upstream's files are zeroes from /dev/zero;
+ * here every byte identifies the file it belongs to, so a file that
+ * arrives with another's contents is caught too.
  */
 
 #include <kunit/test.h>
@@ -38,10 +40,10 @@
 #define G100_ROOT	XFS_MNT "/g100"
 #define G100_DST	G100_ROOT "/populate_root"
 
-#define G100_DIRS	2
-#define G100_FILES	3
-#define G100_DEPTH	3
-#define G100_FILESZ	4096
+#define G100_DIRS	3	/* _populate_fs -n 3 */
+#define G100_FILES	6	/* -f 6 */
+#define G100_DEPTH	5	/* -d 5 */
+#define G100_FILESZ	10240	/* -s 10, in KiB */
 
 struct g100_dirents {
 	struct dir_context	ctx;
@@ -76,7 +78,10 @@ static bool g100_actor(struct dir_context *ctx, const char *name, int len,
 /* every byte of every file identifies the file it belongs to */
 static u8 g100_byte(unsigned int seed, int off)
 {
-	return (u8)(seed * 31 + off);
+	/* each 32-bit word is the file's seed mixed with the word's index */
+	u32 word = seed * 2654435761u + off / 4;
+
+	return word >> ((off % 4) * 8);
 }
 
 static void g100_fill(u8 *buf, unsigned int seed)

@@ -3,10 +3,11 @@
  * xfstests generic/618 over a loopback NFS mount: two mid-sized xattrs on
  * one file.
  *
- * Upstream sets user.0 and user.1 to the same ~230-byte value (the output
- * of "seq 0 80"), cycles the mount and dumps both back. On XFS the second
- * set is what used to underflow the fork-offset calculation; the test is
- * kept generic because the sequence is ordinary.
+ * Upstream sets user.0 and user.1 to the same 232-byte value (the output
+ * of "seq 0 80", less the trailing newline that the backquotes strip),
+ * cycles the mount and dumps both back. On XFS the second set is what
+ * used to underflow the fork-offset calculation; the test is kept generic
+ * because the sequence is ordinary.
  *
  * Over NFSv4.2 it is two SETXATTRs of a value a few hundred bytes long,
  * which is past the point where the value stops fitting alongside the
@@ -35,7 +36,7 @@ static void g618_remove_tree(void *unused)
 	xfs_rmdir_settled(G618_ROOT);
 }
 
-/* upstream's `seq 0 80`: the numbers 0..80, one per line */
+/* upstream's `seq 0 80`: the numbers 0..80, one per line, no final newline */
 static size_t g618_build_value(char *buf, size_t size)
 {
 	size_t len = 0;
@@ -43,7 +44,7 @@ static size_t g618_build_value(char *buf, size_t size)
 
 	for (i = 0; i <= 80 && len < size; i++)
 		len += scnprintf(buf + len, size - len, "%d\n", i);
-	return len;
+	return len - 1;
 }
 
 static void g618_check(struct kunit *test, const char *path, const char *name,
@@ -72,7 +73,7 @@ static void two_mid_sized_xattrs_both_survive(struct kunit *test)
 	KUNIT_ASSERT_EQ(test, xfs_write_new_file(G618_FILE, "", 0), 0);
 
 	len = g618_build_value(value, sizeof(value));
-	KUNIT_ASSERT_GT(test, len, 200UL);
+	KUNIT_ASSERT_EQ(test, len, 232UL);
 
 	KUNIT_ASSERT_EQ(test,
 			xfs_setxattr(G618_FILE, "user.0", value, len, 0), 0);

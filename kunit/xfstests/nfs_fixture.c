@@ -67,6 +67,12 @@
 #include <linux/capability.h>
 #include <linux/uidgid.h>
 #include <linux/security.h>	/* security_task_fix_setuid, see xfs_seteuid() */
+#include <linux/dirent.h>	/* struct linux_dirent64, see xfs_getdents() */
+#include <linux/mman.h>		/* see xfs_holetest() */
+#include <linux/kthread.h>
+#include <linux/completion.h>
+#include <linux/sched/mm.h>
+#include <linux/falloc.h>
 
 #include "internal.h"		/* path_mount/path_umount, do_*at bodies */
 #include "nfsd/nfsd.h"		/* nfsd_svc, nfsd_vers, nfsd_mutex */
@@ -626,6 +632,647 @@ int xfs_removexattr(const char *path, const char *name)
 	}
 	path_put(&p);
 	return err;
+}
+
+/*
+ * xfstests' lib/random.c, which src/Makefile links into every src/ program
+ * ahead of libc, so upstream's nametest, dirstress, truncfile... draw from
+ * this generator rather than glibc's. Reproducing it is what lets a port
+ * replay upstream's exact sequence for a given seed (generic/007's golden
+ * counts depend on it). The arithmetic is u32 so it wraps the way the
+ * original's int32_t does when built without strict-overflow assumptions.
+ */
+static const s32 xfs_random_mt[128] = {
+	902906369, 2030498053, -473499623, 1640834941,
+	723406961, 1993558325, -257162999, -1627724755,
+	913952737, 278845029, 1327502073, -1261253155,
+	981676113, -1785280363, 1700077033, 366908557,
+	-1514479167, -682799163, 141955545, -830150595,
+	317871153, 1542036469, -946413879, -1950779155,
+	985397153, 626515237, 530871481, 783087261,
+	-1512358895, 1031357269, -2007710807, -1652747955,
+	-1867214463, 928251525, 1243003801, -2132510467,
+	1874683889, -717013323, 218254473, -1628774995,
+	-2064896159, 69678053, 281568889, -2104168611,
+	-165128239, 1536495125, -39650967, 546594317,
+	-725987007, 1392966981, 1044706649, 687331773,
+	-2051306575, 1544302965, -758494647, -1243934099,
+	-75073759, 293132965, -1935153095, 118929437,
+	807830417, -1416222507, -1550074071, -84903219,
+	1355292929, -380482555, -1818444007, -204797315,
+	170442609, -1636797387, 868931593, -623503571,
+	1711722209, 381210981, -161547783, -272740131,
+	-1450066095, 2116588437, 1100682473, 358442893,
+	-1529216831, 2116152005, -776333095, 1265240893,
+	-482278607, 1067190005, 333444553, 86502381,
+	753481377, 39000101, 1779014585, 219658653,
+	-920253679, 2029538901, 1207761577, -1515772851,
+	-236195711, 442620293, 423166617, -1763648515,
+	-398436623, -1749358155, -538598519, -652439379,
+	430550625, -1481396507, 2093206905, -1934691747,
+	-962631983, 1454463253, -1877118871, -291917555,
+	-1711673279, 201201733, -474645415, -96764739,
+	-1587365199, 1945705589, 1303896393, 1744831853,
+	381957665, 2135332261, -55996615, -1190135011,
+	1790562961, -1493191723, 475559465, 69069
+};
+
+static s32 xfs_irandm(struct xfs_random *r)
+{
+	s32 it = r->is[0], leh = r->is[1], nit;
+
+	if (it <= 0)
+		it = (s32)(((u32)it + (u32)it) ^ 593970775u);
+	else
+		it = (s32)((u32)it + (u32)it);
+	nit = (s32)((u32)it - 1);
+	leh = (s32)((u32)leh * (u32)xfs_random_mt[nit & 127] + (u32)nit);
+	r->is[0] = it;
+	r->is[1] = leh;
+	if (leh < 0)
+		leh = ~leh;
+	return leh;
+}
+
+void xfs_srandom(struct xfs_random *r, unsigned int seed)
+{
+	r->is[0] = seed;
+	r->is[1] = 0;
+	xfs_irandm(r);
+}
+
+long xfs_random(struct xfs_random *r)
+{
+	return xfs_irandm(r);
+}
+
+/*
+ * getdents64(2) over iterate_dir(), batching the way fs/readdir.c's
+ * filldir64() does: a record takes ALIGN(offsetof(d_name) + namlen + 1, 8)
+ * bytes of the caller's buffer, a record that does not fit ends the batch
+ * (-EINVAL if it is the first), each record's d_off is the offset of the
+ * record after it, and the last one's is the directory position the call
+ * leaves behind.
+ */
+struct xfs_getdents_ctx {
+	struct dir_context	ctx;
+	struct xfs_dirent	*ents;
+	int			max, n;
+	size_t			left;
+	int			error;
+};
+
+static bool xfs_getdents_actor(struct dir_context *ctx, const char *name,
+			       int namlen, loff_t offset, u64 ino,
+			       unsigned int d_type)
+{
+	struct xfs_getdents_ctx *g = container_of(ctx, struct xfs_getdents_ctx,
+						  ctx);
+	size_t reclen = ALIGN(offsetof(struct linux_dirent64, d_name) +
+			      namlen + 1, sizeof(u64));
+	struct xfs_dirent *e;
+
+	if (reclen > g->left || g->n == g->max) {
+		if (!g->n)
+			g->error = -EINVAL;
+		return false;
+	}
+	if (g->n)
+		g->ents[g->n - 1].d_off = offset;
+	e = &g->ents[g->n++];
+	namlen = min_t(int, namlen, NAME_MAX);
+	memcpy(e->name, name, namlen);
+	e->name[namlen] = '\0';
+	e->ino = ino;
+	e->type = d_type;
+	g->left -= reclen;
+	return true;
+}
+
+int xfs_getdents(struct file *dir, struct xfs_dirent *ents, int max,
+		 size_t bufsize)
+{
+	struct xfs_getdents_ctx g = {
+		.ctx.actor = xfs_getdents_actor,
+		.ents = ents,
+		.max = max,
+		.left = bufsize,
+	};
+	int err = iterate_dir(dir, &g.ctx);
+
+	if (g.n)
+		ents[g.n - 1].d_off = g.ctx.pos;
+	if (err)
+		return err;
+	return g.n ? g.n : g.error;
+}
+
+size_t xfs_libc_dirbuf(struct file *dir)
+{
+	struct kstat st;
+
+	/* opendir() fails if its fstat() does */
+	if (vfs_getattr(&dir->f_path, &st, STATX_BASIC_STATS,
+			AT_STATX_SYNC_AS_STAT))
+		return 0;
+	return max_t(size_t, st.blksize, 32768);
+}
+
+/*
+ * src/t_dir_offset2 <dir> [bufsize [+name|-name]]: read the directory
+ * with getdents64 in bufsize batches, recording every entry's d_off and
+ * d_ino and failing on a d_off seen twice; with a name, create ("+") or
+ * unlink ("-") it after the first batch, keep going on the old descriptor,
+ * then walk a descriptor opened after the change, which must show the
+ * entry iff it exists (with the inode it had, if it existed before);
+ * finally lseek to each recorded d_off from the last entry back and check
+ * that the next getdents starts with the entry recorded there.
+ */
+#define XFS_TDO2_HISTORY	1024	/* HISTORY_LEN */
+
+void xfs_t_dir_offset2(struct kunit *test, const char *dir, size_t bufsize,
+		       const char *arg)
+{
+	loff_t *off_hist;
+	u64 *ino_hist;
+	struct xfs_dirent *ents;
+	struct file *fd, *fd2 = NULL, *first;
+	const char *filename = NULL;
+	char *path;
+	struct kstat st = {};
+	bool exists = false, found = false;
+	int max = bufsize / 24 + 1, modify = 0;
+	int total = 0, n, i, j;
+
+	off_hist = kunit_kcalloc(test, XFS_TDO2_HISTORY, sizeof(*off_hist),
+				 GFP_KERNEL);
+	ino_hist = kunit_kcalloc(test, XFS_TDO2_HISTORY, sizeof(*ino_hist),
+				 GFP_KERNEL);
+	ents = kunit_kcalloc(test, max, sizeof(*ents), GFP_KERNEL);
+	path = kunit_kzalloc(test, PATH_MAX, GFP_KERNEL);
+	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, path);
+	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, off_hist);
+	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, ino_hist);
+	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, ents);
+
+	if (arg) {
+		filename = arg;
+		if (arg[0] == '+' || arg[0] == '-') {
+			modify = arg[0] == '+' ? 1 : -1;
+			filename++;
+		}
+		snprintf(path, PATH_MAX, "%s/%s", dir, filename);
+		exists = !xfs_kstat(path, &st);
+	}
+
+	first = fd = filp_open(dir, O_RDONLY | O_DIRECTORY, 0);
+	KUNIT_ASSERT_FALSE_MSG(test, IS_ERR(fd), "open %s: %ld", dir,
+			       PTR_ERR(fd));
+	for (;;) {
+		n = xfs_getdents(fd, ents, max, bufsize);
+		if (n < 0) {
+			KUNIT_FAIL(test, "getdents: %d", n);
+			goto out;
+		}
+		if (modify && !fd2 && total == 0) {
+			/* create/unlink entry after first getdents */
+			if (modify > 0) {
+				KUNIT_EXPECT_EQ_MSG(test,
+						    xfs_write_new_file(path, "", 0),
+						    0, "openat %s", path);
+				exists = true;
+			} else {
+				KUNIT_EXPECT_EQ_MSG(test, xfs_unlink(path), 0,
+						    "unlinkat %s", path);
+				exists = false;
+			}
+			/* keep the old fd; walk a new one for stale or missing */
+			fd2 = filp_open(dir, O_RDONLY | O_DIRECTORY, 0);
+			if (IS_ERR(fd2)) {
+				KUNIT_FAIL(test, "open fd2: %ld", PTR_ERR(fd2));
+				fd2 = NULL;
+				goto out;
+			}
+		}
+		if (n == 0) {
+			if (!fd2 || fd == fd2)
+				break;
+			/* re-iterate with the new fd, leaving the old one open */
+			fd = fd2;
+			total = 0;
+			found = false;
+			continue;
+		}
+		for (i = 0; i < n; i++, total++) {
+			if (total >= XFS_TDO2_HISTORY) {
+				KUNIT_FAIL(test, "too many files");
+				break;
+			}
+			for (j = 0; j < total; j++)
+				KUNIT_EXPECT_NE_MSG(test, off_hist[j], ents[i].d_off,
+						    "entries %d and %d have duplicate d_off %lld",
+						    j, total, ents[i].d_off);
+			off_hist[total] = ents[i].d_off;
+			ino_hist[total] = ents[i].ino;
+			if (filename && !strcmp(filename, ents[i].name)) {
+				found = true;
+				if (st.ino)
+					KUNIT_EXPECT_EQ_MSG(test, ents[i].ino,
+							    st.ino,
+							    "entry %s has inode %llu, expected %llu",
+							    filename, ents[i].ino,
+							    st.ino);
+			}
+		}
+	}
+
+	if (filename)
+		KUNIT_EXPECT_EQ_MSG(test, found, exists, "%s entry %s",
+				    exists ? "missing" : "stale", filename);
+
+	/* check if seek works correctly */
+	for (i = total - 1; i >= 0; i--) {
+		loff_t pos = i > 0 ? off_hist[i - 1] : 0;
+
+		KUNIT_EXPECT_EQ_MSG(test, vfs_llseek(fd, pos, SEEK_SET), pos,
+				    "lseek to %lld", pos);
+		n = xfs_getdents(fd, ents, max, bufsize);
+		if (n <= 0) {
+			KUNIT_FAIL(test, "getdents returned %d on entry %d", n,
+				   i);
+			continue;
+		}
+		KUNIT_EXPECT_EQ_MSG(test, ents[0].ino, ino_hist[i],
+				    "entry %d has inode %llu, expected %llu",
+				    i, ents[0].ino, ino_hist[i]);
+	}
+out:
+	if (fd2)
+		filp_close(fd2, NULL);
+	filp_close(first, NULL);
+	kunit_kfree(test, path);
+	kunit_kfree(test, ents);
+	kunit_kfree(test, ino_hist);
+	kunit_kfree(test, off_hist);
+}
+
+/*
+ * src/holetest, one size, as its main() runs it: the file is sized three
+ * ways in turn -- ftruncate plus an explicit zero fill through a shared
+ * mapping, posix_fallocate, plain ftruncate -- and each time test_this()
+ * maps it, starts two threads that write their own id at their own offset
+ * (a quarter and three quarters into each page), waits, and checks every
+ * page holds both ids. -w makes thread 0 use pwrite instead of the
+ * mapping; -r reads every page first (prefault); -p maps MAP_PRIVATE, and
+ * then also remaps the file read-only to check no write reached it.
+ *
+ * The threads are kthreads borrowing this thread's mm. Beyond upstream, a
+ * shared run also reads both ids back from the server's copy of the file
+ * after the mapping is gone and the file closed.
+ */
+#define XFS_HOLETEST_THREADS	2
+
+struct xfs_holetest_marker {
+	struct mm_struct	*mm;
+	struct file		*f;
+	unsigned long		va;
+	unsigned long		npages;
+	unsigned long		pgoff;
+	u64			id;
+	bool			use_wr;
+	int			err;
+	struct completion	done;
+};
+
+/* pt_page_marker() and pt_write_marker() */
+static int xfs_holetest_mark(void *arg)
+{
+	struct xfs_holetest_marker *m = arg;
+	unsigned long i;
+
+	if (!m->use_wr)
+		kthread_use_mm(m->mm);
+	for (i = 0; i < m->npages && !m->err; i++) {
+		if (m->use_wr) {
+			loff_t pos = (loff_t)i * PAGE_SIZE + m->pgoff;
+
+			if (kernel_write(m->f, &m->id, sizeof(m->id), &pos) !=
+			    sizeof(m->id))
+				m->err = -EIO;
+		} else if (copy_to_user((void __user *)(m->va + i * PAGE_SIZE +
+							m->pgoff),
+					&m->id, sizeof(m->id))) {
+			m->err = -EFAULT;
+		}
+	}
+	if (!m->use_wr)
+		kthread_unuse_mm(m->mm);
+	complete(&m->done);
+	return 0;
+}
+
+/* verify_mapping(): the number of slots that do not hold their id */
+static int xfs_holetest_verify(struct kunit *test, unsigned long va,
+			       unsigned long npages, const u64 *expect,
+			       const char *what)
+{
+	int errcnt = 0, i;
+	unsigned long p;
+	u64 v;
+
+	for (p = 0; p < npages; p++) {
+		for (i = 0; i < XFS_HOLETEST_THREADS; i++) {
+			unsigned long off = (PAGE_SIZE / 4) * (2 * i + 1);
+
+			if (copy_from_user(&v, (void __user *)(va + p * PAGE_SIZE +
+							       off),
+					   sizeof(v)))
+				v = ~expect[i];
+			if (v != expect[i] && errcnt++ < 3)
+				KUNIT_FAIL(test,
+					   "%s: thread %d, offset %08lx, %08llx != %08llx",
+					   what, i, p * PAGE_SIZE + off, v,
+					   expect[i]);
+		}
+	}
+	return errcnt;
+}
+
+/* test_this() */
+static void xfs_holetest_this(struct kunit *test, struct file *f,
+			      loff_t sz, unsigned int flags, const char *what)
+{
+	bool private = flags & XFS_HOLETEST_PRIVATE;
+	struct xfs_holetest_marker m[XFS_HOLETEST_THREADS] = {};
+	u64 tid[XFS_HOLETEST_THREADS], zero[XFS_HOLETEST_THREADS] = {};
+	unsigned long npages = sz / PAGE_SIZE, va, p;
+	struct task_struct *t;
+	u8 c;
+	int i;
+
+	va = kunit_vm_mmap(test, f, 0, sz, PROT_READ | PROT_WRITE,
+			   private ? MAP_PRIVATE : MAP_SHARED, 0);
+	KUNIT_ASSERT_NE_MSG(test, va, 0UL, "%s: mmap()", what);
+
+	if (flags & XFS_HOLETEST_PREFAULT)
+		for (p = 0; p < npages; p++)
+			if (copy_from_user(&c, (void __user *)(va + p * PAGE_SIZE),
+					   1) || c)
+				KUNIT_FAIL(test,
+					   "%s: prefaulting found non-zero value in page %lu",
+					   what, p);
+
+	for (i = 0; i < XFS_HOLETEST_THREADS; i++) {
+		tid[i] = 0x4f4c4500000000ULL | (i + 1);
+		m[i] = (struct xfs_holetest_marker){
+			.mm = current->mm,
+			.f = f,
+			.va = va,
+			.npages = npages,
+			.pgoff = (PAGE_SIZE / 4) * (2 * i + 1),
+			.id = tid[i],
+			.use_wr = i == 0 && (flags & XFS_HOLETEST_WRITE),
+		};
+		init_completion(&m[i].done);
+		t = kthread_run(xfs_holetest_mark, &m[i], "holetest-%d", i);
+		KUNIT_ASSERT_FALSE_MSG(test, IS_ERR(t), "%s: thread %d: %ld",
+				       what, i, PTR_ERR(t));
+	}
+	for (i = 0; i < XFS_HOLETEST_THREADS; i++) {
+		wait_for_completion(&m[i].done);
+		KUNIT_EXPECT_EQ_MSG(test, m[i].err, 0, "%s: thread %d failed",
+				    what, i);
+	}
+
+	KUNIT_EXPECT_EQ_MSG(test,
+			    xfs_holetest_verify(test, va, npages, tid, what), 0,
+			    "%s: error(s) detected", what);
+	vm_munmap(va, sz);
+
+	if (private) {
+		/* check that no writes propagated into the original file */
+		va = kunit_vm_mmap(test, f, 0, sz, PROT_READ, MAP_PRIVATE, 0);
+		KUNIT_ASSERT_NE_MSG(test, va, 0UL, "%s: mmap()", what);
+		KUNIT_EXPECT_EQ_MSG(test,
+				    xfs_holetest_verify(test, va, npages, zero,
+							what), 0,
+				    "%s: private writes reached the file", what);
+		vm_munmap(va, sz);
+	}
+}
+
+/* not upstream: after close, the server's copy holds what was expected */
+static void xfs_holetest_server(struct kunit *test, const char *server,
+				loff_t sz, unsigned int flags, const char *what)
+{
+	bool private = flags & XFS_HOLETEST_PRIVATE;
+	u64 v, want;
+	loff_t p;
+	int i, errs = 0;
+
+	for (p = 0; p < sz && errs < 3; p += PAGE_SIZE) {
+		for (i = 0; i < XFS_HOLETEST_THREADS; i++) {
+			loff_t off = p + (PAGE_SIZE / 4) * (2 * i + 1);
+
+			want = private ? 0 : 0x4f4c4500000000ULL | (i + 1);
+			if (xfs_read_range(server, &v, sizeof(v), off) !=
+			    sizeof(v) || v != want) {
+				KUNIT_FAIL(test,
+					   "%s: server offset %08llx holds %08llx, expected %08llx",
+					   what, off, v, want);
+				errs++;
+			}
+		}
+	}
+}
+
+void xfs_holetest(struct kunit *test, const char *name, loff_t sz,
+		  unsigned int flags)
+{
+	static const char * const tests[] = {
+		"zero-filled", "posix_fallocate", "ftruncate",
+	};
+	char *path, *server, *what;
+	struct file *f;
+	int k, err;
+
+	path = kunit_kzalloc(test, 3 * 128, GFP_KERNEL);
+	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, path);
+	server = path + 128;
+	what = path + 256;
+	snprintf(path, 128, XFS_MNT "/%s", name);
+	snprintf(server, 128, XFS_EXPORT "/%s", name);
+
+	for (k = 0; k < ARRAY_SIZE(tests); k++) {
+		snprintf(what, 128, "%s test, sz = %lld", tests[k], sz);
+		xfs_unlink(path);
+		f = filp_open(path, O_RDWR | O_EXCL | O_CREAT | O_LARGEFILE,
+			      0644);
+		KUNIT_ASSERT_FALSE_MSG(test, IS_ERR(f), "%s: open: %ld", what,
+				       PTR_ERR(f));
+		if (k == 1) {
+			err = vfs_fallocate(f, 0, 0, sz);
+		} else {
+			err = xfs_ftruncate(f, sz);
+			if (!err && k == 0) {
+				/* explicitly zero-fill through a mapping */
+				unsigned long va, off;
+
+				va = kunit_vm_mmap(test, f, 0, sz,
+						   PROT_READ | PROT_WRITE,
+						   MAP_SHARED, 0);
+				KUNIT_ASSERT_NE(test, va, 0UL);
+				for (off = 0; off < sz; off += PAGE_SIZE)
+					if (clear_user((void __user *)(va + off),
+						       PAGE_SIZE))
+						err = -EFAULT;
+				vm_munmap(va, sz);
+			}
+		}
+		KUNIT_ASSERT_EQ_MSG(test, err, 0, "%s: sizing the file", what);
+
+		xfs_holetest_this(test, f, sz, flags, what);
+		filp_close(f, NULL);
+		xfs_holetest_server(test, server, sz, flags, what);
+		/*
+		 * unlink(), and -- unlike a local filesystem -- wait for the
+		 * space to come back: the delayed fput of the file closed
+		 * here would otherwise turn the REMOVE into a sillyrename
+		 * that keeps sz allocated through the next sizing.
+		 */
+		xfs_settle_fput();
+		KUNIT_EXPECT_EQ_MSG(test, xfs_unlink(path), 0, "%s: unlink()",
+				    what);
+		KUNIT_EXPECT_EQ_MSG(test, xfs_wait_for_free_bytes(sz), 0,
+				    "%s: the space never came back", what);
+	}
+	kunit_kfree(test, path);
+}
+
+/*
+ * src/mmap-rw-fault [-2] <file>: five times over, a two-page file whose
+ * first page is a hole and whose second holds one byte value, written
+ * with O_DIRECT, is reopened (buffered or O_DIRECT) and mapped
+ * MAP_PRIVATE, and one I/O is done whose user buffer is in that mapping,
+ * so the kernel faults a page of the file it is doing I/O on:
+ *
+ *	'a' buffered pread of page 1 into mapped page 0
+ *	'b' the same with O_DIRECT
+ *	'c' buffered pwrite of mapped page 1 to offset 0
+ *	'd' the same with O_DIRECT
+ *	'e' O_DIRECT pread of the hole at offset 0 into mapped page 0
+ *	'f' (-2 only) O_DIRECT pwrite of mapped page 1 onto the offset it maps
+ *
+ * Each I/O must move a whole page, and after the first five the mapped
+ * page 0 must hold what was read or written. Beyond upstream, 'f' checks
+ * the server's copy of page 1 still holds 'f' afterwards.
+ */
+static struct file *xfs_mrf_init(struct kunit *test, const char *path,
+				 u8 c, int flags, unsigned long *addr, u8 *page)
+{
+	struct file *f;
+	loff_t pos = PAGE_SIZE;
+
+	xfs_unlink(path);
+	memset(page, c, PAGE_SIZE);
+	f = filp_open(path, O_CREAT | O_TRUNC | O_WRONLY | O_DIRECT, 0666);
+	KUNIT_ASSERT_FALSE_MSG(test, IS_ERR(f), "create: %ld", PTR_ERR(f));
+	KUNIT_ASSERT_EQ(test, xfs_direct_write(f, page, PAGE_SIZE, &pos),
+			(ssize_t)PAGE_SIZE);
+	filp_close(f, NULL);
+	f = filp_open(path, flags, 0);
+	KUNIT_ASSERT_FALSE_MSG(test, IS_ERR(f), "reopen: %ld", PTR_ERR(f));
+	*addr = kunit_vm_mmap(test, f, 0, 2 * PAGE_SIZE,
+			      PROT_READ | PROT_WRITE, MAP_PRIVATE, 0);
+	KUNIT_ASSERT_NE_MSG(test, *addr, 0UL, "mmap failed");
+	return f;
+}
+
+static void xfs_mrf_done(struct kunit *test, struct file *f,
+			 unsigned long addr)
+{
+	KUNIT_EXPECT_EQ(test, vfs_fsync(f, 0), 0);
+	vm_munmap(addr, 2 * PAGE_SIZE);
+	filp_close(f, NULL);
+}
+
+static void xfs_mrf_check(struct kunit *test, unsigned long addr,
+			  const u8 *want, u8 *scratch, const char *what)
+{
+	KUNIT_ASSERT_EQ_MSG(test,
+			    copy_from_user(scratch, (void __user *)addr,
+					   PAGE_SIZE), 0UL,
+			    "%s: reading the mapping back", what);
+	KUNIT_EXPECT_EQ_MSG(test, memcmp(scratch, want, PAGE_SIZE), 0,
+			    "%s is broken", what);
+}
+
+void xfs_mmap_rw_fault(struct kunit *test, const char *name, bool opt_2)
+{
+	static const struct {
+		u8 c;
+		bool direct, write;
+		loff_t pos;
+		const char *what;
+	} cases[] = {
+		{ 'a', false, false, PAGE_SIZE, "pread" },
+		{ 'b', true,  false, PAGE_SIZE, "pread (O_DIRECT)" },
+		{ 'c', false, true,  0, "pwrite" },
+		{ 'd', true,  true,  0, "pwrite (O_DIRECT)" },
+		{ 'e', true,  false, 0, "pread (O_DIRECT) from hole" },
+	};
+	char path[128], server[128];
+	unsigned long addr;
+	struct file *f;
+	u8 *page, *scratch;
+	loff_t pos;
+	ssize_t n;
+	int i;
+
+	snprintf(path, sizeof(path), XFS_MNT "/%s", name);
+	snprintf(server, sizeof(server), XFS_EXPORT "/%s", name);
+	page = kunit_kmalloc(test, PAGE_SIZE, GFP_KERNEL);
+	scratch = kunit_kmalloc(test, PAGE_SIZE, GFP_KERNEL);
+	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, page);
+	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, scratch);
+
+	for (i = 0; i < ARRAY_SIZE(cases); i++) {
+		f = xfs_mrf_init(test, path, cases[i].c,
+				 O_RDWR | (cases[i].direct ? O_DIRECT : 0),
+				 &addr, page);
+		pos = cases[i].pos;
+		/* a write sources mapped page 1, a read fills mapped page 0 */
+		n = xfs_user_rw(f, (void __user *)(addr +
+			(cases[i].write ? PAGE_SIZE : 0)), PAGE_SIZE, &pos,
+				cases[i].write, cases[i].direct);
+		KUNIT_EXPECT_EQ_MSG(test, n, (ssize_t)PAGE_SIZE, "%s: %zd",
+				    cases[i].what, n);
+		if (cases[i].c == 'e')
+			memset(page, 0, PAGE_SIZE);
+		xfs_mrf_check(test, addr, page, scratch, cases[i].what);
+		xfs_mrf_done(test, f, addr);
+	}
+
+	if (opt_2) {
+		f = xfs_mrf_init(test, path, 'f', O_RDWR | O_DIRECT, &addr, page);
+		pos = PAGE_SIZE;
+		n = xfs_user_rw(f, (void __user *)(addr + PAGE_SIZE), PAGE_SIZE,
+				&pos, true, true);
+		KUNIT_EXPECT_EQ_MSG(test, n, (ssize_t)PAGE_SIZE,
+				    "pwrite (O_DIRECT) onto itself: %zd", n);
+		xfs_mrf_done(test, f, addr);
+		KUNIT_ASSERT_EQ(test,
+				xfs_read_range(server, scratch, PAGE_SIZE,
+					       PAGE_SIZE), (ssize_t)PAGE_SIZE);
+		KUNIT_EXPECT_TRUE_MSG(test, !memchr_inv(scratch, 'f', PAGE_SIZE),
+				      "the page written onto itself changed");
+	}
+
+	/* if (unlink(filename)) err(...) */
+	xfs_settle_fput();
+	KUNIT_EXPECT_EQ(test, xfs_unlink(path), 0);
+	kunit_kfree(test, scratch);
+	kunit_kfree(test, page);
 }
 
 int xfs_posix_lock(struct file *f, unsigned char type, loff_t start,

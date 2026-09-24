@@ -18,9 +18,9 @@
  * whole block after the SETATTR, or lets the server rewrite the tail from
  * stale data, the direct reads see 0x01 again.
  *
- * Deviations: 200 direct reads rather than sixty seconds of them, and the
- * unprivileged half runs with xfs_switch_creds() rather than as a
- * separate user process.
+ * Deviations: the direct reads go on for 10 s rather than WAITTIME (60 s),
+ * still one a second from the truncate on, and the unprivileged half runs
+ * with xfs_switch_creds() rather than as a separate user process.
  */
 
 #include <kunit/test.h>
@@ -28,6 +28,8 @@
 #include <linux/errno.h>
 #include <linux/fs.h>
 #include <linux/file.h>
+#include <linux/delay.h>
+#include <linux/timekeeping.h>
 
 #include "xfstests_nfs_fixture.h"
 
@@ -39,7 +41,7 @@
 #define G125_GID	1000
 #define G125_BUFSZ	4096
 #define G125_TRUNC	1000
-#define G125_READS	200
+#define G125_WAITTIME	10	/* seconds; trunc.c's WAITTIME is 60 */
 
 static void g125_remove_tree(void *unused)
 {
@@ -89,6 +91,7 @@ static void an_unprivileged_ftruncate_and_unlink(struct kunit *test)
 /* src/trunc: the truncate that lands inside a dirty block */
 static void direct_reads_after_a_truncate_see_the_new_data(struct kunit *test)
 {
+	time64_t starttime;
 	struct file *f;
 	loff_t pos;
 	u8 *buf;
@@ -123,6 +126,7 @@ static void direct_reads_after_a_truncate_see_the_new_data(struct kunit *test)
 	KUNIT_ASSERT_EQ(test, kernel_write(f, buf, G125_BUFSZ, &pos),
 			(ssize_t)G125_BUFSZ);
 	KUNIT_ASSERT_EQ(test, xfs_ftruncate(f, G125_TRUNC), 0);
+	starttime = ktime_get_seconds();
 	KUNIT_ASSERT_EQ_MSG(test, vfs_fsync(f, 1), 0, "fdatasync failed");
 	filp_close(f, NULL);
 
@@ -130,7 +134,8 @@ static void direct_reads_after_a_truncate_see_the_new_data(struct kunit *test)
 	f = filp_open(G125_FILE, O_CREAT | O_RDWR | O_DIRECT, 0666);
 	KUNIT_ASSERT_FALSE_MSG(test, IS_ERR(f), "direct reopen: %ld",
 			       PTR_ERR(f));
-	for (i = 0; i < G125_READS; i++) {
+	/* iterate direct reads for WAITTIME or until failure, one a second */
+	for (i = 0; ktime_get_seconds() - starttime <= G125_WAITTIME; i++) {
 		ssize_t n;
 
 		memset(buf, 0, G125_BUFSZ);
@@ -142,11 +147,13 @@ static void direct_reads_after_a_truncate_see_the_new_data(struct kunit *test)
 		for (j = 0; j < 100; j++)
 			if (buf[j] != 2) {
 				KUNIT_FAIL(test,
-					   "read %d: byte %d is %d, expected 2",
-					   i, j, buf[j]);
+					   "Failed after %lld secs: read %d's",
+					   ktime_get_seconds() - starttime,
+					   buf[j]);
 				filp_close(f, NULL);
 				return;
 			}
+		msleep(1000);
 	}
 	filp_close(f, NULL);
 }

@@ -166,7 +166,7 @@ static void mapped_writes_survive_truncate_down_and_up(struct kunit *test)
 				       c->name, PTR_ERR(f));
 
 		/* truncate, then pwrite the X fill -- ordinary writes */
-		KUNIT_ASSERT_EQ(test, xfs_truncate(G029_FILE, c->size), 0);
+		KUNIT_ASSERT_EQ(test, xfs_ftruncate(f, c->size), 0);
 		memset(scratch, G029_X, PAGE_SIZE);
 		for (pos = 0; pos < c->size; ) {
 			size_t n = min_t(loff_t, c->size - pos, PAGE_SIZE);
@@ -189,7 +189,7 @@ static void mapped_writes_survive_truncate_down_and_up(struct kunit *test)
 			    c->name);
 		memset(want + c->zoff, G029_Z, c->zlen);
 
-		KUNIT_ASSERT_EQ_MSG(test, xfs_truncate(G029_FILE, c->tdown), 0,
+		KUNIT_ASSERT_EQ_MSG(test, xfs_ftruncate(f, c->tdown), 0,
 				    "%s: truncate down", c->name);
 		/* everything at or past the new size is gone */
 
@@ -200,7 +200,7 @@ static void mapped_writes_survive_truncate_down_and_up(struct kunit *test)
 			memset(want + c->woff, G029_W, c->wlen);
 		}
 
-		KUNIT_ASSERT_EQ_MSG(test, xfs_truncate(G029_FILE, c->tup), 0,
+		KUNIT_ASSERT_EQ_MSG(test, xfs_ftruncate(f, c->tup), 0,
 				    "%s: truncate up", c->name);
 		/* the re-extended region reads as a hole */
 		memset(want + c->tdown, 0, c->tup - c->tdown);

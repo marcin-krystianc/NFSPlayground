@@ -11,8 +11,8 @@
  * 64-bit on the wire while the client works in loff_t, so an offset one
  * below S64_MAX is the value where a sign error, an off-by-one in the
  * s_maxbytes check, or an overflow in offset + length shows up. The
- * generic/308 port covers 1 TiB and the MAX_NON_LFS boundary; this one
- * goes to the actual ceiling.
+ * generic/308 port writes just under 16 TiB; this one goes to the actual
+ * ceiling.
  *
  * Deviations: the mount cycle is the fixture's usual pair -- the page
  * cache is dropped and the byte is read again through the client, and the

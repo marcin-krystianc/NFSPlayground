@@ -210,10 +210,12 @@ so writes cannot be dropped and replayed. That is the largest single gap.
 
 Each port is meant to perform upstream's operations and assert upstream's
 outcome, at reduced scale where the original's magnitudes do not fit an
-in-kernel tmpfs export, and single-threaded where the original forks. Where
-that reduction loses the point of the test, the port says so in its header;
+in-kernel tmpfs export, with kthreads where the original forks or starts
+threads. Every difference from upstream is stated in the port's header;
 where upstream keeps an NFS-specific golden image (`035.out.nfs`), the port
 follows it rather than the default one.
+How far the ports meet this, case by case, is in
+[xfstests-ports-fidelity.md](xfstests-ports-fidelity.md).
 
 The families, by what they exercise:
 
@@ -226,12 +228,12 @@ The families, by what they exercise:
   shadow model, 029/030 mapped writes, 069 O_APPEND, 074 fstest with
   three writer kthreads, 100 a copied tree, 124 positional patterns, 129,
   132, 169, 213 ALLOCATE boundaries, 214 writes into preallocated ranges,
-  286 seek-driven sparse copy, 308 1TB offsets, 525 the top of the 64-bit
-  offset range, 406 one large direct write, 639 a write beside uncached
-  data.
+  286 seek-driven sparse copy, 308 offsets just under 16 TiB, 525 the top
+  of the 64-bit offset range, 406 one large direct write, 639 a write
+  beside uncached data.
 - **Direct I/O**: 130 the buffered/direct battery, 135 the three write
   paths, 412 a truncate into a hole between them, 450 reads at and past
-  EOF, 609 O_DIRECT with O_DSYNC, 125 direct reads after a truncate, 355
+  EOF, 609 O_DIRECT with O_SYNC, 125 direct reads after a truncate, 355
   suid stripped on a direct write.
 - **Faults and mappings**: 246 writev from a mapping, 248 pwrite from the
   same page, 443 writev faulting on its own iovecs, 638 an overlapping
@@ -256,7 +258,7 @@ The families, by what they exercise:
 - **copy_file_range as NFSv4.2 COPY**: 430 into new files, 431 one byte at
   a time, 432/433 rearranging an existing file, 434 what it must refuse;
   249 is the sendfile/splice equivalent.
-- **Concurrency**, each with one kthread beside the test thread: 084 a
+- **Concurrency**, with kthreads for upstream's processes and threads: 084 a
   link storm against a vanishing target, 133 a reader and a writer, 247 a
   direct overwriter against a mapped writer, 340/344/346/354 the holetest
   family, 364 direct writes and fsync on one fd, 391 interleaved direct

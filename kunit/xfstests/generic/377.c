@@ -18,10 +18,12 @@
  * means either a truncated list or a buffer overrun. The zero-length call
  * is the size probe every listxattr caller makes first.
  *
- * Deviations: the names are compared as a set (see generic/337 -- the
- * sorted order upstream prints is getfattr's, not the filesystem's), and
- * the ERANGE sizes are computed from the names rather than hardcoded as
- * 1/9/11, so they keep meaning the same thing if a name changes.
+ * The names are compared as a set, as upstream's sort does. The sizes 9
+ * and 11 are upstream's: strlen("user.foo") + 1 and strlen("user.hello") + 1.
+ *
+ * Deviation: case 2 names a missing file on the mount instead of "".
+ * Upstream's ENOENT for "" comes from getname() in the syscall, before any
+ * lookup; kern_path() has no such check and resolves "" to the cwd.
  */
 
 #include <kunit/test.h>
@@ -63,9 +65,24 @@ static bool g377_listed(const char *list, ssize_t len, const char *name)
 	return false;
 }
 
+static void g377_expect_all(struct kunit *test, const char *list,
+			    ssize_t len, size_t total)
+{
+	int i;
+
+	KUNIT_ASSERT_EQ_MSG(test, len, (ssize_t)total,
+			    "listxattr returned %zd, expected %zu", len, total);
+	for (i = 0; i < ARRAY_SIZE(g377_xattrs); i++)
+		KUNIT_EXPECT_TRUE_MSG(test,
+				      g377_listed(list, len,
+						  g377_xattrs[i].name),
+				      "listxattr omitted %s",
+				      g377_xattrs[i].name);
+}
+
 static void listxattr_sizes_are_all_or_erange(struct kunit *test)
 {
-	size_t total = 0, first_two = 0, shortest = ~0UL;
+	size_t total = 0;
 	char *list;
 	ssize_t len;
 	int i;
@@ -86,22 +103,21 @@ static void listxattr_sizes_are_all_or_erange(struct kunit *test)
 						 strlen(x->value), 0),
 				    0, "setting %s failed", x->name);
 		total += n;
-		if (i < 2)
-			first_two += n;
-		shortest = min(shortest, n);
 	}
 
 	list = kunit_kzalloc(test, PAGE_SIZE, GFP_KERNEL);
 	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, list);
 
-	/* 1. size 0: the probe every caller makes first */
+	/* 1. no size: probe with size 0, then list into exactly that much */
 	len = xfs_listxattr(G377_FILE, NULL, 0);
-	KUNIT_EXPECT_EQ_MSG(test, len, (ssize_t)total,
+	KUNIT_ASSERT_EQ_MSG(test, len, (ssize_t)total,
 			    "the size probe returned %zd, expected %zu", len,
 			    total);
+	len = xfs_listxattr(G377_FILE, list, len);
+	g377_expect_all(test, list, len, total);
 
-	/* 2. a file that is not there */
-	len = xfs_listxattr(G377_MISSING, list, PAGE_SIZE);
+	/* 2. a missing file: the size probe fails with ENOENT */
+	len = xfs_listxattr(G377_MISSING, NULL, 0);
 	KUNIT_EXPECT_EQ_MSG(test, len, (ssize_t)-ENOENT,
 			    "listxattr on a missing file returned %zd", len);
 
@@ -111,30 +127,21 @@ static void listxattr_sizes_are_all_or_erange(struct kunit *test)
 			    "listxattr with a 1-byte buffer returned %zd",
 			    len);
 
-	/* 4. room for one name but not the list */
-	len = xfs_listxattr(G377_FILE, list, shortest);
+	/* 4. 9: room for user.foo but not the list */
+	len = xfs_listxattr(G377_FILE, list, strlen("user.foo") + 1);
 	KUNIT_EXPECT_EQ_MSG(test, len, (ssize_t)-ERANGE,
 			    "listxattr with room for one name returned %zd",
 			    len);
 
-	/* 5. room for the last name but not for the first two */
-	len = xfs_listxattr(G377_FILE, list, first_two - 1);
+	/* 5. 11: room for user.hello but not for the first two */
+	len = xfs_listxattr(G377_FILE, list, strlen("user.hello") + 1);
 	KUNIT_EXPECT_EQ_MSG(test, len, (ssize_t)-ERANGE,
-			    "listxattr with %zu bytes returned %zd",
-			    first_two - 1, len);
+			    "listxattr with 11 bytes returned %zd", len);
 
-	/* 6. and a buffer that is big enough */
+	/* 6. 500: bigger than needed */
 	memset(list, 0, PAGE_SIZE);
-	len = xfs_listxattr(G377_FILE, list, PAGE_SIZE);
-	KUNIT_ASSERT_EQ_MSG(test, len, (ssize_t)total,
-			    "listxattr returned %zd, expected %zu", len,
-			    total);
-	for (i = 0; i < ARRAY_SIZE(g377_xattrs); i++)
-		KUNIT_EXPECT_TRUE_MSG(test,
-				      g377_listed(list, len,
-						  g377_xattrs[i].name),
-				      "listxattr omitted %s",
-				      g377_xattrs[i].name);
+	len = xfs_listxattr(G377_FILE, list, 500);
+	g377_expect_all(test, list, len, total);
 }
 
 static int g377_suite_init(struct kunit_suite *suite)

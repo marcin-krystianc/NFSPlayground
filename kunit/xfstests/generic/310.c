@@ -1,27 +1,39 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * xfstests generic/310 over a loopback NFS mount: read(2) and readdir on
- * the same directory file at the same time.
+ * xfstests generic/310 over a loopback NFS mount: read(2) or lseek(2)
+ * racing readdir on the same directory descriptor.
  *
- * src/t_readdir_1 opens a directory, forks, and then has one side call
- * read(2) on the directory's file descriptor in a loop while the other
- * seeks it back to zero and walks it with readdir. (t_readdir_2 swaps
- * which side seeks.) read(2) on a directory fails -- EISDIR on Linux --
- * but it takes the same f_pos and the same inode lock on the way there,
- * and on ext3 the pair used to produce "bad entry in directory" errors.
- * The test's pass criterion is that dmesg gains no BUG, NULL dereference,
- * WARNING or lockdep report.
+ * Upstream fills a directory with 4096 files and runs two programs
+ * against it, each for RUN_TIME (30 s) before killing it:
  *
- * Over NFS the same fd carries the client's readdir cookie and its page
- * cache of directory entries, so a read(2) that touched f_pos, or a seek
- * that raced the walk, would show up as entries returned twice or not at
- * all. The port therefore checks what upstream cannot: every walk must
- * return exactly the entries that exist, and every read(2) must fail with
- * EISDIR rather than returning bytes.
+ *	t_readdir_1: opendir, fork; the child read(2)s the directory fd in
+ *	    a loop, the parent lseeks it to 0 and readdir(3)s to the end, in
+ *	    a loop
+ *	t_readdir_2: the same, but the child lseeks the shared fd to 0, 2,
+ *	    1023, 1025, 4096 and 0x7fffffff (its loop steps i twice), then
+ *	    lseek(SEEK_CUR) and back, in a loop
  *
- * Deviations: bounded rounds instead of upstream's run-until-killed, and
- * a kthread instead of a forked child -- they share the struct file
- * either way, which is what the test is about.
+ * A fork shares the open file, so both sides move one f_pos. On ext3 the
+ * pair produced "bad entry in directory" errors; the pass criterion is
+ * that dmesg gains no BUG, NULL dereference, WARNING or lockdep report.
+ *
+ * Over NFS the shared position is the client's readdir cookie and the
+ * walk is served from its readdir page cache, so a read(2) that disturbed
+ * f_pos, or an lseek to a position the server never issued, lands in the
+ * cookie handling.
+ *
+ * Each system call is reproduced with the lock the syscall takes: read(2),
+ * lseek(2) and getdents64(2) all hold the file's f_pos_lock around their
+ * work on a directory (fdget_pos). readdir(3) is getdents64 into glibc's
+ * buffer, sized by xfs_libc_dirbuf(). The child is a kthread; the read(2) side borrows this
+ * thread's mm for its user buffer, since kernel_read() refuses a file with
+ * a ->read method.
+ *
+ * Checks beyond upstream's: every read(2) of the directory must fail with
+ * EISDIR, and in t_readdir_1, where nothing but the parent moves the
+ * position, every walk must return all 4098 entries.
+ *
+ * Deviation: each program runs for 5 s rather than 30 s.
  */
 
 #include <kunit/test.h>
@@ -29,82 +41,108 @@
 #include <linux/errno.h>
 #include <linux/fs.h>
 #include <linux/file.h>
-#include <linux/kthread.h>
-#include <linux/completion.h>
-#include <linux/atomic.h>
-#include <linux/delay.h>
 #include <linux/mm.h>
 #include <linux/mman.h>
+#include <linux/kthread.h>
+#include <linux/completion.h>
 #include <linux/sched/mm.h>
+#include <linux/jiffies.h>
 
 #include "xfstests_nfs_fixture.h"
 
 #define G310_ROOT	XFS_MNT "/g310"
-#define G310_DIR	G310_ROOT "/tmp"
-#define G310_ENTRIES	32
-#define G310_ROUNDS	40
+#define G310_DIR	G310_ROOT "/310"
+#define G310_ENTRIES	4096
+#define G310_RUN_MS	5000
+/* the whole directory: no getdents64 call can return more */
+#define G310_BATCH	(G310_ENTRIES + 2)
 
-struct g310_reader {
+struct g310_child {
 	struct file		*d;
 	struct mm_struct	*mm;
-	unsigned long		buf;		/* a user address to read into */
+	unsigned long		buf;	/* user address for read(2) */
 	atomic_t		stop;
-	int			wrong;		/* reads that did not fail */
-	int			err;		/* an unexpected errno */
-	unsigned long		reads;
+	unsigned long		calls;
+	int			wrong;	/* reads that did not fail EISDIR */
+	int			lseek_err;
 	struct completion	done;
 };
 
-/*
- * read(2), not kernel_read(): a directory's file operations wire up both
- * ->read (generic_read_dir, which is what returns EISDIR) and
- * ->iterate_shared, and __kernel_read() refuses any file with both ->read
- * and ->read_iter rather than calling it. So this borrows the test
- * thread's mm and reads into a user address, which is the syscall's own
- * path.
- */
+/* t_readdir_1's child: while (1) read(fd, buf, 100); */
 static int g310_read_loop(void *arg)
 {
-	struct g310_reader *r = arg;
+	struct g310_child *c = arg;
 
-	kthread_use_mm(r->mm);
-	while (!atomic_read(&r->stop)) {
-		loff_t pos = 0;
-		ssize_t n = vfs_read(r->d, (char __user *)r->buf, 100, &pos);
+	kthread_use_mm(c->mm);
+	while (!atomic_read(&c->stop)) {
+		ssize_t n;
 
-		r->reads++;
-		if (n >= 0)
-			r->wrong++;
-		else if (n != -EISDIR)
-			r->err = (int)n;
+		mutex_lock(&c->d->f_pos_lock);
+		n = vfs_read(c->d, (char __user *)c->buf, 100, &c->d->f_pos);
+		mutex_unlock(&c->d->f_pos_lock);
+		if (n != -EISDIR)
+			c->wrong++;
+		c->calls++;
 		cond_resched();
 	}
-	kthread_unuse_mm(r->mm);
-	complete(&r->done);
+	kthread_unuse_mm(c->mm);
+	complete(&c->done);
 	return 0;
 }
 
-struct g310_walk {
-	struct dir_context	ctx;
-	int			entries;
-	int			alien;
-	int			total;		/* including . and .. */
-};
-
-static bool g310_actor(struct dir_context *ctx, const char *name, int len,
-		       loff_t off, u64 ino, unsigned int type)
+static loff_t g310_lseek(struct file *d, loff_t off, int whence)
 {
-	struct g310_walk *w = container_of(ctx, struct g310_walk, ctx);
+	loff_t ret;
 
-	w->total++;
-	if ((len == 1 && name[0] == '.') ||
-	    (len == 2 && name[0] == '.' && name[1] == '.'))
-		return true;
-	if (len < 2 || name[0] != 'e')
-		w->alien++;
-	else
-		w->entries++;
-	return true;
+	mutex_lock(&d->f_pos_lock);
+	ret = vfs_llseek(d, off, whence);
+	mutex_unlock(&d->f_pos_lock);
+	return ret;
+}
+
+/* t_readdir_2's child */
+static int g310_lseek_loop(void *arg)
+{
+	static const loff_t array[11] = { 0, 1, 2, 3, 1023, 1024, 1025, 4095,
+					  4096, 4097, 0x7fffffff };
+	struct g310_child *c = arg;
+	loff_t pos;
+	int i;
+
+	while (!atomic_read(&c->stop)) {
+		for (i = 0; i < 11; i++)
+			if (g310_lseek(c->d, array[i++], SEEK_SET) < 0)
+				c->lseek_err++;
+		pos = g310_lseek(c->d, 0, SEEK_CUR);
+		if (pos < 0 || g310_lseek(c->d, pos, SEEK_SET) < 0)
+			c->lseek_err++;
+		c->calls++;
+		cond_resched();
+	}
+	complete(&c->done);
+	return 0;
+}
+
+/*
+ * The parent: lseek(fd, 0, SEEK_SET); while (readdir(dir)); -- returns the
+ * number of entries the walk saw, or a negative errno if a getdents failed
+ * (readdir(3) returns NULL then, and the parent starts over).
+ */
+static int g310_walk(struct file *d, struct xfs_dirent *ents, size_t bufsize)
+{
+	int n, seen = 0;
+
+	if (g310_lseek(d, 0, SEEK_SET) < 0)
+		return -EINVAL;
+	do {
+		mutex_lock(&d->f_pos_lock);
+		n = xfs_getdents(d, ents, G310_BATCH, bufsize);
+		mutex_unlock(&d->f_pos_lock);
+		if (n < 0)
+			return n;
+		seen += n;
+	} while (n > 0);
+	return seen;
 }
 
 static void g310_remove_tree(void *unused)
@@ -112,20 +150,17 @@ static void g310_remove_tree(void *unused)
 	char path[64];
 	int i;
 
-	for (i = 0; i < G310_ENTRIES; i++) {
-		snprintf(path, sizeof(path), G310_DIR "/e%d", i);
+	for (i = 1; i <= G310_ENTRIES; i++) {
+		snprintf(path, sizeof(path), G310_DIR "/%d", i);
 		xfs_unlink(path);
 	}
 	xfs_rmdir_settled(G310_DIR);
 	xfs_rmdir_settled(G310_ROOT);
 }
 
-static void reads_racing_readdir_on_one_fd(struct kunit *test)
+static void g310_populate(struct kunit *test)
 {
-	struct g310_reader r = {};
-	struct task_struct *t;
 	char path[64];
-	struct file *d;
 	int i;
 
 	KUNIT_ASSERT_TRUE(test, xfstests_nfs_mounted());
@@ -134,72 +169,81 @@ static void reads_racing_readdir_on_one_fd(struct kunit *test)
 			kunit_add_action_or_reset(test, g310_remove_tree, NULL),
 			0);
 	KUNIT_ASSERT_EQ(test, xfs_mkdir(G310_DIR), 0);
-
-	for (i = 0; i < G310_ENTRIES; i++) {
-		snprintf(path, sizeof(path), G310_DIR "/e%d", i);
+	for (i = 1; i <= G310_ENTRIES; i++) {
+		snprintf(path, sizeof(path), G310_DIR "/%d", i);
 		KUNIT_ASSERT_EQ(test, xfs_write_new_file(path, "", 0), 0);
 	}
+}
 
-	d = filp_open(G310_DIR, O_RDONLY | O_DIRECTORY, 0);
-	KUNIT_ASSERT_FALSE_MSG(test, IS_ERR(d), "open: %ld", PTR_ERR(d));
+static void g310_run(struct kunit *test, bool lseek_child)
+{
+	struct g310_child c = {};
+	struct xfs_dirent *ents;
+	struct task_struct *t;
+	unsigned long end;
+	size_t bufsize;
+	int walks = 0, short_walks = 0, failed_walks = 0, seen;
 
-	init_completion(&r.done);
-	atomic_set(&r.stop, 0);
-	r.d = d;
-	/* kunit_vm_mmap() is what gives this thread an mm, so take the
-	 * pointer only after it has run.
-	 */
-	r.buf = kunit_vm_mmap(test, NULL, 0, PAGE_SIZE,
-			      PROT_READ | PROT_WRITE,
-			      MAP_PRIVATE | MAP_ANONYMOUS, 0);
-	KUNIT_ASSERT_NE_MSG(test, r.buf, 0UL, "anonymous mapping failed");
-	r.mm = current->mm;
-	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, r.mm);
-	t = kthread_run(g310_read_loop, &r, "g310-reader");
+	g310_populate(test);
+	ents = kunit_kcalloc(test, G310_BATCH, sizeof(*ents), GFP_KERNEL);
+	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, ents);
+
+	c.d = filp_open(G310_DIR, O_RDONLY | O_DIRECTORY, 0);
+	KUNIT_ASSERT_FALSE_MSG(test, IS_ERR(c.d), "opendir: %ld",
+			       PTR_ERR(c.d));
+	bufsize = xfs_libc_dirbuf(c.d);
+	KUNIT_ASSERT_GT(test, bufsize, 0UL);
+	init_completion(&c.done);
+	atomic_set(&c.stop, 0);
+	if (!lseek_child) {
+		/* kunit_vm_mmap() is what gives this thread an mm */
+		c.buf = kunit_vm_mmap(test, NULL, 0, PAGE_SIZE,
+				      PROT_READ | PROT_WRITE,
+				      MAP_PRIVATE | MAP_ANONYMOUS, 0);
+		KUNIT_ASSERT_NE(test, c.buf, 0UL);
+		c.mm = current->mm;
+	}
+	t = kthread_run(lseek_child ? g310_lseek_loop : g310_read_loop, &c,
+			"g310-child");
 	KUNIT_ASSERT_FALSE_MSG(test, IS_ERR(t), "kthread_run: %ld",
 			       PTR_ERR(t));
 
-	/* the point is that the two run together, so wait for the reader to
-	 * get going rather than racing it to the finish
-	 */
-	for (i = 0; i < 100 && !r.reads; i++)
-		msleep(10);
-
-	for (i = 0; i < G310_ROUNDS; i++) {
-		struct g310_walk w = { .ctx.actor = g310_actor };
-		int before;
-
-		KUNIT_ASSERT_EQ_MSG(test, vfs_llseek(d, 0, SEEK_SET), 0LL,
-				    "round %d: seek to 0 failed", i);
-		/*
-		 * One iterate_dir() is one getdents(2): it returns a batch,
-		 * not the whole directory, so keep going until a pass adds
-		 * nothing.
-		 */
-		do {
-			before = w.total;
-			KUNIT_ASSERT_EQ_MSG(test, iterate_dir(d, &w.ctx), 0,
-					    "round %d: iterate_dir failed", i);
-		} while (w.total > before);
-		KUNIT_EXPECT_EQ_MSG(test, w.entries, G310_ENTRIES,
-				    "round %d returned %d entries, expected %d",
-				    i, w.entries, G310_ENTRIES);
-		KUNIT_EXPECT_EQ_MSG(test, w.alien, 0,
-				    "round %d returned %d unexpected names", i,
-				    w.alien);
+	end = jiffies + msecs_to_jiffies(G310_RUN_MS);
+	while (time_before(jiffies, end)) {
+		seen = g310_walk(c.d, ents, bufsize);
+		walks++;
+		if (seen < 0)
+			failed_walks++;
+		else if (seen != G310_ENTRIES + 2)
+			short_walks++;
+		cond_resched();
 	}
+	atomic_set(&c.stop, 1);
+	wait_for_completion(&c.done);
+	filp_close(c.d, NULL);
 
-	atomic_set(&r.stop, 1);
-	wait_for_completion(&r.done);
-	filp_close(d, NULL);
+	kunit_info(test, "%d walks (%d ended in an error, %d partial), %lu child calls\n",
+		   walks, failed_walks, short_walks, c.calls);
+	KUNIT_EXPECT_GT(test, c.calls, 0UL);
+	if (!lseek_child) {
+		KUNIT_EXPECT_EQ_MSG(test, c.wrong, 0,
+				    "%d read(2) calls on the directory did not fail EISDIR",
+				    c.wrong);
+		KUNIT_EXPECT_EQ(test, failed_walks, 0);
+		KUNIT_EXPECT_EQ_MSG(test, short_walks, 0,
+				    "%d walks did not return all %d entries",
+				    short_walks, G310_ENTRIES + 2);
+	}
+}
 
-	KUNIT_EXPECT_GT_MSG(test, r.reads, 0UL, "the reader never ran");
-	KUNIT_EXPECT_EQ_MSG(test, r.wrong, 0,
-			    "%d read(2) calls on the directory succeeded",
-			    r.wrong);
-	KUNIT_EXPECT_EQ_MSG(test, r.err, 0,
-			    "read(2) on the directory returned %d, expected EISDIR",
-			    r.err);
+static void t_readdir_1_read_races_readdir(struct kunit *test)
+{
+	g310_run(test, false);
+}
+
+static void t_readdir_2_lseek_races_readdir(struct kunit *test)
+{
+	g310_run(test, true);
 }
 
 static int g310_suite_init(struct kunit_suite *suite)
@@ -213,7 +257,8 @@ static void g310_suite_exit(struct kunit_suite *suite)
 }
 
 static struct kunit_case g310_cases[] = {
-	KUNIT_CASE_SLOW(reads_racing_readdir_on_one_fd),
+	KUNIT_CASE_SLOW(t_readdir_1_read_races_readdir),
+	KUNIT_CASE_SLOW(t_readdir_2_lseek_races_readdir),
 	{}
 };
 

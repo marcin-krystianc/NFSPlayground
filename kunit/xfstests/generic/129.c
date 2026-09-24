@@ -27,8 +27,12 @@
  * read against the buffer looptest wrote (buf[i] = i & 127, looptest.c:163),
  * which is the same data, checked rather than discarded.
  *
- * Deviation: iteration counts are scaled down (2000/500/2000/500 against
- * upstream's 100000/10000/50000/2000); every flag combination is kept.
+ * Deviation: the first run makes 30000 iterations rather than 100000. Being
+ * sequential, it leaves one 8 KiB block per iteration in the file, and
+ * 100000 of them (800 MiB) do not fit the tmpfs export inside a UML kernel
+ * booted with mem=1G; 30000 is 240 MiB on a 320 MiB export. The other
+ * three runs are upstream's: 10000, 50000 and 2000 iterations. Upstream
+ * uses a file per run; here one file is recreated for each.
  */
 
 #include <kunit/test.h>
@@ -41,6 +45,7 @@
 
 #define G129_ROOT	XFS_MNT "/g129"
 #define G129_FILE	G129_ROOT "/loop"
+#define G129_EXPORT	"size=335544320,nr_inodes=32768"
 
 static void g129_remove_tree(void *unused)
 {
@@ -70,7 +75,9 @@ static void g129_loop(struct kunit *test, int iters, u32 bs, bool seq,
 	for (j = 0; j < bs; j++)
 		wr[j] = (u8)(j & 127);
 
+	xfs_settle_fput();
 	xfs_unlink(G129_FILE);
+	KUNIT_ASSERT_EQ(test, xfs_wait_for_free_bytes(245 * 1024 * 1024), 0);
 
 	for (i = 0; i < iters; i++) {
 		ssize_t n;
@@ -139,17 +146,18 @@ static void looptest_parameter_sets_read_back_what_they_wrote(struct kunit *test
 			0);
 
 	/* -i .. -r -w -b 8192 -s */
-	g129_loop(test, 2000, 8192, true, false, false, 1);
+	g129_loop(test, 30000, 8192, true, false, false, 1);
 	/* -i .. -t -r -w -s -b 102400 */
-	g129_loop(test, 500, 102400, true, true, false, 2);
+	g129_loop(test, 10000, 102400, true, true, false, 2);
 	/* -i .. -r -w -b 256 -s */
-	g129_loop(test, 2000, 256, true, false, false, 3);
+	g129_loop(test, 50000, 256, true, false, false, 3);
 	/* -i .. -o -r -w -b 8192 -s */
-	g129_loop(test, 500, 8192, true, false, true, 4);
+	g129_loop(test, 2000, 8192, true, false, true, 4);
 }
 
 static int g129_suite_init(struct kunit_suite *suite)
 {
+	xfstests_nfs_export_opts(G129_EXPORT);
 	return xfstests_nfs_get();
 }
 

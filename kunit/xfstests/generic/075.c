@@ -3,13 +3,19 @@
  * xfstests generic/075 over a loopback NFS mount: fsx.
  *
  * fsx is xfstests' random file exerciser: a shadow copy in memory, random
- * writes/truncates/punches/reads against the real file, every read
- * compared byte-for-byte against the shadow. This is a deliberately
- * reduced single-threaded fsx (no mmap, no AIO, no O_DIRECT -- which also
- * covers why 091/112/127 are not ported separately): 5000 seeded ops on a
- * file capped at 256 KB, full-file verification at the end. Over NFS,
- * every mismatch is a client cache/writeback bug by construction, since
- * the server is the only other holder of the data.
+ * operations against the real file, every read compared byte-for-byte
+ * against the shadow. Upstream runs fsx four times: -N 1000 and
+ * -N 10000 -l 10MB, each with a time-based seed (-S 0), and the same two
+ * with -x (preallocation). The -x runs are skipped when xfs_io resvsp
+ * fails, which it does on NFS, so on NFS upstream runs the first two.
+ *
+ * Deviation: this is a reduced fsx, not fsx. It runs 5000 ops with a fixed
+ * seed on a file capped at 256 KB, using only write, truncate, punch hole
+ * and read (no mmap, no AIO, no O_DIRECT, no zero/collapse/insert range or
+ * copy_file_range), with full-file verification at the end. This also
+ * covers why 091/112/127 are not ported separately. Over NFS, every
+ * mismatch is a client cache/writeback bug by construction, since the
+ * server is the only other holder of the data.
  */
 
 #include <kunit/test.h>
