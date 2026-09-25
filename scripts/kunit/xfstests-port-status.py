@@ -160,7 +160,7 @@ MANUAL = {
     "780": "_require_file_attr notruns, as generic/772",
     "786": "_require_test_fcntl_setdeleg notruns: it probes a directory, NFS directories have no .setlease, and kernel_setlease() returns -EINVAL",
     "787": "_require_test_fcntl_setdeleg notruns, as generic/786 (the probe is on a directory)",
-    "798": "cachestat()'s body is a static helper in mm/filemap.c reachable only through the syscall; the port would have to un-static it",
+    "798": "upstream's 798.out does not hold on NFS: it expects every page dirty after the pwrite, but the pwrite and the cachestat are separate xfs_io runs, and closing an NFS file open for write writes its dirty pages back (nfs4_file_flush()); a port calling filemap_cachestat() measured Dirty: 0 there on the VM",
     "521": "soak test outside the auto group: fsx with O_DIRECT, 1000000 operations (about 4 minutes at the rate the generic/363 port runs on the VM). It could run through xfs_run_prog() like generic/091; not ported, for run time",
     "522": "soak test outside the auto group: fsx, 1000000 operations; see generic/521",
     "004": "O_TMPFILE: fs/nfs wires no .tmpfile inode operation, so the client cannot create one (upstream's _require_xfs_io_command \"-T\" notruns)",

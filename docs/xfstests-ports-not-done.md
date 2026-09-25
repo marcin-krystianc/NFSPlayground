@@ -1,7 +1,7 @@
 # xfstests generic/* that are not ported, and why
 
-[kunit/xfstests/](../kunit/xfstests/) holds 146 ports of upstream's 798
-`generic/*` cases. This file accounts for the other 652: every one of them
+[kunit/xfstests/](../kunit/xfstests/) holds 145 ports of upstream's 798
+`generic/*` cases. This file accounts for the other 653: every one of them
 has a reason, and the reason names what specifically cannot be reproduced
 rather than "it did not work".
 
@@ -471,6 +471,7 @@ generic/751
 | generic/780 | _require_file_attr notruns, as generic/772 |
 | generic/786 | _require_test_fcntl_setdeleg notruns: it probes a directory, NFS directories have no .setlease, and kernel_setlease() returns -EINVAL |
 | generic/787 | _require_test_fcntl_setdeleg notruns, as generic/786 (the probe is on a directory) |
+| generic/798 | upstream's 798.out does not hold on NFS: it expects every page dirty after the pwrite, but the pwrite and the cachestat are separate xfs_io runs, and closing an NFS file open for write writes its dirty pages back (nfs4_file_flush()); a port calling filemap_cachestat() measured Dirty: 0 there on the VM |
 
 ## Ported
 
@@ -499,5 +500,5 @@ generic/598 generic/604 generic/609 generic/611 generic/615 generic/618
 generic/637 generic/638 generic/639 generic/647 generic/676 generic/680
 generic/683 generic/684 generic/706 generic/707 generic/708 generic/728
 generic/729 generic/736 generic/749 generic/754 generic/755 generic/761
-generic/763 generic/798
+generic/763
 ```
