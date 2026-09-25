@@ -71,9 +71,15 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-        # The submodules (xfstests, pynfs, nfs-utils) are not needed here.
+        # Of the submodules only xfstests is needed, fetched below.
         with:
           submodules: false
+
+      # run-nfs-kunit.sh builds xfstests' ltp/fsx static from it, for the
+      # ports that run fsx inside the test kernel (xfs_run_prog() in
+      # kunit/xfstests/nfs_fixture.c). Without it those ports fail.
+      - name: Fetch the xfstests submodule
+        run: git submodule update --init xfstests
 
       # KUnit has no dependencies of its own; these are the kernel's.
       - name: Install kernel build dependencies
@@ -163,6 +169,10 @@ jobs:
         with:
           submodules: false
 
+      # See the kunit job: run-nfs-kunit.sh builds ltp/fsx from it.
+      - name: Fetch the xfstests submodule
+        run: git submodule update --init xfstests
+
       - name: Install kernel build dependencies
         run: |
           sudo apt-get update
@@ -226,6 +236,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: false
+
+      # See the kunit job: run-nfs-kunit.sh builds ltp/fsx from it.
+      - name: Fetch the xfstests submodule
+        run: git submodule update --init xfstests
 
       - name: Install kernel build dependencies
         run: |
