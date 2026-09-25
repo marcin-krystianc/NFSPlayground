@@ -67,6 +67,8 @@
 #include <linux/capability.h>
 #include <linux/uidgid.h>
 #include <linux/security.h>	/* security_task_fix_setuid, see xfs_seteuid() */
+#include <linux/umh.h>
+#include <linux/moduleparam.h>
 
 #include "internal.h"		/* path_mount/path_umount, do_*at bodies */
 #include "nfsd/nfsd.h"		/* nfsd_svc, nfsd_vers, nfsd_mutex */
@@ -1043,9 +1045,163 @@ int xfstests_nfs_case_init(struct kunit *test)
 	return 0;
 }
 
+/*
+ * ---------------------------------------------------------------------
+ * Userspace programs: see xfs_run_prog() in xfstests_nfs_fixture.h
+ * ---------------------------------------------------------------------
+ */
+
+static char xfs_hostbin[PATH_MAX];
+module_param_string(hostbin, xfs_hostbin, sizeof(xfs_hostbin), 0444);
+MODULE_PARM_DESC(hostbin,
+		 "host directory holding the static programs xfs_run_prog() runs");
+
+static DEFINE_MUTEX(xfs_hostbin_lock);
+static bool xfs_hostbin_mounted;
+static atomic_t xfs_prog_seq = ATOMIC_INIT(0);
+
+#define XFS_PROG_TAIL	4096	/* bytes of output printed on failure */
+
+static int xfs_hostbin_mount(void)
+{
+	int err = 0;
+
+	mutex_lock(&xfs_hostbin_lock);
+	if (!xfs_hostbin_mounted) {
+		err = xfs_mkdir_tolerant(XFS_HOSTBIN);
+		if (!err)
+			err = xfs_mount_at("none", XFS_HOSTBIN, "hostfs",
+					   xfs_hostbin);
+		xfs_hostbin_mounted = !err;
+	}
+	mutex_unlock(&xfs_hostbin_lock);
+	return err;
+}
+
+static void xfs_hostbin_umount(void)
+{
+	int err;
+
+	mutex_lock(&xfs_hostbin_lock);
+	if (xfs_hostbin_mounted) {
+		err = xfs_umount_settled(XFS_HOSTBIN);
+		if (err)
+			pr_err("xfstests-nfs: hostbin umount failed: %d\n", err);
+		xfs_hostbin_mounted = false;
+		xfs_rmdir(XFS_HOSTBIN);
+	}
+	mutex_unlock(&xfs_hostbin_lock);
+}
+
+/*
+ * Runs in the new process before it execs: its stdin, stdout and stderr
+ * become the log file, the way fs/coredump.c's umh_pipe_setup() gives a
+ * core-dump helper its stdin.
+ */
+static int xfs_prog_init(struct subprocess_info *info, struct cred *new)
+{
+	struct file *f;
+	int fd, err = 0;
+
+	f = filp_open(info->data, O_RDWR | O_CREAT | O_TRUNC, 0644);
+	if (IS_ERR(f))
+		return PTR_ERR(f);
+	/* replace_fd() returns the fd on success */
+	for (fd = 0; fd < 3 && err >= 0; fd++)
+		err = replace_fd(fd, f, 0);
+	fput(f);
+	return err < 0 ? err : 0;
+}
+
+static void xfs_prog_dump_log(struct kunit *test, const char *prog, int ret,
+			      const char *path)
+{
+	struct file *f;
+	char *buf, *line, *nl;
+	loff_t size, pos;
+	ssize_t n;
+
+	kunit_info(test, "%s exited with %d; last output:\n", prog, ret);
+	f = filp_open(path, O_RDONLY, 0);
+	if (IS_ERR(f))
+		return;
+	buf = kmalloc(XFS_PROG_TAIL + 1, GFP_KERNEL);
+	size = vfs_llseek(f, 0, SEEK_END);
+	pos = size > XFS_PROG_TAIL ? size - XFS_PROG_TAIL : 0;
+	n = buf ? kernel_read(f, buf, XFS_PROG_TAIL, &pos) : -ENOMEM;
+	filp_close(f, NULL);
+	if (n > 0) {
+		buf[n] = '\0';
+		for (line = buf; *line; line = nl + 1) {
+			nl = strchrnul(line, '\n');
+			kunit_info(test, "  %.*s\n", (int)(nl - line), line);
+			if (!*nl)
+				break;
+		}
+	}
+	kfree(buf);
+}
+
+int xfs_run_prog(struct kunit *test, const char *prog,
+		 const char *const args[])
+{
+	static char *envp[] = { "HOME=/", "PATH=/sbin:/bin:/usr/sbin:/usr/bin",
+				NULL };
+	struct subprocess_info *info;
+	char **argv = NULL;
+	char *log = NULL;
+	int n, i, ret;
+
+	if (!xfs_hostbin[0]) {
+		kunit_info(test,
+			   "xfstests_nfs_fixture.hostbin is not set: run through run-nfs-kunit.sh, which builds %s\n",
+			   prog);
+		return -ENOENT;
+	}
+	ret = xfs_hostbin_mount();
+	if (ret) {
+		kunit_info(test, "hostfs mount of %s: %d\n", xfs_hostbin, ret);
+		return ret;
+	}
+
+	for (n = 0; args[n]; n++)
+		;
+	ret = -ENOMEM;
+	argv = kcalloc(n + 2, sizeof(*argv), GFP_KERNEL);
+	log = kasprintf(GFP_KERNEL, "/xfstests-prog-%d.log",
+			atomic_inc_return(&xfs_prog_seq));
+	if (!argv || !log)
+		goto out;
+	argv[0] = kasprintf(GFP_KERNEL, XFS_HOSTBIN "/%s", prog);
+	if (!argv[0])
+		goto out;
+	for (i = 0; i < n; i++)
+		argv[i + 1] = (char *)args[i];
+
+	info = call_usermodehelper_setup(argv[0], argv, envp, GFP_KERNEL,
+					 xfs_prog_init, NULL, log);
+	if (!info)
+		goto out;
+	ret = call_usermodehelper_exec(info, UMH_WAIT_PROC);
+	/* a wait status from kernel_wait(), or a negative errno */
+	if (ret > 0)
+		ret = (ret & 0x7f) ? 128 + (ret & 0x7f) : (ret >> 8) & 0xff;
+	if (ret)
+		xfs_prog_dump_log(test, prog, ret, log);
+	xfs_unlink(log);
+out:
+	if (argv)
+		kfree(argv[0]);
+	kfree(argv);
+	kfree(log);
+	return ret;
+}
+
 static void xfs_teardown(void)
 {
 	int err;
+
+	xfs_hostbin_umount();
 
 	err = xfs_scratch_umount();
 	if (err)

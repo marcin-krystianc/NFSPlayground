@@ -52,7 +52,8 @@ SKIP_RULES = [
     # which nfs42_fallocate() accepts.
     (r"_require_xfs_io_command\s+\"?(chattr|label|scrub|repair|bulkstat|fsmap|inject|resblks|parent|utimes|syncfs|lsattr)",
      "xfs_io command with no NFS/VFS equivalent"),
-    (r"_require_aio|_require_aiodio", "libaio: no in-kernel equivalent"),
+    (r"_require_aio|_require_aiodio",
+     "libaio: the test's program is linked with libaio. xfs_run_prog() can run userspace programs inside the test kernel, so a static build could run it; not ported yet"),
     (r"_require_fio", "fio: userspace workload generator"),
     (r"_require_freeze", "filesystem freeze: not an NFS operation"),
     (r"_require_attrs\s+trusted|_require_attr_v1", "trusted xattr namespace: not carried over NFS"),
@@ -78,14 +79,14 @@ SKIP_RULES = [
 
 # Groups that imply the test is out of reach whatever its _requires say.
 SKIP_GROUPS = {
-    "aio": "libaio/io_submit: no in-kernel equivalent",
+    "aio": "libaio: the test's program is linked with libaio. xfs_run_prog() can run userspace programs inside the test kernel, so a static build could run it; not ported yet",
     "acl": "POSIX ACLs are NFSv3-only in the Linux client; the fixture mounts v4.2",
     "atime": "atime mount options have no effect on NFS: upstream _require_atime notruns",
     "dax": "DAX",
     "dedupe": "reflink/dedupe: not an NFS operation",
     "fiexchange": "FIEXCHANGE_RANGE (exchangerange) ioctl: not an NFS operation",
     "swapext": "the XFS swapext ioctl: not an NFS operation",
-    "io_uring": "io_uring: no in-kernel equivalent",
+    "io_uring": "io_uring: the test's program is linked with liburing. xfs_run_prog() could run a static build; not ported yet",
     "unlink": "O_TMPFILE: fs/nfs wires no .tmpfile inode operation",
     "pipe": "splice to and from pipes across processes",
     "clone": "reflink/clone: not an NFS operation",
@@ -121,15 +122,15 @@ BODY_RULES = [
      "mkfs of a sized/geometried filesystem: upstream notruns on NFS "
      "(_scratch_mkfs_sized: \"Filesystem nfs not supported\")"),
     (r"_run_fsstress|\bfsstress\b|\$FSX_PROG|run_fsx",
-     "driven by a userspace random-operation generator (fsstress/fsx): the "
-     "port would be a reimplementation of the generator, and 011/013 "
-     "(dirstress) and 075 (fsx) already cover that shape"),
+     "driven by ltp/fsstress, a userspace random-operation generator. It "
+     "could run inside the test kernel through xfs_run_prog() as fsx does "
+     "for 091/127/263/363; not ported yet"),
     (r"src/t_stripealign|_scratch_resvblks|_xfs_force_bdev", "XFS geometry tooling"),
     (r"_scratch_dev_pool|_require_scratch_dev_pool", "needs a pool of block devices"),
     (r"_require_scratch_delalloc",
      "upstream's _require_scratch_delalloc notruns: it needs filefrag to report "
      "a delayed-allocation extent, and NFS has neither"),
-    (r"_require_io_uring", "io_uring: no in-kernel equivalent"),
+    (r"_require_io_uring", "io_uring: the test's program is linked with liburing. xfs_run_prog() could run a static build; not ported yet"),
     (r"_require_scratch_extsize|_require_extsize", "the XFS extent-size hint ioctl"),
     (r'_require_xfs_io_command\s+"?(-T|flink)',
      "O_TMPFILE: fs/nfs wires no .tmpfile inode operation, so the client cannot "
@@ -144,25 +145,27 @@ BODY_RULES = [
 # read; the reason names what specifically cannot be reproduced.
 MANUAL = {
     "010": "src/dbtest drives ndbm, a userspace library, not the filesystem",
-    "128": "needs to exec a setuid binary from the mount with nosuid set; a KUnit case cannot exec userspace, and the fixture mounts once",
+    "128": "executes a setuid binary from a nosuid mount as another user. xfs_run_prog() can execute static binaries, from the host directory; running one from the NFS mount under another uid is not done yet",
     "241": "dbench, a userspace workload generator",
     "345": "holetest -F: generic/340 and 344 with processes instead of threads. In a kernel test both markers are kthreads sharing one mm, so the port would duplicate generic/340",
     "445": "seek_sanity_test case 17 skips itself unless the page size is at least four allocation units; the probe finds 4096 on the tmpfs export (logged by the generic/436 port), so upstream reports it skipped",
     "460": "the bug is XFS's delalloc indirect-block reservation, reached by writing a 1 GiB file with dirty_ratio at 100; NFS has no delayed allocation and the file does not fit a 64 MiB export",
     "571": "_require_test_fcntl_setlease notruns on NFS whatever delegations are held: locktest -t does F_SETLEASE F_UNLCK on a file with no lease, generic_delete_lease() returns -EAGAIN when no lease matches (fs/locks.c), and common/rc turns exit code 11 into notrun for NFS only",
     "590": "an 8 GiB file and XFS's extent-size limit; the export is a 64 MiB tmpfs and NFS has no extents",
-    "632": "detached mounts and mount-namespace propagation",
-    "759": "fsx on hugepage-backed userspace buffers",
-    "760": "fsx with O_DIRECT on hugepage-backed userspace buffers",
+    "632": "src/detached_mounts_propagation creates detached mounts with open_tree() and checks their propagation across mount namespaces; the subject is VFS mount propagation, not the filesystem",
+    "759": "fsx -h, hugepage-backed buffers: _require_thp needs transparent hugepages, and UML has none (mm/Kconfig's TRANSPARENT_HUGEPAGE depends on HAVE_ARCH_TRANSPARENT_HUGEPAGE, which arch/um does not select)",
+    "760": "fsx -h with O_DIRECT: no transparent hugepages in UML, as generic/759",
     "772": "_require_file_attr notruns: NFS has .fileattr_get but no .fileattr_set, so vfs_fileattr_set() returns -ENOIOCTLCMD",
     "777": "_require_open_by_handle -N notruns: fs/nfs/export.c has no .fh_to_parent, so exportfs_can_encode_fh() refuses EXPORT_FH_CONNECTABLE and name_to_handle_at(AT_HANDLE_CONNECTABLE) returns EOPNOTSUPP",
     "780": "_require_file_attr notruns, as generic/772",
     "786": "_require_test_fcntl_setdeleg notruns: it probes a directory, NFS directories have no .setlease, and kernel_setlease() returns -EINVAL",
     "787": "_require_test_fcntl_setdeleg notruns, as generic/786 (the probe is on a directory)",
     "798": "cachestat()'s body is a static helper in mm/filemap.c reachable only through the syscall; the port would have to un-static it",
+    "521": "soak test outside the auto group: fsx with O_DIRECT, 1000000 operations (about 4 minutes at the rate the generic/363 port runs on the VM). It could run through xfs_run_prog() like generic/091; not ported, for run time",
+    "522": "soak test outside the auto group: fsx, 1000000 operations; see generic/521",
     "004": "O_TMPFILE: fs/nfs wires no .tmpfile inode operation, so the client cannot create one (upstream's _require_xfs_io_command \"-T\" notruns)",
     "402": "_require_timestamp_range notruns: _filesystem_timestamp_range() in common/rc has no nfs case, so the bounds are unknown",
-    "452": "copies ls onto the mount and executes it, before and after a read-only remount; a KUnit case cannot exec a binary",
+    "452": "copies ls onto the mount and executes it, before and after a read-only remount. xfs_run_prog() can execute static binaries, from the host directory; running one from the NFS mount is not done yet",
     "685": "fzero (FALLOC_FL_ZERO_RANGE): nfs42_fallocate() accepts only mode 0 and PUNCH_HOLE with KEEP_SIZE; the suid/sgid rule itself is covered by the generic/683 and 684 ports",
     "686": "finsert (FALLOC_FL_INSERT_RANGE): not accepted by nfs42_fallocate(); see generic/685",
     "687": "fcollapse (FALLOC_FL_COLLAPSE_RANGE): not accepted by nfs42_fallocate(); see generic/685",
@@ -189,7 +192,8 @@ Two rules decide most of it, both from
   is not ported either.
 
 The rest are limits of this fixture -- one kernel, one client, one server,
-a tmpfs export, no block device, no second process -- and those say so.
+a tmpfs export, no block device -- and those say so. A few are possible
+with what the fixture has but not ported yet, and those say that.
 
 This file is generated by `scripts/kunit/xfstests-port-status.py`, which
 holds the rules; rerun it after adding a port.

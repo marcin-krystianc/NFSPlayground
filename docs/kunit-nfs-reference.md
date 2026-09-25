@@ -152,7 +152,7 @@ appended only for link-local addresses and only when non-zero.
 
 ## The xfstests ports
 
-The `kunit/xfstests/` tree holds ports of **141 xfstests generic cases**,
+The `kunit/xfstests/` tree holds ports of **145 xfstests generic cases**,
 each a KUnit suite named after its original (`xfstests/generic/001` ...),
 each running against a real NFS mount served by knfsd inside the same UML
 kernel. The deployment lives in `kunit/xfstests/nfs_fixture.{c,h}`: tmpfs
@@ -164,6 +164,20 @@ v4-only on 127.0.0.1:2049, the real client mounted as NFSv4.2 on
 suite unmounts it with `xfs_scratch_umount()`. mountd's three caches are
 fed directly; nfsdfs is mounted because `create_client()` needs it; grace
 is ended the `v4_end_grace` way.
+
+Ports can also run upstream's own userspace programs inside the test
+kernel. `run-nfs-kunit.sh` builds `ltp/fsx` from the xfstests submodule,
+linked static because the test kernel has no libc, into
+`linux/.kunit-hostbin/`, and passes that directory on the kernel command
+line as `xfstests_nfs_fixture.hostbin=`. `xfs_run_prog()` mounts it with
+hostfs (`CONFIG_HOSTFS`, which the runner adds) and runs the program with
+`call_usermodehelper()`; stdout and stderr go to a log file whose tail is
+printed with `kunit_info()` when the exit status is not 0. The 091, 127,
+263 and 363 ports run fsx this way, with upstream's arguments. Running a
+suite with `kunit.py exec` instead of the runner needs the same
+`--kernel_args=xfstests_nfs_fixture.hostbin=...`, or those ports fail.
+The runner also passes `--timeout=1200`: kunit.py's own default of 300 s
+bounds the whole run, and 127 alone takes about two minutes.
 Bring-up is refcounted per suite, so every full run also exercises ~60
 consecutive nfsd restart and mount/unmount cycles.
 
@@ -186,16 +200,17 @@ Ported:
 
 ```
 001 002 005 006 007 011 013 014 020 023 028 029 030 035 037 069 070 074
-075 080 084 086 087 088 089 100 103 109 123 124 125 126 129 130 131 132
-133 135 141 169 184 193 213 214 215 221 228 236 245 246 247 248 249 257
-258 285 286 306 308 309 310 313 314 337 339 340 344 346 354 355 360 364
-377 378 391 393 394 401 406 412 420 423 428 430 431 432 433 434 436 437
-438 439 443 446 448 450 453 454 464 471 478 486 490 504 523 524 525 528
-532 533 539 565 567 568 591 597 598 604 609 611 615 618 637 638 639 647
-676 680 683 684 706 707 708 728 729 736 749 754 755 761 763
+075 080 084 086 087 088 089 091 100 103 109 123 124 125 126 127 129 130
+131 132 133 135 141 169 184 193 213 214 215 221 228 236 245 246 247 248
+249 257 258 263 285 286 306 308 309 310 313 314 337 339 340 344 346 354
+355 360 363 364 377 378 391 393 394 401 406 412 420 423 428 430 431 432
+433 434 436 437 438 439 443 446 448 450 453 454 464 471 478 486 490 504
+523 524 525 528 532 533 539 565 567 568 591 597 598 604 609 611 615 618
+637 638 639 647 676 680 683 684 706 707 708 728 729 736 749 754 755 761
+763
 ```
 
-141 of upstream's 798 `generic/` cases. Every one of the other 657 is
+145 of upstream's 798 `generic/` cases. Every one of the other 653 is
 accounted for in
 [xfstests-ports-not-done.md](xfstests-ports-not-done.md), which names,
 per test, what cannot be reproduced -- generated from the test sources so

@@ -87,7 +87,7 @@ static void copy_range_across_mounts(struct kunit *test)
 		filp_close(in, NULL);
 		KUNIT_FAIL_AND_ABORT(test, "open dst: %ld", PTR_ERR(out));
 	}
-	KUNIT_EXPECT_NE(test, file_inode(in)->i_sb, file_inode(out)->i_sb);
+	KUNIT_EXPECT_PTR_NE(test, file_inode(in)->i_sb, file_inode(out)->i_sb);
 
 	n = vfs_copy_file_range(in, 0, out, 0, G565_LEN, 0);
 	filp_close(out, NULL);

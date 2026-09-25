@@ -59,6 +59,22 @@ int xfs_scratch_mount(void);
 /* Unmount every mount stacked on XFS_SCRATCH_MNT; 0 once none is left. */
 int xfs_scratch_umount(void);
 
+/*
+ * Static userspace programs from the xfstests submodule (ltp/fsx), built by
+ * run-nfs-kunit.sh into a host directory that it names on the kernel
+ * command line as xfstests_nfs_fixture.hostbin=<dir>. xfs_run_prog()
+ * mounts that directory with hostfs on XFS_HOSTBIN and runs
+ * XFS_HOSTBIN/<prog> with call_usermodehelper(), stdout and stderr going to
+ * a log file; if the exit status is not 0, the log's last lines are
+ * printed with kunit_info(). args is argv without argv[0], NULL-terminated.
+ * Returns the exit status (0-255), 128 + the signal if the program was
+ * killed, or a negative errno if it could not be run. Safe to call from
+ * several threads at once.
+ */
+#define XFS_HOSTBIN	"/hostbin"
+int xfs_run_prog(struct kunit *test, const char *prog,
+		 const char *const args[]);
+
 /* mount(2)/umount(2) by path, e.g. for procfs */
 int xfs_mount_at(const char *dev, const char *mountpoint, const char *type,
 		 const char *opts);

@@ -118,6 +118,10 @@ kunit_opts=(CONFIG_KUNIT=y CONFIG_KUNIT_ALL_TESTS=y
             CONFIG_NFS_V4_2=y CONFIG_NFSD=y CONFIG_NFSD_V4=y CONFIG_TMPFS=y
             CONFIG_TMPFS_XATTR=y)
 
+# hostfs is how the test kernel reaches the userspace programs built below
+# (xfs_run_prog() in kunit/xfstests/nfs_fixture.c).
+kunit_opts+=(CONFIG_HOSTFS=y)
+
 # arch/um/Kconfig.debug's GCOV symbol (not the generic CONFIG_GCOV_KERNEL
 # from Documentation/dev-tools/gcov.rst) depends on CONFIG_DEBUG_INFO; both
 # are named here, matching running_tips.rst's coverage_uml.config fragment.
@@ -414,13 +418,64 @@ for opt in "${kunit_opts[@]}"; do
     fi
 done
 
+# Userspace programs the xfstests ports run inside the test kernel with
+# xfs_run_prog(): upstream's own ltp/fsx from the xfstests submodule. The
+# test kernel has no libc, so it is linked static, and it is compiled
+# directly rather than through xfstests' configure, which needs xfsprogs
+# headers. What configure would provide is two files: a config.h naming
+# the standard headers src/global.h may include, and headers that
+# xfstests' generated include/ pulls in and fsx.c uses without including
+# (getopt_long, roundup/MIN, assert). No XFS, AIO or io_uring: the ports
+# that use fsx pass none of the options that need them. The directory is
+# handed to the kernel as a module parameter of the fixture.
+HOSTBIN_DIR="${LINUX_DIR}/.kunit-hostbin"
+XFSTESTS_DIR="${REPO_ROOT}/xfstests"
+kunit_run_args=()
+if [ -f "${XFSTESTS_DIR}/ltp/fsx.c" ]; then
+    mkdir -p "$HOSTBIN_DIR"
+    if ! [ "${HOSTBIN_DIR}/fsx" -nt "${XFSTESTS_DIR}/ltp/fsx.c" ]; then
+        log "building static fsx into ${HOSTBIN_DIR}"
+        for h in SYS_TYPES_H SYS_STAT_H SYS_STATVFS_H SYS_TIME_H \
+                 SYS_IOCTL_H SYS_WAIT_H MALLOC_H DIRENT_H STDLIB_H \
+                 UNISTD_H ERRNO_H STRING_H SYS_FCNTL_H TIME_H; do
+            echo "#define HAVE_${h} 1"
+        done > "${HOSTBIN_DIR}/config.h"
+        # FALLOC_FL_WRITE_ZEROES is newer than some distributions' uapi
+        # headers; the value is include/uapi/linux/falloc.h's. A kernel
+        # that lacks the mode rejects it, and fsx then skips that op.
+        cat > "${HOSTBIN_DIR}/fsx-compat.h" <<'EOF_COMPAT'
+#include <getopt.h>
+#include <sys/param.h>
+#include <assert.h>
+#include <linux/falloc.h>
+#ifndef FALLOC_FL_WRITE_ZEROES
+#define FALLOC_FL_WRITE_ZEROES 0x80
+#endif
+EOF_COMPAT
+        gcc -static -O2 -g -D_GNU_SOURCE -DFALLOCATE -DHAVE_COPY_FILE_RANGE \
+            -include "${HOSTBIN_DIR}/fsx-compat.h" \
+            -I"${HOSTBIN_DIR}" -I"${XFSTESTS_DIR}/src" -I"${XFSTESTS_DIR}/include" \
+            "${XFSTESTS_DIR}/ltp/fsx.c" -o "${HOSTBIN_DIR}/fsx" ||
+            die "building static fsx failed"
+    fi
+    kunit_run_args+=(--kernel_args="xfstests_nfs_fixture.hostbin=${HOSTBIN_DIR}")
+else
+    log "xfstests submodule not checked out: the ports that run fsx will fail"
+fi
+
+# kunit.py's --timeout bounds the whole run, not one test, and defaults to
+# 300 s. The ports that run upstream's fsx (generic/127 alone is six
+# concurrent 100000-operation runs) take a full run past that. Given before
+# "$@", so a --timeout on the command line still wins.
+kunit_run_args+=(--timeout=1200)
+
 log "running kunit.py"
 cd "$LINUX_DIR"
 
 if [ "$COVERAGE" = "1" ]; then
     rc=0
     ./tools/testing/kunit/kunit.py run \
-        --kunitconfig=net/sunrpc/.kunitconfig "$@" || rc=$?
+        --kunitconfig=net/sunrpc/.kunitconfig "${kunit_run_args[@]}" "$@" || rc=$?
 
     log "collecting coverage from ${BUILD_DIR}"
     mkdir -p "${REPO_ROOT}/coverage"
@@ -436,4 +491,4 @@ if [ "$COVERAGE" = "1" ]; then
 fi
 
 exec ./tools/testing/kunit/kunit.py run \
-    --kunitconfig=net/sunrpc/.kunitconfig "$@"
+    --kunitconfig=net/sunrpc/.kunitconfig "${kunit_run_args[@]}" "$@"

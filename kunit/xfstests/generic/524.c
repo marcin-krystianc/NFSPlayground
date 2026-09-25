@@ -90,7 +90,7 @@ static void g524_check(struct kunit *test, const char *path, u8 *buf, int i)
 	for (j = 0; j < 2 * PAGE_SIZE; j++)
 		if (buf[j] != 0xcd) {
 			KUNIT_FAIL(test, "loop %d: %s byte %lld is %02x",
-				   i, path, G524_SIZE - 2 * PAGE_SIZE + j,
+				   i, path, (long long)(G524_SIZE - 2 * PAGE_SIZE + j),
 				   buf[j]);
 			return;
 		}
