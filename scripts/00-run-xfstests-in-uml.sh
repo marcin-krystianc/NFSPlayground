@@ -147,8 +147,10 @@ echo "  delegations:  $([ "$NFS_DELEGATIONS" = 1 ] && echo on || echo off)"
 echo "  check args:   ${check_args[*]}"
 
 # ---------------------------------------------------------------------------
-# Boot. Arguments after "--" go to init. The guest powers itself off when
-# check finishes; the status file is how its result gets out.
+# Boot. Arguments after "--" go to init. init is bash with the script as its
+# argument, so the script needs no exec bit, which git does not record here.
+# The guest powers itself off when check finishes; the status file is how
+# its result gets out.
 # ---------------------------------------------------------------------------
 log "booting the guest"
 "${BUILD_DIR}/linux" \
@@ -157,8 +159,8 @@ log "booting the guest"
     ubd0="${RUN_DIR}/test.img" ubd1="${RUN_DIR}/scratch.img" \
     con0=fd:0,fd:1 con=null ssl=null \
     quiet \
-    init="${REPO_ROOT}/scripts/xfstests-uml-init.sh" \
-    -- "$RUN_DIR" </dev/null || true
+    init=/bin/bash \
+    -- "${REPO_ROOT}/scripts/xfstests-uml-init.sh" "$RUN_DIR" </dev/null || true
 
 rm -f "${RUN_DIR}/test.img" "${RUN_DIR}/scratch.img"
 
