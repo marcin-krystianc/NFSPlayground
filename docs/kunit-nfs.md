@@ -100,7 +100,9 @@ root causes.
 - `kunit` — a matrix over `v6.12.57`, `v6.18.52`, `v7.2.6` and `master`,
   unpatched. The `v6.12.57` leg can hit the livelock above.
 - `kunit-v6-12-57-patched` — `v6.12.57` with the UML fix applied, running
-  the full suite to completion.
+  the full suite to completion, and with the NFS 'eof page pollution' fix
+  (`patches/nfs-eof-page-pollution-v6.12.57.patch`) applied. The unpatched
+  `v6.12.57` leg can fail generic/363 without it.
 - `kunit-coverage` — `master` with `COVERAGE=1`, unfiltered. Uploads
   `coverage/coverage.info` and the HTML report as the `kunit-coverage-master`
   artifact, and puts the `lcov --summary` totals in the job's step summary.

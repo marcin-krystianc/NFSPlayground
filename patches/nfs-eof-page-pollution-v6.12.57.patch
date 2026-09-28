@@ -1,0 +1,335 @@
+# Backport to v6.12.57 of three upstream NFS client commits that together
+# stop 'eof page pollution':
+#
+#   b1817b18ff20 ("NFS: Protect against 'eof page pollution'",
+#                 Trond Myklebust, 2025-09-04)
+#   b2036bb65114 ("NFSv4.2: Protect copy offload and clone against 'eof
+#                 page pollution'", Trond Myklebust, 2025-09-06)
+#   d5811e6297f3 ("NFS: Fix size read races in truncate, fallocate and copy
+#                 offload", Trond Myklebust, 2026-01-10; Fixes: b1817b18ff20)
+#
+# b1817b18ff20's message: "This commit fixes the failing xfstest
+# 'generic/363'. When the user mmaps() an area that extends beyond the end
+# of file, and proceeds to write data into the folio that straddles that
+# eof, we're required to discard that folio data if the user calls some
+# function that extends the file length." It adds nfs_truncate_last_folio()
+# and calls it from nfs_write_begin(), nfs_setattr() and ALLOCATE; the other
+# two extend it to copy offload and clone and read the old size under the
+# lock. The generic/363 port failed on the kunit-v6-12-57-patched CI leg
+# with fsx's "READ BAD DATA" (exit 110) after an extending write. None of
+# the three carries `Cc: stable@vger.kernel.org`, and linux-6.12.y does not
+# have nfs_truncate_last_folio() up to v6.12.111.
+#
+# This is NOT a straight cherry-pick. v6.12.57 has no ZERO_RANGE support
+# (no nfs42_proc_zero_range(), no NFS_CAP_ZERO_RANGE), so:
+#   - b1817b18ff20's and d5811e6297f3's hunks for nfs42_proc_zero_range()
+#     are dropped;
+#   - in nfs42_proc_allocate() the -EOPNOTSUPP branch clears only
+#     NFS_CAP_ALLOCATE, as v6.12.57 already did, instead of
+#     NFS_CAP_ALLOCATE | NFS_CAP_ZERO_RANGE;
+#   - nfs_setattr()'s declaration of oldsize is changed in place, since
+#     the upstream context lines (task_uid, owner_uid) are not in v6.12.57.
+# b2036bb65114 and the io.c exports of d5811e6297f3 apply unchanged.
+#
+# Verified in this repo (2026-09-28): `git apply --check` applies cleanly to
+# a fresh v6.12.57 checkout, and `make ARCH=um fs/nfs/` builds it with
+# NFS_V4_2 and NFSD enabled, without warnings. It touches only fs/nfs/, so
+# it is independent of um-thread-info-in-task-v6.12.57.patch.
+diff --git a/fs/nfs/file.c b/fs/nfs/file.c
+index a16a619fb8..8cc39a73fa 100644
+--- a/fs/nfs/file.c
++++ b/fs/nfs/file.c
+@@ -28,6 +28,7 @@
+ #include <linux/mm.h>
+ #include <linux/pagemap.h>
+ #include <linux/gfp.h>
++#include <linux/rmap.h>
+ #include <linux/swap.h>
+ #include <linux/compaction.h>
+ 
+@@ -279,6 +280,37 @@ nfs_file_fsync(struct file *file, loff_t start, loff_t end, int datasync)
+ }
+ EXPORT_SYMBOL_GPL(nfs_file_fsync);
+ 
++void nfs_truncate_last_folio(struct address_space *mapping, loff_t from,
++			     loff_t to)
++{
++	struct folio *folio;
++
++	if (from >= to)
++		return;
++
++	folio = filemap_lock_folio(mapping, from >> PAGE_SHIFT);
++	if (IS_ERR(folio))
++		return;
++
++	if (folio_mkclean(folio))
++		folio_mark_dirty(folio);
++
++	if (folio_test_uptodate(folio)) {
++		loff_t fpos = folio_pos(folio);
++		size_t offset = from - fpos;
++		size_t end = folio_size(folio);
++
++		if (to - fpos < end)
++			end = to - fpos;
++		folio_zero_segment(folio, offset, end);
++		trace_nfs_size_truncate_folio(mapping->host, to);
++	}
++
++	folio_unlock(folio);
++	folio_put(folio);
++}
++EXPORT_SYMBOL_GPL(nfs_truncate_last_folio);
++
+ /*
+  * Decide whether a read/modify/write cycle may be more efficient
+  * then a modify/write/read cycle when writing to a page in the
+@@ -353,6 +385,7 @@ static int nfs_write_begin(struct file *file, struct address_space *mapping,
+ 
+ 	dfprintk(PAGECACHE, "NFS: write_begin(%pD2(%lu), %u@%lld)\n",
+ 		file, mapping->host->i_ino, len, (long long) pos);
++	nfs_truncate_last_folio(mapping, i_size_read(mapping->host), pos);
+ 
+ 	fgp |= fgf_set_order(len);
+ start:
+diff --git a/fs/nfs/inode.c b/fs/nfs/inode.c
+index 5bf5fb5ddd..9304bbff0c 100644
+--- a/fs/nfs/inode.c
++++ b/fs/nfs/inode.c
+@@ -710,6 +710,7 @@ nfs_setattr(struct mnt_idmap *idmap, struct dentry *dentry,
+ {
+ 	struct inode *inode = d_inode(dentry);
+ 	struct nfs_fattr *fattr;
++	loff_t oldsize;
+ 	int error = 0;
+ 
+ 	nfs_inc_stats(inode, NFSIOS_VFSSETATTR);
+@@ -718,6 +719,10 @@ nfs_setattr(struct mnt_idmap *idmap, struct dentry *dentry,
+ 	if (attr->ia_valid & (ATTR_KILL_SUID | ATTR_KILL_SGID))
+ 		attr->ia_valid &= ~ATTR_MODE;
+ 
++	if (S_ISREG(inode->i_mode))
++		nfs_file_block_o_direct(NFS_I(inode));
++
++	oldsize = i_size_read(inode);
+ 	if (attr->ia_valid & ATTR_SIZE) {
+ 		BUG_ON(!S_ISREG(inode->i_mode));
+ 
+@@ -725,7 +730,7 @@ nfs_setattr(struct mnt_idmap *idmap, struct dentry *dentry,
+ 		if (error)
+ 			return error;
+ 
+-		if (attr->ia_size == i_size_read(inode))
++		if (attr->ia_size == oldsize)
+ 			attr->ia_valid &= ~ATTR_SIZE;
+ 	}
+ 
+@@ -761,10 +766,8 @@ nfs_setattr(struct mnt_idmap *idmap, struct dentry *dentry,
+ 	trace_nfs_setattr_enter(inode);
+ 
+ 	/* Write all dirty data */
+-	if (S_ISREG(inode->i_mode)) {
+-		nfs_file_block_o_direct(NFS_I(inode));
++	if (S_ISREG(inode->i_mode))
+ 		nfs_sync_inode(inode);
+-	}
+ 
+ 	fattr = nfs_alloc_fattr_with_label(NFS_SERVER(inode));
+ 	if (fattr == NULL) {
+@@ -773,8 +776,12 @@ nfs_setattr(struct mnt_idmap *idmap, struct dentry *dentry,
+ 	}
+ 
+ 	error = NFS_PROTO(inode)->setattr(dentry, fattr, attr);
+-	if (error == 0)
++	if (error == 0) {
++		if (attr->ia_valid & ATTR_SIZE)
++			nfs_truncate_last_folio(inode->i_mapping, oldsize,
++						attr->ia_size);
+ 		error = nfs_refresh_inode(inode, fattr);
++	}
+ 	nfs_free_fattr(fattr);
+ out:
+ 	trace_nfs_setattr_exit(inode, error);
+diff --git a/fs/nfs/internal.h b/fs/nfs/internal.h
+index 456b423402..bd2af19e0c 100644
+--- a/fs/nfs/internal.h
++++ b/fs/nfs/internal.h
+@@ -438,6 +438,8 @@ int nfs_file_release(struct inode *, struct file *);
+ int nfs_lock(struct file *, int, struct file_lock *);
+ int nfs_flock(struct file *, int, struct file_lock *);
+ int nfs_check_flags(int);
++void nfs_truncate_last_folio(struct address_space *mapping, loff_t from,
++			     loff_t to);
+ 
+ /* inode.c */
+ extern struct workqueue_struct *nfsiod_workqueue;
+diff --git a/fs/nfs/io.c b/fs/nfs/io.c
+index d275b0a250..8337f0ae85 100644
+--- a/fs/nfs/io.c
++++ b/fs/nfs/io.c
+@@ -84,6 +84,7 @@ nfs_start_io_write(struct inode *inode)
+ 		nfs_file_block_o_direct(NFS_I(inode));
+ 	return err;
+ }
++EXPORT_SYMBOL_GPL(nfs_start_io_write);
+ 
+ /**
+  * nfs_end_io_write - declare that the buffered write operation is done
+@@ -97,6 +98,7 @@ nfs_end_io_write(struct inode *inode)
+ {
+ 	up_write(&inode->i_rwsem);
+ }
++EXPORT_SYMBOL_GPL(nfs_end_io_write);
+ 
+ /* Call with exclusively locked inode->i_rwsem */
+ static void nfs_block_buffered(struct nfs_inode *nfsi, struct inode *inode)
+diff --git a/fs/nfs/nfs42proc.c b/fs/nfs/nfs42proc.c
+index 582cf8a469..c49b6aa98f 100644
+--- a/fs/nfs/nfs42proc.c
++++ b/fs/nfs/nfs42proc.c
+@@ -112,7 +112,6 @@ static int nfs42_proc_fallocate(struct rpc_message *msg, struct file *filep,
+ 	exception.inode = inode;
+ 	exception.state = lock->open_context->state;
+ 
+-	nfs_file_block_o_direct(NFS_I(inode));
+ 	err = nfs_sync_inode(inode);
+ 	if (err)
+ 		goto out;
+@@ -136,18 +135,27 @@ int nfs42_proc_allocate(struct file *filep, loff_t offset, loff_t len)
+ 		.rpc_proc = &nfs4_procedures[NFSPROC4_CLNT_ALLOCATE],
+ 	};
+ 	struct inode *inode = file_inode(filep);
++	loff_t oldsize;
+ 	int err;
+ 
+ 	if (!nfs_server_capable(inode, NFS_CAP_ALLOCATE))
+ 		return -EOPNOTSUPP;
+ 
+-	inode_lock(inode);
++	err = nfs_start_io_write(inode);
++	if (err)
++		return err;
++
++	oldsize = i_size_read(inode);
+ 
+ 	err = nfs42_proc_fallocate(&msg, filep, offset, len);
+-	if (err == -EOPNOTSUPP)
++
++	if (err == 0)
++		nfs_truncate_last_folio(inode->i_mapping, oldsize,
++					offset + len);
++	else if (err == -EOPNOTSUPP)
+ 		NFS_SERVER(inode)->caps &= ~NFS_CAP_ALLOCATE;
+ 
+-	inode_unlock(inode);
++	nfs_end_io_write(inode);
+ 	return err;
+ }
+ 
+@@ -162,7 +170,9 @@ int nfs42_proc_deallocate(struct file *filep, loff_t offset, loff_t len)
+ 	if (!nfs_server_capable(inode, NFS_CAP_DEALLOCATE))
+ 		return -EOPNOTSUPP;
+ 
+-	inode_lock(inode);
++	err = nfs_start_io_write(inode);
++	if (err)
++		return err;
+ 
+ 	err = nfs42_proc_fallocate(&msg, filep, offset, len);
+ 	if (err == 0)
+@@ -170,7 +180,7 @@ int nfs42_proc_deallocate(struct file *filep, loff_t offset, loff_t len)
+ 	if (err == -EOPNOTSUPP)
+ 		NFS_SERVER(inode)->caps &= ~NFS_CAP_DEALLOCATE;
+ 
+-	inode_unlock(inode);
++	nfs_end_io_write(inode);
+ 	return err;
+ }
+ 
+@@ -280,22 +290,27 @@ static int process_copy_commit(struct file *dst, loff_t pos_dst,
+ 
+ /**
+  * nfs42_copy_dest_done - perform inode cache updates after clone/copy offload
+- * @inode: pointer to destination inode
++ * @file: pointer to destination file
+  * @pos: destination offset
+  * @len: copy length
++ * @oldsize: length of the file prior to clone/copy
+  *
+  * Punch a hole in the inode page cache, so that the NFS client will
+  * know to retrieve new data.
+  * Update the file size if necessary, and then mark the inode as having
+  * invalid cached values for change attribute, ctime, mtime and space used.
+  */
+-static void nfs42_copy_dest_done(struct inode *inode, loff_t pos, loff_t len)
++static void nfs42_copy_dest_done(struct file *file, loff_t pos, loff_t len,
++				 loff_t oldsize)
+ {
++	struct inode *inode = file_inode(file);
++	struct address_space *mapping = file->f_mapping;
+ 	loff_t newsize = pos + len;
+ 	loff_t end = newsize - 1;
+ 
+-	WARN_ON_ONCE(invalidate_inode_pages2_range(inode->i_mapping,
+-				pos >> PAGE_SHIFT, end >> PAGE_SHIFT));
++	nfs_truncate_last_folio(mapping, oldsize, pos);
++	WARN_ON_ONCE(invalidate_inode_pages2_range(mapping, pos >> PAGE_SHIFT,
++						   end >> PAGE_SHIFT));
+ 
+ 	spin_lock(&inode->i_lock);
+ 	if (newsize > i_size_read(inode))
+@@ -328,6 +343,7 @@ static ssize_t _nfs42_proc_copy(struct file *src,
+ 	struct nfs_server *src_server = NFS_SERVER(src_inode);
+ 	loff_t pos_src = args->src_pos;
+ 	loff_t pos_dst = args->dst_pos;
++	loff_t oldsize_dst;
+ 	size_t count = args->count;
+ 	ssize_t status;
+ 
+@@ -372,6 +388,7 @@ static ssize_t _nfs42_proc_copy(struct file *src,
+ 		&src_lock->open_context->state->flags);
+ 	set_bit(NFS_CLNT_DST_SSC_COPY_STATE,
+ 		&dst_lock->open_context->state->flags);
++	oldsize_dst = i_size_read(dst_inode);
+ 
+ 	status = nfs4_call_sync(dst_server->client, dst_server, &msg,
+ 				&args->seq_args, &res->seq_res, 0);
+@@ -402,7 +419,7 @@ static ssize_t _nfs42_proc_copy(struct file *src,
+ 			goto out;
+ 	}
+ 
+-	nfs42_copy_dest_done(dst_inode, pos_dst, res->write_res.count);
++	nfs42_copy_dest_done(dst, pos_dst, res->write_res.count, oldsize_dst);
+ 	nfs_invalidate_atime(src_inode);
+ 	status = res->write_res.count;
+ out:
+@@ -1067,6 +1084,7 @@ static int _nfs42_proc_clone(struct rpc_message *msg, struct file *src_f,
+ 	struct nfs42_clone_res res = {
+ 		.server	= server,
+ 	};
++	loff_t oldsize_dst = i_size_read(dst_inode);
+ 	int status;
+ 
+ 	msg->rpc_argp = &args;
+@@ -1101,7 +1119,7 @@ static int _nfs42_proc_clone(struct rpc_message *msg, struct file *src_f,
+ 		/* a zero-length count means clone to EOF in src */
+ 		if (count == 0 && res.dst_fattr->valid & NFS_ATTR_FATTR_SIZE)
+ 			count = nfs_size_to_loff_t(res.dst_fattr->size) - dst_offset;
+-		nfs42_copy_dest_done(dst_inode, dst_offset, count);
++		nfs42_copy_dest_done(dst_f, dst_offset, count, oldsize_dst);
+ 		status = nfs_post_op_update_inode(dst_inode, res.dst_fattr);
+ 	}
+ 
+diff --git a/fs/nfs/nfstrace.h b/fs/nfs/nfstrace.h
+index 1eab98c277..5dd7963dfc 100644
+--- a/fs/nfs/nfstrace.h
++++ b/fs/nfs/nfstrace.h
+@@ -267,6 +267,7 @@ DECLARE_EVENT_CLASS(nfs_update_size_class,
+ 			TP_ARGS(inode, new_size))
+ 
+ DEFINE_NFS_UPDATE_SIZE_EVENT(truncate);
++DEFINE_NFS_UPDATE_SIZE_EVENT(truncate_folio);
+ DEFINE_NFS_UPDATE_SIZE_EVENT(wcc);
+ DEFINE_NFS_UPDATE_SIZE_EVENT(update);
+ DEFINE_NFS_UPDATE_SIZE_EVENT(grow);
