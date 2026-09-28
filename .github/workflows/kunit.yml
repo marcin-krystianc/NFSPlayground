@@ -71,9 +71,15 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-        # The submodules (xfstests, pynfs, nfs-utils) are not needed here.
+        # Of the submodules only xfstests is needed, fetched below.
         with:
           submodules: false
+
+      # run-nfs-kunit.sh builds xfstests' ltp/fsx static from it, for the
+      # ports that run fsx inside the test kernel (xfs_run_prog() in
+      # kunit/xfstests/nfs_fixture.c). Without it those ports fail.
+      - name: Fetch the xfstests submodule
+        run: git submodule update --init xfstests
 
       # KUnit has no dependencies of its own; these are the kernel's.
       - name: Install kernel build dependencies
@@ -139,16 +145,8 @@ jobs:
             kunit-results.json
           if-no-files-found: warn
 
-  # Separate from the kunit matrix above: v6.12.57 with the host-signal
-  # livelock fix backported (see docs/kunit-nfs-reference.md, "A confirmed
-  # host-signal livelock on v6.12.57"). The matrix leg intentionally
-  # stays unpatched, so this job is the one place that continuously
-  # confirms the patch still applies to the pinned tag and still lets a
-  # full, unfiltered run finish without hanging.
-  #
-  # Skipped on the mainline-watch schedule: the pinned tag doesn't change
-  # between polls, so re-running this every 6 hours would add cost without
-  # telling us anything new.
+  # v6.12.57 is the upstream base of VAST NFS 4.5.8 (vastnfs-4.5.8/scripts/BASE).
+  # Applies fixes from patches/.
   kunit-v6-12-57-patched:
     name: kunit (linux v6.12.57, livelock fix backported)
     if: github.event_name != 'schedule'
@@ -162,6 +160,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: false
+
+      # See the kunit job: run-nfs-kunit.sh builds ltp/fsx from it.
+      - name: Fetch the xfstests submodule
+        run: git submodule update --init xfstests
 
       - name: Install kernel build dependencies
         run: |
@@ -178,6 +180,14 @@ jobs:
         run: |
           git -C linux apply --check "${GITHUB_WORKSPACE}/patches/um-thread-info-in-task-v6.12.57.patch"
           git -C linux apply "${GITHUB_WORKSPACE}/patches/um-thread-info-in-task-v6.12.57.patch"
+
+      # generic/363 fails on v6.12.57 without it: the NFS client does not
+      # discard data written through a mapping past EOF when the file is
+      # extended. See the patch header.
+      - name: Apply the NFS 'eof page pollution' fix
+        run: |
+          git -C linux apply --check "${GITHUB_WORKSPACE}/patches/nfs-eof-page-pollution-v6.12.57.patch"
+          git -C linux apply "${GITHUB_WORKSPACE}/patches/nfs-eof-page-pollution-v6.12.57.patch"
 
       # Same CONFIG_UBSAN=n rationale as the kunit job above. filter_glob
       # defaults to '*' (see FILTER_GLOB below): the whole point of this
@@ -226,6 +236,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: false
+
+      # See the kunit job: run-nfs-kunit.sh builds ltp/fsx from it.
+      - name: Fetch the xfstests submodule
+        run: git submodule update --init xfstests
 
       - name: Install kernel build dependencies
         run: |

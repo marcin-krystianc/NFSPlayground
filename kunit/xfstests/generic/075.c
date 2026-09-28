@@ -5,9 +5,10 @@
  * fsx is xfstests' random file exerciser: a shadow copy in memory, random
  * writes/truncates/punches/reads against the real file, every read
  * compared byte-for-byte against the shadow. This is a deliberately
- * reduced single-threaded fsx (no mmap, no AIO, no O_DIRECT -- which also
- * covers why 091/112/127 are not ported separately): 5000 seeded ops on a
- * file capped at 256 KB, full-file verification at the end. Over NFS,
+ * reduced single-threaded fsx written in the kernel (no mmap, no AIO, no
+ * O_DIRECT): 5000 seeded ops on a file capped at 256 KB, full-file
+ * verification at the end. The 091, 127, 263 and 363 ports run upstream's
+ * own fsx instead, through xfs_run_prog(). Over NFS,
  * every mismatch is a client cache/writeback bug by construction, since
  * the server is the only other holder of the data.
  */

@@ -61,8 +61,9 @@ without VAST hardware, and how it behaves under failure.
 
 - [docs/xfstests-vs-pynfs.md](docs/xfstests-vs-pynfs.md) — what each suite
   actually tests, and where they differ.
-- `patches/` — backports applied to the fetched kernel tree, currently the
-  UML host-signal livelock fix needed for a full KUnit run on `v6.12.57`.
+- `patches/` — backports applied to the fetched kernel tree for `v6.12.57`:
+  the UML host-signal livelock fix needed for a full KUnit run, and the NFS
+  client's 'eof page pollution' fix, without which generic/363 fails.
 - `scripts/` — xfstests runners (GitHub CI, a VM plus Docker servers, a
   container) and `fetch-sources.sh`.
 
