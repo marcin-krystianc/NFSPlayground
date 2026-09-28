@@ -1,0 +1,129 @@
+name: NFS xfstests (UML)
+
+# Runs upstream xfstests against NFS inside a User Mode Linux kernel built
+# from each linux_ref, via scripts/00-run-xfstests-in-uml.sh. The NFS client
+# and knfsd under test are that kernel's, unlike the NFS xfstests workflow,
+# which can only test the runner's own kernel. Userspace (xfstests, xfsprogs,
+# nfs-utils) is the runner's, reached from the guest over hostfs.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      check_args:
+        description: 'Arguments for xfstests check.'
+        required: false
+        default: '-g quick'
+      delegations:
+        description: 'knfsd delegations in the guest (fs.leases-enable).'
+        required: false
+        type: choice
+        options: ['on', 'off']
+        default: 'on'
+
+permissions:
+  contents: read
+
+jobs:
+  xfstests-uml:
+    name: xfstests (UML, linux ${{ matrix.linux_ref }})
+    runs-on: ubuntu-latest
+    # How long -g quick takes under UML on a runner is not measured yet.
+    # Just under the 6-hour job limit, so a slow leg still uploads results.
+    timeout-minutes: 350
+
+    strategy:
+      fail-fast: false
+      matrix:
+        linux_ref: ['v6.12.57', 'v6.18.52', 'v7.2.6', 'master']
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Fetch the xfstests submodule
+        run: git submodule update --init xfstests
+
+      # Kernel build dependencies, plus xfstests' own and the NFS server
+      # userspace the guest runs from the host.
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential bc bison flex libelf-dev libssl-dev \
+            nfs-kernel-server nfs-common \
+            autoconf automake libtool-bin pkg-config gettext \
+            uuid-dev libattr1-dev libacl1-dev libaio-dev libgdbm-dev \
+            xfslibs-dev xfsprogs e2fsprogs attr acl quota \
+            bc gawk psmisc procps python3 uuid-runtime fio dbench dump \
+            libcap-dev liburing-dev
+
+      - name: Fetch the kernel tree
+        env:
+          LINUX_REF: ${{ matrix.linux_ref }}
+        run: bash scripts/fetch-sources.sh linux
+
+      # A harness fix, not an NFS one: without it the v6.12.57 UML kernel
+      # can livelock on host signals (docs/kunit-nfs-reference.md). The
+      # NFS fixes in patches/ are deliberately not applied, so every leg
+      # tests the tree as released.
+      - name: Apply the UML host-signal livelock fix
+        if: matrix.linux_ref == 'v6.12.57'
+        run: |
+          git -C linux apply --check "${GITHUB_WORKSPACE}/patches/um-thread-info-in-task-v6.12.57.patch"
+          git -C linux apply "${GITHUB_WORKSPACE}/patches/um-thread-info-in-task-v6.12.57.patch"
+
+      - name: Run xfstests in UML
+        shell: bash
+        env:
+          CHECK_ARGS: ${{ inputs.check_args || '-g quick' }}
+          NFS_DELEGATIONS: ${{ (inputs.delegations || 'on') == 'on' && '1' || '0' }}
+        run: |
+          set -o pipefail
+          bash scripts/00-run-xfstests-in-uml.sh $CHECK_ARGS 2>&1 | tee xfstests.log
+
+      - name: Summarise
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '```'
+            sed -n '/^==> under test/,/^$/p' xfstests.log 2>/dev/null
+            grep -E '^(Ran|Not run|Failures|Failed|Passed)' xfstests.log 2>/dev/null ||
+              echo "no result trailer -- the run did not finish"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # The diff and .full tail of each failure, so the job log alone is
+      # enough to see what failed.
+      - name: Show failure details
+        if: always()
+        shell: bash
+        run: |
+          shopt -s nullglob
+          for f in xfstests/results/*/*.out.bad; do
+            t=${f#xfstests/results/}; t=${t%.out.bad}
+            echo "::group::${t} diff"
+            diff -u "xfstests/tests/${t}.out" "$f" || true
+            echo "::endgroup::"
+            if [ -f "xfstests/results/${t}.full" ]; then
+              echo "::group::${t}.full (last 200 lines)"
+              tail -n 200 "xfstests/results/${t}.full"
+              echo "::endgroup::"
+            fi
+          done
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xfstests-uml-results-${{ matrix.linux_ref }}
+          path: |
+            xfstests.log
+            xfstests/results/
+            uml-run/dmesg.txt
+            linux/.xfstests-uml/build.log
+          if-no-files-found: warn
