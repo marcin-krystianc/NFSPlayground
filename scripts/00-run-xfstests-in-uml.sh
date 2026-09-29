@@ -47,6 +47,8 @@ TRACE_BUFFER_KB="${TRACE_BUFFER_KB:-65536}"
 
 # Same default as 00-run-xfstests-on-gh-ci.sh.
 DEFAULT_CHECK_ARGS=(-g attr -g acl -g dir)
+# Shared with 00-run-xfstests-on-gh-ci.sh; see the file for the rules.
+EXCLUDE_FILE="${EXCLUDE_FILE:-${REPO_ROOT}/scripts/xfstests-exclude}"
 
 # Everything the guest needs, built in. UML loads no modules here: the guest
 # sees the host's /lib/modules, which belongs to a different kernel.
@@ -67,6 +69,10 @@ die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
 
 check_args=("$@")
 [ ${#check_args[@]} -gt 0 ] || check_args=("${DEFAULT_CHECK_ARGS[@]}")
+# The guest sees the host's filesystem, so the host path works in there.
+if [ -s "$EXCLUDE_FILE" ] && grep -qvE '^\s*(#|$)' "$EXCLUDE_FILE"; then
+    check_args=(-E "$EXCLUDE_FILE" "${check_args[@]}")
+fi
 
 [ -f "${LINUX_DIR}/init/main.c" ] ||
     die "${LINUX_DIR} is not a kernel tree -- run: scripts/fetch-sources.sh linux"
