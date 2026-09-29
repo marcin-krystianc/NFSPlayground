@@ -15,7 +15,7 @@ on:
       check_args:
         description: 'Arguments for xfstests check.'
         required: false
-        default: '-g quick'
+        default: 'generic/258'
 
 permissions:
   contents: read
@@ -77,7 +77,7 @@ jobs:
       - name: Run xfstests in UML
         shell: bash
         env:
-          CHECK_ARGS: ${{ inputs.check_args || '-g quick' }}
+          CHECK_ARGS: ${{ inputs.check_args || 'generic/258' }}
           NFS_DELEGATIONS: ${{ matrix.delegations == 'on' && '1' || '0' }}
         run: |
           set -o pipefail
