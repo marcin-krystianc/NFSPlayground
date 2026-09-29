@@ -103,22 +103,37 @@ root causes.
   the full suite to completion, and with the NFS 'eof page pollution' fix
   (`patches/nfs-eof-page-pollution-v6.12.57.patch`) applied. The unpatched
   `v6.12.57` leg can fail generic/363 without it.
-- `kunit-coverage` — `master` with `COVERAGE=1`, unfiltered. Uploads
-  `coverage/coverage.info` and the HTML report as the `kunit-coverage-master`
-  artifact, and puts the `lcov --summary` totals in the job's step summary.
-  Runs on every push and PR, not just `master`.
-- `publish-coverage-pages` — push-to-`master` only. Publishes
-  `kunit-coverage`'s `coverage/` (the HTML report plus `coverage.info`) to
-  GitHub Pages.
-- `coverage-diff` — runs on every trigger. Downloads this run's own
-  `coverage.info` (from `kunit-coverage` in the same run) and the latest
-  successful push-to-`master` run's, via `actions/download-artifact`'s
-  cross-run `run-id` support, then runs `scripts/kunit/coverage-diff.py`
-  and always writes the per-file delta to the job's step summary. On a
-  `pull_request` event it additionally posts/updates a single PR comment
-  with the same content. On a fork PR the default `GITHUB_TOKEN` is
-  read-only, so the comment step no-ops
-  instead of failing the job.
+
+Coverage is in `.github/workflows/coverage.yml`, which merges this suite's
+coverage with that of upstream xfstests run in a UML guest
+(`scripts/00-run-xfstests-in-uml.sh`):
+
+- `select-sha` — resolves `master` to one commit. Every other job builds
+  that commit, since lcov merges line by line and two jobs fetching
+  `master` separately can get different ones.
+- `kunit` — this suite with `COVERAGE=1`, unfiltered.
+- `xfstests` — xfstests `-g quick` with `COVERAGE=1`, once with knfsd
+  delegations off and once on.
+- `merge` — runs `scripts/coverage-filter.py` on each tracefile (keeps only
+  files git tracks in the kernel, which drops the copied-in KUnit tests and
+  generated files, and names the suite in `TN:`), merges them with
+  `lcov -a`, and renders the HTML report from a pristine checkout of the
+  same commit. Uploads it all as the `coverage-master` artifact, per-suite
+  tracefiles under `by-suite/`. Reading the merged `coverage.info` with
+  lcov 2.0 needs `--rc derive_function_end_line=0`; the job comments say why.
+- `publish-coverage-pages` — push-to-`master` only. Publishes the merged
+  report to GitHub Pages.
+- `coverage-diff` — runs on every trigger. Diffs this run's merged
+  `coverage.info` against the latest successful push-to-`master` run's
+  with `scripts/kunit/coverage-diff.py`, writes it to the step summary and,
+  on a `pull_request`, posts or updates one PR comment. On a fork PR the
+  default `GITHUB_TOKEN` is read-only, so the comment step no-ops instead
+  of failing the job.
+
+The merge depends on `run-nfs-kunit.sh` editing the kernel tree without
+moving lines: it force-includes `<kunit/visibility.h>` through per-object
+`CFLAGS` instead of adding an `#include`, and its un-`static` substitution
+keeps the original line breaks.
 
 ## Where the detail lives
 
