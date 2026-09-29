@@ -50,7 +50,7 @@ jobs:
           if [ "${{ github.event_name }}" = "schedule" ]; then
             echo 'linux_refs=["master"]' >> "$GITHUB_OUTPUT"
           else
-            echo 'linux_refs=["v6.12.57","v6.18.52","v7.2.6","master"]' >> "$GITHUB_OUTPUT"
+            echo 'linux_refs=["v6.18.52","v7.2.6","master"]' >> "$GITHUB_OUTPUT"
           fi
 
   kunit:
@@ -95,14 +95,10 @@ jobs:
           LINUX_REF: ${{ matrix.linux_ref }}
         run: bash scripts/fetch-sources.sh linux
 
-      # CONFIG_UBSAN=n is deliberate. With UBSAN on, the pinned kernel reports
-      # two misaligned accesses in kernel/exit.c:774, pre-existing in
-      # v6.12.57 under UML and unrelated to anything in kunit/. kunit.py
-      # attributes them to whichever test happened to be running, so they
-      # surface as two failures that move around between runs. Applied to
-      # all matrix legs uniformly: whether the same misalignment still
-      # exists on current mainline is not tracked, and UBSAN's own findings
-      # are not what any leg is testing for.
+      # UBSAN is left on (the .kunitconfig default). On v6.12.57 it reports
+      # a misaligned access in kernel/exit.c:774 that kunit.py pins on
+      # whichever test was running; see "The UBSAN artefact" in
+      # docs/kunit-nfs-reference.md. Only kunit-v6-12-57-patched turns it off.
       #
       # --json needs the `=` form: its value is optional (nargs='?'), so
       # `--json path` leaves --json empty and path is taken as the positional
@@ -123,7 +119,6 @@ jobs:
         run: |
           set -o pipefail
           bash scripts/kunit/run-nfs-kunit.sh \
-            --kconfig_add CONFIG_UBSAN=n \
             --json="${GITHUB_WORKSPACE}/kunit-results.json" \
             "$FILTER_GLOB" \
             $EXTRA_ARGS 2>&1 | tee kunit.log
@@ -189,7 +184,11 @@ jobs:
           git -C linux apply --check "${GITHUB_WORKSPACE}/patches/nfs-eof-page-pollution-v6.12.57.patch"
           git -C linux apply "${GITHUB_WORKSPACE}/patches/nfs-eof-page-pollution-v6.12.57.patch"
 
-      # Same CONFIG_UBSAN=n rationale as the kunit job above. filter_glob
+      # CONFIG_UBSAN=n: with UBSAN on, v6.12.57 under UML reports two
+      # misaligned accesses in kernel/exit.c:774, unrelated to anything in
+      # kunit/. kunit.py attributes them to whichever test happened to be
+      # running, so they surface as two failures that move between runs
+      # ("The UBSAN artefact" in docs/kunit-nfs-reference.md). filter_glob
       # defaults to '*' (see FILTER_GLOB below): the whole point of this
       # leg is to run the full, unfiltered suite and show it completing
       # without the livelock.

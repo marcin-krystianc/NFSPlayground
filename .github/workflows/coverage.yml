@@ -87,7 +87,6 @@ jobs:
           LINUX_REF: ${{ needs.select-sha.outputs.sha }}
         run: bash scripts/fetch-sources.sh linux
 
-      # CONFIG_UBSAN=n: see the kunit job in kunit.yml.
       - name: Run the KUnit suites with coverage
         shell: bash
         env:
@@ -95,7 +94,6 @@ jobs:
         run: |
           set -o pipefail
           bash scripts/kunit/run-nfs-kunit.sh \
-            --kconfig_add CONFIG_UBSAN=n \
             --json="${GITHUB_WORKSPACE}/kunit-results.json" \
             '*' 2>&1 | tee kunit.log
 
