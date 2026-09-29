@@ -13,6 +13,10 @@ RUN_DIR="$1"
 status=1
 
 finish() {
+    # Copy without ownership: the files are guest root's, and the host side
+    # of hostfs cannot chown.
+    [ -z "${results_host:-}" ] ||
+        cp -r "${XFSTESTS_DIR}/results/." "$results_host"/ 2>/dev/null
     dmesg > "${RUN_DIR}/dmesg.txt" 2>/dev/null
     echo "$status" > "${RUN_DIR}/status"
     sync
@@ -92,6 +96,17 @@ mount -t nfs -o "vers=${NFS_VERS}" 127.0.0.1:/test /mnt/nfs-test-env/test
 umount /mnt/nfs-test-env/test
 
 echo "guest kernel: $(uname -r), delegations: $(cat /proc/sys/fs/leases-enable)"
+# check and the tests keep temp files under ${TMPDIR:-/tmp}, which is tmpfs
+# here, and check moves them into results/. Across filesystems mv copies and
+# then chowns, which hostfs refuses, so results/ is tmpfs too for the run,
+# at the same path, and finish() copies it back out.
+results_dir="${XFSTESTS_DIR}/results"
+mkdir -p "$results_dir" /run/results-host
+mount --bind "$results_dir" /run/results-host
+mount -t tmpfs tmpfs "$results_dir"
+cp -a /run/results-host/. "$results_dir"/
+results_host=/run/results-host
+
 mapfile -t check_args < "${RUN_DIR}/check-args"
 set +e
 ( cd "$XFSTESTS_DIR" && HOST_OPTIONS="${RUN_DIR}/local.config" ./check -nfs "${check_args[@]}" )
