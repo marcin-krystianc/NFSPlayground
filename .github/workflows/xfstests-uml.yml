@@ -132,3 +132,120 @@ jobs:
             uml-run/trace.txt
             linux/.xfstests-uml/build.log
           if-no-files-found: warn
+
+  # Coverage of master's NFS client, knfsd and everything under them, from
+  # the same suite run twice in one job: delegations off, then on. The two
+  # exercise different paths (the client answering from a delegation, and
+  # the recall and delegated-timestamp code), so neither alone is the whole
+  # picture. Kept out of the matrix above because the gcov build is only
+  # wanted once, and the two runs need merging.
+  xfstests-uml-coverage:
+    name: xfstests coverage (UML, linux master, delegations off + on)
+    runs-on: ubuntu-latest
+    # Two -g quick runs of 73-77 minutes each without gcov, plus the gcov
+    # overhead, which is not measured yet. At the 6-hour job limit.
+    timeout-minutes: 360
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Fetch the xfstests submodule
+        run: git submodule update --init xfstests
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential bc bison flex libelf-dev libssl-dev \
+            nfs-kernel-server nfs-common \
+            autoconf automake libtool-bin pkg-config gettext \
+            uuid-dev libattr1-dev libacl1-dev libaio-dev libgdbm-dev \
+            xfslibs-dev xfsprogs e2fsprogs attr acl quota \
+            bc gawk psmisc procps python3 uuid-runtime fio dbench dump \
+            libcap-dev liburing-dev lcov
+
+      - name: Fetch the kernel tree
+        env:
+          LINUX_REF: master
+        run: bash scripts/fetch-sources.sh linux
+
+      # One kernel build: the second run finds it up to date. Each run
+      # deletes the previous .gcda files first, so each coverage.info is
+      # that run's alone, and results/ and uml-run/ are moved aside between
+      # runs because the runner reuses both. A failing first run does not
+      # skip the second; the step fails at the end if either did.
+      - name: Run xfstests in UML, delegations off then on
+        shell: bash
+        env:
+          CHECK_ARGS: ${{ inputs.check_args || '-g quick' }}
+          COVERAGE: '1'
+        run: |
+          set -o pipefail
+          rc=0
+          for d in off on; do
+            NFS_DELEGATIONS=$([ "$d" = on ] && echo 1 || echo 0) \
+            COVERAGE_DIR="coverage/xfstests-uml/delegations-${d}" \
+              bash scripts/00-run-xfstests-in-uml.sh $CHECK_ARGS 2>&1 |
+              tee "xfstests-delegations-${d}.log" || rc=1
+            mv xfstests/results "results-delegations-${d}" || true
+            mv uml-run "uml-run-delegations-${d}" || true
+          done
+          lcov -q -a coverage/xfstests-uml/delegations-off/coverage.info \
+                  -a coverage/xfstests-uml/delegations-on/coverage.info \
+               -o coverage/xfstests-uml/coverage.info || rc=1
+          exit $rc
+
+      - name: Summarise
+        if: always()
+        shell: bash
+        run: |
+          {
+            for d in off on; do
+              echo "### delegations ${d}"
+              echo '```'
+              grep -E '^(Failures|Failed|Passed)' "xfstests-delegations-${d}.log" 2>/dev/null ||
+                echo "no result trailer -- the run did not finish"
+              echo '```'
+            done
+            if [ -f coverage/xfstests-uml/coverage.info ]; then
+              echo "### coverage, both runs merged"
+              echo '```'
+              lcov --summary coverage/xfstests-uml/coverage.info 2>&1 | grep -E 'lines|functions'
+              for dir in fs/nfs fs/nfsd net/sunrpc; do
+                lcov -q --extract coverage/xfstests-uml/coverage.info "*/linux/${dir}/*" \
+                  -o /tmp/dir.info 2>/dev/null &&
+                  echo "${dir}: $(lcov --summary /tmp/dir.info 2>&1 | grep -E 'lines' | tr -s ' ')"
+              done
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Show failure details
+        if: always()
+        shell: bash
+        run: |
+          shopt -s nullglob
+          for f in results-delegations-*/*/*.out.bad; do
+            r=${f%%/*}; t=${f#*/}; t=${t%.out.bad}
+            echo "::group::${r} ${t} diff"
+            diff -u "xfstests/tests/${t}.out" "$f" || true
+            echo "::endgroup::"
+          done
+
+      # coverage.info only: the genhtml report is ~250 MB. Rebuild it with
+      # genhtml -o html coverage/xfstests-uml/coverage.info.
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xfstests-uml-coverage-master
+          path: |
+            xfstests-delegations-*.log
+            results-delegations-*/
+            uml-run-delegations-*/dmesg.txt
+            coverage/xfstests-uml/coverage.info
+            coverage/xfstests-uml/delegations-*/coverage.info
+            linux/.xfstests-uml/build.log
+          if-no-files-found: warn

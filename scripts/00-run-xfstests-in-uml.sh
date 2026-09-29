@@ -44,6 +44,12 @@ NFS_DELEGATIONS="${NFS_DELEGATIONS:-1}"
 # so RUN_DIR/trace.txt holds the last TRACE_BUFFER_KB of events.
 TRACE_EVENTS="${TRACE_EVENTS:-}"
 TRACE_BUFFER_KB="${TRACE_BUFFER_KB:-65536}"
+# 1 builds the kernel with UML's gcov support and, after the run, writes
+# COVERAGE_DIR/coverage.info and an HTML report, as COVERAGE=1
+# scripts/kunit/run-nfs-kunit.sh does. UML is an ordinary host process, so
+# the .gcda files land in BUILD_DIR when it exits.
+COVERAGE="${COVERAGE:-0}"
+COVERAGE_DIR="${COVERAGE_DIR:-${REPO_ROOT}/coverage/xfstests-uml}"
 
 # Same default as 00-run-xfstests-on-gh-ci.sh.
 DEFAULT_CHECK_ARGS=(-g attr -g acl -g dir)
@@ -63,6 +69,9 @@ KCONFIG_ENABLE=(
     SWAP AIO IO_URING FHANDLE INOTIFY_USER FANOTIFY
 )
 [ -z "$TRACE_EVENTS" ] || KCONFIG_ENABLE+=(FTRACE ENABLE_DEFAULT_TRACERS EVENT_TRACING)
+# UML's own GCOV symbol (arch/um/Kconfig.debug), which needs debug info.
+[ "$COVERAGE" != 1 ] ||
+    KCONFIG_ENABLE+=(DEBUG_KERNEL DEBUG_INFO DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT GCOV)
 
 log()  { printf '\n==> %s\n' "$*"; }
 die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -82,6 +91,21 @@ for cmd in mkfs.xfs rpc.nfsd rpc.mountd exportfs rpcbind ip; do
     command -v "$cmd" >/dev/null ||
         die "$cmd not found -- the guest runs the host's userspace, so install it here"
 done
+if [ "$COVERAGE" = 1 ]; then
+    command -v lcov >/dev/null && command -v genhtml >/dev/null ||
+        die "COVERAGE=1 needs lcov and genhtml (apt install lcov)"
+    # UML's linker scripts keep only the plain .fini_array section, so gcov's
+    # exit destructor, emitted into .fini_array.NNNNN, is dropped and no
+    # .gcda is ever written. Same fix as scripts/kunit/run-nfs-kunit.sh,
+    # which has the background.
+    for lds in "${LINUX_DIR}/arch/um/include/asm/common.lds.S" \
+               "${LINUX_DIR}/arch/um/kernel/dyn.lds.S"; do
+        grep -qF '*(.fini_array.*)' "$lds" && continue
+        sed -i 's/\*(\.fini_array)/*(.fini_array.*) *(.fini_array)/' "$lds"
+        grep -qF '*(.fini_array.*)' "$lds" ||
+            die "could not patch .fini_array in ${lds}"
+    done
+fi
 
 # ---------------------------------------------------------------------------
 # Kernel
@@ -90,7 +114,10 @@ log "configuring the UML kernel in ${BUILD_DIR}"
 make -C "$LINUX_DIR" O="$BUILD_DIR" ARCH=um defconfig >/dev/null
 enable_args=()
 for sym in "${KCONFIG_ENABLE[@]}"; do enable_args+=(--enable "$sym"); done
-"${LINUX_DIR}/scripts/config" --file "${BUILD_DIR}/.config" "${enable_args[@]}"
+# MODULES off: nothing is loaded (see KCONFIG_ENABLE), and UML's GCOV
+# depends on !MODULES.
+"${LINUX_DIR}/scripts/config" --file "${BUILD_DIR}/.config" "${enable_args[@]}" \
+    --disable MODULES
 make -C "$LINUX_DIR" O="$BUILD_DIR" ARCH=um olddefconfig >/dev/null
 
 # olddefconfig silently drops a symbol whose dependencies are unmet. Say
@@ -160,6 +187,7 @@ echo "  source:       $(git -C "$LINUX_DIR" describe --always --dirty 2>/dev/nul
 echo "  nfs-utils:    $(dpkg-query -W -f='${Version}' nfs-common 2>/dev/null || echo unknown)"
 echo "  delegations:  $([ "$NFS_DELEGATIONS" = 1 ] && echo on || echo off)"
 echo "  trace events: ${TRACE_EVENTS:-(none)}"
+echo "  coverage:     $([ "$COVERAGE" = 1 ] && echo "on (${COVERAGE_DIR})" || echo off)"
 echo "  check args:   ${check_args[*]}"
 
 # ---------------------------------------------------------------------------
@@ -168,6 +196,9 @@ echo "  check args:   ${check_args[*]}"
 # The guest powers itself off when check finishes; the status file is how
 # its result gets out.
 # ---------------------------------------------------------------------------
+# Counters from an earlier run would otherwise be added to this one's.
+[ "$COVERAGE" != 1 ] || find "$BUILD_DIR" -name '*.gcda' -delete
+
 log "booting the guest"
 "${BUILD_DIR}/linux" \
     mem="$UML_MEM" \
@@ -179,6 +210,19 @@ log "booting the guest"
     -- "${REPO_ROOT}/scripts/xfstests-uml-init.sh" "$RUN_DIR" </dev/null || true
 
 rm -f "${RUN_DIR}/test.img" "${RUN_DIR}/scratch.img"
+
+if [ "$COVERAGE" = 1 ]; then
+    log "collecting coverage into ${COVERAGE_DIR}"
+    mkdir -p "$COVERAGE_DIR"
+    # --ignore-errors mismatch: see the same call in run-nfs-kunit.sh.
+    # geninfo warns per source line; that goes to lcov.log, not the console.
+    lcov -q -t xfstests-uml -o "${COVERAGE_DIR}/coverage.info" -c -d "$BUILD_DIR" \
+        --ignore-errors mismatch 2>"${COVERAGE_DIR}/lcov.log" ||
+        die "lcov found no coverage -- see ${COVERAGE_DIR}/lcov.log"
+    genhtml -q -o "${COVERAGE_DIR}/html" "${COVERAGE_DIR}/coverage.info" \
+        2>>"${COVERAGE_DIR}/lcov.log"
+    lcov --summary "${COVERAGE_DIR}/coverage.info" 2>&1 | sed 's/^/  /'
+fi
 
 [ -f "${RUN_DIR}/status" ] ||
     die "the guest exited without a result -- see the console output above and ${RUN_DIR}/dmesg.txt"
