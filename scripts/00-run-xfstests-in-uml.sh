@@ -38,6 +38,12 @@ NFS_VERS="${NFS_VERS:-4.2}"
 # 0 turns off fs.leases-enable in the guest, which disables knfsd
 # delegations. The sysctl is the guest kernel's, so nothing needs restoring.
 NFS_DELEGATIONS="${NFS_DELEGATIONS:-1}"
+# Space-separated tracefs events ("system:event") to record in the guest,
+# for example "nfs4:nfs4_set_delegation nfsd:nfsd_vfs_setattr". Empty means
+# no tracing and no tracing in the kernel config. The ring buffer overwrites,
+# so RUN_DIR/trace.txt holds the last TRACE_BUFFER_KB of events.
+TRACE_EVENTS="${TRACE_EVENTS:-}"
+TRACE_BUFFER_KB="${TRACE_BUFFER_KB:-65536}"
 
 # Same default as 00-run-xfstests-on-gh-ci.sh.
 DEFAULT_CHECK_ARGS=(-g attr -g acl -g dir)
@@ -54,6 +60,7 @@ KCONFIG_ENABLE=(
     NET INET IPV6 UNIX
     SWAP AIO IO_URING FHANDLE INOTIFY_USER FANOTIFY
 )
+[ -z "$TRACE_EVENTS" ] || KCONFIG_ENABLE+=(FTRACE ENABLE_DEFAULT_TRACERS EVENT_TRACING)
 
 log()  { printf '\n==> %s\n' "$*"; }
 die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -136,6 +143,8 @@ cat > "${RUN_DIR}/env" <<EOF
 XFSTESTS_DIR='${XFSTESTS_DIR}'
 NFS_VERS='${NFS_VERS}'
 NFS_DELEGATIONS='${NFS_DELEGATIONS}'
+TRACE_EVENTS='${TRACE_EVENTS}'
+TRACE_BUFFER_KB='${TRACE_BUFFER_KB}'
 EOF
 printf '%s\n' "${check_args[@]}" > "${RUN_DIR}/check-args"
 
@@ -144,6 +153,7 @@ echo "  kernel:       $(make -s -C "$LINUX_DIR" O="$BUILD_DIR" ARCH=um kernelrel
 echo "  source:       $(git -C "$LINUX_DIR" describe --always --dirty 2>/dev/null || echo unknown)"
 echo "  nfs-utils:    $(dpkg-query -W -f='${Version}' nfs-common 2>/dev/null || echo unknown)"
 echo "  delegations:  $([ "$NFS_DELEGATIONS" = 1 ] && echo on || echo off)"
+echo "  trace events: ${TRACE_EVENTS:-(none)}"
 echo "  check args:   ${check_args[*]}"
 
 # ---------------------------------------------------------------------------

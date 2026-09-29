@@ -17,6 +17,8 @@ finish() {
     # of hostfs cannot chown.
     [ -z "${results_host:-}" ] ||
         cp -r "${XFSTESTS_DIR}/results/." "$results_host"/ 2>/dev/null
+    [ -z "${TRACE_EVENTS:-}" ] ||
+        cat /sys/kernel/tracing/trace > "${RUN_DIR}/trace.txt" 2>/dev/null
     dmesg > "${RUN_DIR}/dmesg.txt" 2>/dev/null
     echo "$status" > "${RUN_DIR}/status"
     sync
@@ -106,6 +108,24 @@ mount --bind "$results_dir" /run/results-host
 mount -t tmpfs tmpfs "$results_dir"
 cp -a /run/results-host/. "$results_dir"/
 results_host=/run/results-host
+
+# Kernel trace events, when asked for. Enabled one by one so a name this
+# kernel does not have is reported and skipped rather than failing the run.
+# check writes "run fstests <test>" to /dev/kmsg; printk:console puts those
+# lines in the trace too, as test boundaries.
+if [ -n "$TRACE_EVENTS" ]; then
+    t=/sys/kernel/tracing
+    mount -t tracefs tracefs "$t"
+    echo "$TRACE_BUFFER_KB" > "${t}/buffer_size_kb"
+    set -f
+    for ev in $TRACE_EVENTS printk:console; do
+        echo "$ev" >> "${t}/set_event" 2>/dev/null ||
+            echo "warning: no trace event $ev in this kernel"
+    done
+    set +f
+    echo 1 > "${t}/tracing_on"
+    echo "tracing: $(wc -l < "${t}/set_event") events, ${TRACE_BUFFER_KB} KB buffer"
+fi
 
 mapfile -t check_args < "${RUN_DIR}/check-args"
 set +e

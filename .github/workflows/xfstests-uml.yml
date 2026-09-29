@@ -16,6 +16,10 @@ on:
         description: 'Arguments for xfstests check.'
         required: false
         default: 'generic/258 generic/634'
+      trace_events:
+        description: 'Kernel trace events recorded in the guest (uml-run/trace.txt in the artifact).'
+        required: false
+        default: 'nfs4:nfs4_set_delegation nfs4:nfs4_setattr nfs4:nfs4_delegreturn nfs4:nfs4_delegreturn_exit nfs4:nfs4_cb_getattr nfs4:nfs4_cb_recall nfs:nfs_setattr_enter nfsd:nfsd_deleg_write nfsd:nfsd_deleg_read nfsd:nfsd_deleg_return nfsd:nfsd_vfs_setattr nfsd:nfsd_cb_getattr_done nfsd:nfsd_cb_recall_done'
 
 permissions:
   contents: read
@@ -79,6 +83,8 @@ jobs:
         env:
           CHECK_ARGS: ${{ inputs.check_args || 'generic/258 generic/634' }}
           NFS_DELEGATIONS: ${{ matrix.delegations == 'on' && '1' || '0' }}
+          # The delegation and setattr path behind generic/258 and 634.
+          TRACE_EVENTS: ${{ inputs.trace_events || 'nfs4:nfs4_set_delegation nfs4:nfs4_setattr nfs4:nfs4_delegreturn nfs4:nfs4_delegreturn_exit nfs4:nfs4_cb_getattr nfs4:nfs4_cb_recall nfs:nfs_setattr_enter nfsd:nfsd_deleg_write nfsd:nfsd_deleg_read nfsd:nfsd_deleg_return nfsd:nfsd_vfs_setattr nfsd:nfsd_cb_getattr_done nfsd:nfsd_cb_recall_done' }}
         run: |
           set -o pipefail
           bash scripts/00-run-xfstests-in-uml.sh $CHECK_ARGS 2>&1 | tee xfstests.log
@@ -123,5 +129,6 @@ jobs:
             xfstests.log
             xfstests/results/
             uml-run/dmesg.txt
+            uml-run/trace.txt
             linux/.xfstests-uml/build.log
           if-no-files-found: warn
