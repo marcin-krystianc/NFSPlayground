@@ -38,7 +38,8 @@ Test sources are in `kunit/`; `scripts/kunit/run-nfs-kunit.sh` wires them
 into a fetched kernel tree and drives `kunit.py`. `COVERAGE=1
 scripts/kunit/run-nfs-kunit.sh` additionally produces an lcov/gcov HTML
 report ([docs/kunit-nfs.md#coverage](docs/kunit-nfs.md#coverage)); the latest
-`master` report is published at
+`master` report, merged with UML xfstests coverage by
+[.github/workflows/coverage.yml](.github/workflows/coverage.yml), is published at
 [marcin-krystianc.github.io/NFSPlayground](https://marcin-krystianc.github.io/NFSPlayground/).
 
 ## 2. VAST NFS investigation

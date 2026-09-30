@@ -1,4 +1,5 @@
-# Tests excluded from the CI xfstests run (.github/workflows/xfstests.yml).
+# Tests excluded from the CI xfstests runs (.github/workflows/xfstests.yml
+# and .github/workflows/xfstests-uml.yml).
 #
 # One test per line, in xfstests -E format (e.g. "generic/003").
 #
@@ -7,5 +8,41 @@
 # have, a test that is meaningless against NFS, a genuine bug with a link to
 # where it is tracked. "It was red" is not a reason; an unexplained failure
 # should stay red until someone explains it.
+
+# generic/258 and generic/634: explicit timestamps lost under an NFSv4.2
+# timestamp delegation. Kernel bug, client and knfsd together.
 #
-# Empty on purpose. Nothing has earned a place here yet.
+# Seen with delegations on, on v7.2.6 and master under UML and on the
+# runner's 6.17 kernel. Passes with delegations off on every kernel, and
+# with delegations on on v6.18.52 (v6.12.57 was reported passing too).
+#
+# When the open of a file is granted a write delegation with delegated
+# timestamps (OPEN_DELEGATE_WRITE_ATTRS_DELEG), nfs_setattr()
+# (fs/nfs/inode.c) keeps a utimensat() by the owner on the client and sends
+# no SETATTR. The times reach the server only at DELEGRETURN, as
+# TIME_DELEG_ACCESS/TIME_DELEG_MODIFY. knfsd's nfsd4_vet_deleg_time()
+# (fs/nfsd/nfs4state.c) ignores a delegated time earlier than the file's
+# time at grant and clamps one in the future to the current time. A written
+# file with no accepted time is then stamped to now by
+# nfsd4_finalize_deleg_timestamps().
+#
+# Traced with scripts/00-run-xfstests-in-uml.sh TRACE_EVENTS: the file's
+# OPEN gets nfsd_deleg_write, no client SETATTR follows the touch, and at
+# unmount nfsd_vfs_setattr applies ia_valid=DELEG with no time bits
+# (dropped) or with ATIME_SET|MTIME_SET (clamped). The tests only fail
+# after earlier tests in -g quick have run; alone, the file gets no write
+# delegation and a plain SETATTR carries the times.
+#
+# generic/258 sets a 1960 atime/mtime: dropped as earlier than grant.
+# generic/634 sets 1901 and year 0 (dropped) and 2038..year 2147483647
+# (clamped to now).
+#
+# Fix: "[PATCH v3 0/3] fs/nfsd: accept a backdated timestamp from a
+# delegation holder" (Jeff Layton, 2026-09-04),
+# https://ratatoskr.run/linux-fsdevel/2026/09/17514664/t
+# It makes knfsd accept a backdated delegated time, which covers
+# generic/258 and 634's two past dates. Per the series, "nfsd still clamps a
+# future time", so generic/634's future dates are not covered by it and 634
+# is expected to keep failing with delegations on.
+generic/258
+generic/634

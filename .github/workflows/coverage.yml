@@ -1,0 +1,432 @@
+name: NFS coverage
+
+# One coverage figure for upstream master's NFS client, knfsd and SunRPC,
+# merged from every suite that measures it:
+#
+#   kunit      scripts/kunit/run-nfs-kunit.sh: the unit suites and the
+#              kunit/xfstests ports, plus upstream's own KUnit suites
+#   xfstests   scripts/00-run-xfstests-in-uml.sh: upstream xfstests -g quick
+#              in a UML guest, once with knfsd delegations off and once on
+#
+# lcov merges tracefiles line by line, so all of them must describe the
+# same source. Hence:
+#
+#  - select-sha resolves master to one commit and every job builds that
+#    commit, instead of each fetching master on its own and possibly
+#    getting different ones.
+#  - run-nfs-kunit.sh edits the tree it builds without moving lines (it
+#    force-includes <kunit/visibility.h> through CFLAGS instead of adding
+#    an #include).
+#  - scripts/coverage-filter.py keeps only files git tracks in the kernel,
+#    dropping the copied-in KUnit tests and generated files, and names each
+#    tracefile's test, so the merged report can still say which suite hit
+#    a line.
+#
+# The merged report is what GitHub Pages publishes and what the PR diff
+# compares. The per-suite tracefiles stay in the coverage-master artifact.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      check_args:
+        description: 'Arguments for xfstests check in the two xfstests jobs.'
+        required: false
+        default: '-g quick'
+
+# Default is contents: read; the Pages and PR-comment jobs elevate what they
+# individually need.
+permissions:
+  contents: read
+
+jobs:
+  select-sha:
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      # The URL is fetch-sources.sh's, so this is the master it would fetch.
+      - id: resolve
+        run: |
+          url="$(sed -n 's/^LINUX_URL="\(.*\)"$/\1/p' scripts/fetch-sources.sh)"
+          sha="$(git ls-remote "$url" refs/heads/master | cut -f1)"
+          [ -n "$sha" ] || { echo "could not resolve master at $url" >&2; exit 1; }
+          echo "linux master is $sha"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+  kunit:
+    name: coverage kunit
+    needs: select-sha
+    runs-on: ubuntu-latest
+    # A CONFIG_GCOV-instrumented build compiles slower than a plain one.
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      # run-nfs-kunit.sh builds xfstests' ltp/fsx from it for the fsx ports.
+      - name: Fetch the xfstests submodule
+        run: git submodule update --init xfstests
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential bc bison flex libelf-dev libssl-dev lcov
+
+      - name: Fetch the kernel tree
+        env:
+          LINUX_REF: ${{ needs.select-sha.outputs.sha }}
+        run: bash scripts/fetch-sources.sh linux
+
+      - name: Run the KUnit suites with coverage
+        shell: bash
+        env:
+          COVERAGE: '1'
+        run: |
+          set -o pipefail
+          bash scripts/kunit/run-nfs-kunit.sh \
+            --json="${GITHUB_WORKSPACE}/kunit-results.json" \
+            '*' 2>&1 | tee kunit.log
+
+      - name: Summarise
+        if: always()
+        shell: bash
+        run: |
+          grep -E '^\[.*\] (Testing complete|Failures:)' kunit.log \
+            >> "$GITHUB_STEP_SUMMARY" || true
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-kunit
+          path: |
+            kunit.log
+            kunit-results.json
+            coverage/coverage.info
+          if-no-files-found: warn
+
+  xfstests:
+    name: coverage xfstests (delegations ${{ matrix.delegations }})
+    needs: select-sha
+    runs-on: ubuntu-latest
+    # -g quick took 73-77 minutes per run under UML without gcov; the gcov
+    # slowdown is not measured yet. At the 6-hour job limit.
+    timeout-minutes: 360
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # The two exercise different paths: with delegations on, the client
+        # answers from its delegation and the recall and delegated-timestamp
+        # code runs. Neither alone is the whole picture.
+        delegations: ['off', 'on']
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Fetch the xfstests submodule
+        run: git submodule update --init xfstests
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential bc bison flex libelf-dev libssl-dev \
+            nfs-kernel-server nfs-common \
+            autoconf automake libtool-bin pkg-config gettext \
+            uuid-dev libattr1-dev libacl1-dev libaio-dev libgdbm-dev \
+            xfslibs-dev xfsprogs e2fsprogs attr acl quota \
+            bc gawk psmisc procps python3 uuid-runtime fio dbench dump \
+            libcap-dev liburing-dev lcov
+
+      - name: Fetch the kernel tree
+        env:
+          LINUX_REF: ${{ needs.select-sha.outputs.sha }}
+        run: bash scripts/fetch-sources.sh linux
+
+      # The runner collects coverage before it exits with check's status,
+      # so a run with failing tests still produces a tracefile.
+      - name: Run xfstests in UML with coverage
+        shell: bash
+        env:
+          CHECK_ARGS: ${{ inputs.check_args || 'generic/003' }}
+          NFS_DELEGATIONS: ${{ matrix.delegations == 'on' && '1' || '0' }}
+          COVERAGE: '1'
+        run: |
+          set -o pipefail
+          bash scripts/00-run-xfstests-in-uml.sh $CHECK_ARGS 2>&1 | tee xfstests.log
+
+      - name: Summarise
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '```'
+            grep -E '^(Failures|Failed|Passed)' xfstests.log 2>/dev/null ||
+              echo "no result trailer -- the run did not finish"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xfstests-delegations-${{ matrix.delegations }}
+          path: |
+            xfstests.log
+            xfstests/results/
+            uml-run/dmesg.txt
+            coverage/xfstests-uml/coverage.info
+          if-no-files-found: warn
+
+  # Runs even when a suite had failing tests: their coverage is still real.
+  # It fails, and so publishes nothing, if any tracefile is missing, since
+  # a partial merge would read as a coverage drop.
+  merge:
+    name: coverage (merged)
+    needs: [select-sha, kunit, xfstests]
+    if: always() && needs.select-sha.result == 'success'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends lcov
+
+      # The same commit the suites built, pristine: genhtml renders the
+      # report from it, and coverage-filter.py asks its git which files
+      # are tracked. It is fetched to the same path the other jobs built
+      # in, so the tracefiles' absolute paths already point into it.
+      - name: Fetch the kernel tree
+        env:
+          LINUX_REF: ${{ needs.select-sha.outputs.sha }}
+        run: bash scripts/fetch-sources.sh linux
+
+      - name: Download the suites' coverage
+        uses: actions/download-artifact@v4
+        with:
+          pattern: coverage-*
+          path: in
+
+      # --rc derive_function_end_line=0 on every lcov and genhtml call that
+      # reads a merged file: the suites build different configs, so a
+      # function (a syscall wrapper, say) can end on a different line in
+      # each, and lcov 2.0 (Ubuntu 24.04) aborts on that while deriving end
+      # lines, with an error code no --ignore-errors value matches
+      # (lcovutil.pm raises $ERROR_INCONSISTENT, which it never defines).
+      # The same flag is needed to open coverage.info locally.
+      - name: Filter and merge
+        shell: bash
+        run: |
+          set -e
+          mkdir -p coverage/by-suite
+          args=()
+          for pair in kunit:coverage-kunit/coverage/coverage.info \
+                      xfstests_delegations_off:coverage-xfstests-delegations-off/coverage/xfstests-uml/coverage.info \
+                      xfstests_delegations_on:coverage-xfstests-delegations-on/coverage/xfstests-uml/coverage.info; do
+            name="${pair%%:*}"; src="in/${pair#*:}"
+            [ -f "$src" ] || { echo "::error::no tracefile from ${name} (${src})"; exit 1; }
+            python3 scripts/coverage-filter.py linux "$name" "$src" "coverage/by-suite/${name}.info"
+            args+=(-a "coverage/by-suite/${name}.info")
+          done
+          # mismatch: as in run-nfs-kunit.sh's own lcov call.
+          lcov -q "${args[@]}" -o coverage/coverage.info \
+            --ignore-errors mismatch --rc derive_function_end_line=0
+          genhtml -q --show-details -o coverage/html coverage/coverage.info \
+            --ignore-errors mismatch --rc derive_function_end_line=0
+
+      - name: Summarise
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "Linux master \`${{ needs.select-sha.outputs.sha }}\`"
+            echo '```'
+            for f in coverage/by-suite/*.info coverage/coverage.info; do
+              [ -f "$f" ] || continue
+              echo "$(basename "$f" .info): $(lcov --summary "$f" --rc derive_function_end_line=0 2>&1 |
+                grep -E '^ *lines' | tr -s ' ')"
+            done
+            for dir in fs/nfs fs/nfsd net/sunrpc; do
+              lcov -q --extract coverage/coverage.info "*/linux/${dir}/*" -o /tmp/dir.info \
+                --rc derive_function_end_line=0 2>/dev/null &&
+                echo "merged ${dir}: $(lcov --summary /tmp/dir.info --rc derive_function_end_line=0 2>&1 |
+                  grep -E '^ *lines' | tr -s ' ')"
+            done
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the merged coverage
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-master
+          path: coverage/
+          if-no-files-found: error
+
+  # Publishes the merged report as the repo's GitHub Pages site. Push to
+  # master only: Pages serves one live site, so a PR run must not overwrite
+  # it; coverage-diff below is how a PR sees its own numbers.
+  #
+  # One-time manual step this job depends on: repo Settings -> Pages ->
+  # Source: GitHub Actions. Not settable from a workflow.
+  publish-coverage-pages:
+    name: Publish coverage to GitHub Pages
+    needs: merge
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Download coverage artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-master
+          path: artifact
+
+      - uses: actions/configure-pages@v5
+
+      # genhtml's output has to be the site root: Pages looks for index.html
+      # at the top level. coverage.info and the per-suite tracefiles go in
+      # alongside it, so they can be fetched without walking the report.
+      - name: Assemble the Pages site
+        run: |
+          mkdir site
+          cp -r artifact/html/. site/
+          cp artifact/coverage.info site/
+          cp -r artifact/by-suite site/
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - id: deployment
+        uses: actions/deploy-pages@v4
+
+  # Diffs this run's merged coverage.info against the latest successful
+  # push-to-master run's, via coverage-diff.py, and writes the result to the
+  # job summary. On a pull_request event it also posts or updates one PR
+  # comment. Reads the base from Actions artifact storage, not from Pages,
+  # so it works whether or not Pages is enabled.
+  #
+  # On a fork PR, GITHUB_TOKEN is read-only and the comment cannot be
+  # posted; continue-on-error keeps that a silent no-op.
+  coverage-diff:
+    name: Coverage diff vs master
+    needs: merge
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: Download this run's coverage
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-master
+          path: head-coverage
+
+      - name: Find the latest successful master coverage run
+        id: base-run
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const runs = await github.rest.actions.listWorkflowRuns({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'coverage.yml',
+              branch: 'master',
+              event: 'push',
+              status: 'completed',
+              per_page: 20,
+            });
+            for (const run of runs.data.workflow_runs) {
+              const jobs = await github.rest.actions.listJobsForWorkflowRun({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                run_id: run.id,
+                per_page: 100,
+              });
+              const merged = jobs.data.jobs.find(j => j.name === 'coverage (merged)');
+              if (merged && merged.conclusion === 'success') {
+                core.setOutput('run_id', String(run.id));
+                break;
+              }
+            }
+
+      - name: Download master's coverage
+        if: steps.base-run.outputs.run_id
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-master
+          path: base-coverage
+          run-id: ${{ steps.base-run.outputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute diff
+        if: steps.base-run.outputs.run_id
+        run: |
+          python3 scripts/kunit/coverage-diff.py \
+            base-coverage/coverage.info \
+            head-coverage/coverage.info \
+            > coverage-diff.md
+
+      - name: Write the diff to the job summary
+        if: always()
+        run: |
+          if [ -f coverage-diff.md ]; then
+            cat coverage-diff.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'No prior push-to-master run with a successful merged coverage job found to diff against.' \
+              >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Comment on the PR
+        if: steps.base-run.outputs.run_id && github.event_name == 'pull_request'
+        continue-on-error: true
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = '<!-- kunit-coverage-diff -->';
+            const body = marker + '\n' + fs.readFileSync('coverage-diff.md', 'utf8');
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find(c => c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                comment_id: existing.id, body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: context.issue.number, body,
+              });
+            }

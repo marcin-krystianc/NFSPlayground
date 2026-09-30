@@ -29,8 +29,6 @@ on:
   schedule:
     - cron: '0 */6 * * *'
 
-# Default is contents: read; the coverage-pages and coverage-diff jobs below
-# elevate what they individually need.
 permissions:
   contents: read
 
@@ -50,7 +48,7 @@ jobs:
           if [ "${{ github.event_name }}" = "schedule" ]; then
             echo 'linux_refs=["master"]' >> "$GITHUB_OUTPUT"
           else
-            echo 'linux_refs=["v6.12.57","v6.18.52","v7.2.6","master"]' >> "$GITHUB_OUTPUT"
+            echo 'linux_refs=["v6.18.52","v7.2.6","master"]' >> "$GITHUB_OUTPUT"
           fi
 
   kunit:
@@ -95,14 +93,10 @@ jobs:
           LINUX_REF: ${{ matrix.linux_ref }}
         run: bash scripts/fetch-sources.sh linux
 
-      # CONFIG_UBSAN=n is deliberate. With UBSAN on, the pinned kernel reports
-      # two misaligned accesses in kernel/exit.c:774, pre-existing in
-      # v6.12.57 under UML and unrelated to anything in kunit/. kunit.py
-      # attributes them to whichever test happened to be running, so they
-      # surface as two failures that move around between runs. Applied to
-      # all matrix legs uniformly: whether the same misalignment still
-      # exists on current mainline is not tracked, and UBSAN's own findings
-      # are not what any leg is testing for.
+      # UBSAN is left on (the .kunitconfig default). On v6.12.57 it reports
+      # a misaligned access in kernel/exit.c:774 that kunit.py pins on
+      # whichever test was running; see "The UBSAN artefact" in
+      # docs/kunit-nfs-reference.md. Only kunit-v6-12-57-patched turns it off.
       #
       # --json needs the `=` form: its value is optional (nargs='?'), so
       # `--json path` leaves --json empty and path is taken as the positional
@@ -123,7 +117,6 @@ jobs:
         run: |
           set -o pipefail
           bash scripts/kunit/run-nfs-kunit.sh \
-            --kconfig_add CONFIG_UBSAN=n \
             --json="${GITHUB_WORKSPACE}/kunit-results.json" \
             "$FILTER_GLOB" \
             $EXTRA_ARGS 2>&1 | tee kunit.log
@@ -189,7 +182,11 @@ jobs:
           git -C linux apply --check "${GITHUB_WORKSPACE}/patches/nfs-eof-page-pollution-v6.12.57.patch"
           git -C linux apply "${GITHUB_WORKSPACE}/patches/nfs-eof-page-pollution-v6.12.57.patch"
 
-      # Same CONFIG_UBSAN=n rationale as the kunit job above. filter_glob
+      # CONFIG_UBSAN=n: with UBSAN on, v6.12.57 under UML reports two
+      # misaligned accesses in kernel/exit.c:774, unrelated to anything in
+      # kunit/. kunit.py attributes them to whichever test happened to be
+      # running, so they surface as two failures that move between runs
+      # ("The UBSAN artefact" in docs/kunit-nfs-reference.md). filter_glob
       # defaults to '*' (see FILTER_GLOB below): the whole point of this
       # leg is to run the full, unfiltered suite and show it completing
       # without the livelock.
@@ -222,229 +219,3 @@ jobs:
             kunit.log
             kunit-results.json
           if-no-files-found: warn
-
-  # Coverage always tracks upstream master (docs/kunit-nfs.md#coverage), not
-  # the pinned-tag/master matrix above, so it needs no select-matrix input.
-  kunit-coverage:
-    name: kunit coverage (linux master)
-    runs-on: ubuntu-latest
-    # A CONFIG_GCOV-instrumented build compiles slower than the plain matrix
-    # legs; the 30-minute budget those use isn't enough headroom.
-    timeout-minutes: 45
-
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: false
-
-      # See the kunit job: run-nfs-kunit.sh builds ltp/fsx from it.
-      - name: Fetch the xfstests submodule
-        run: git submodule update --init xfstests
-
-      - name: Install kernel build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential bc bison flex libelf-dev libssl-dev lcov
-
-      - name: Fetch the kernel tree
-        env:
-          LINUX_REF: master
-        run: bash scripts/fetch-sources.sh linux
-
-      # Same CONFIG_UBSAN=n rationale as the kunit job above.
-      - name: Run the KUnit suites with coverage
-        shell: bash
-        env:
-          COVERAGE: '1'
-        run: |
-          set -o pipefail
-          bash scripts/kunit/run-nfs-kunit.sh \
-            --kconfig_add CONFIG_UBSAN=n \
-            --json="${GITHUB_WORKSPACE}/kunit-results.json" \
-            '*' 2>&1 | tee kunit.log
-
-      - name: Summarise
-        if: always()
-        shell: bash
-        run: |
-          grep -E '^\[.*\] (Testing complete|Failures:)' kunit.log \
-            >> "$GITHUB_STEP_SUMMARY" || true
-          if [ -f coverage/coverage.info ]; then
-            {
-              echo '```'
-              lcov --summary coverage/coverage.info
-              echo '```'
-            } >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-      - name: Upload results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: kunit-coverage-master
-          path: |
-            kunit.log
-            kunit-results.json
-            coverage/
-          if-no-files-found: warn
-
-  # Publishes coverage/ (coverage.info + the genhtml report) as the
-  # repo's GitHub Pages site. Push-to-master only: Pages serves one live
-  # site, so a PR run must not overwrite it -- coverage-diff below is how a
-  # PR sees its own numbers.
-  #
-  # One-time manual step this job depends on: repo Settings -> Pages ->
-  # Source: GitHub Actions. Not settable from a workflow.
-  publish-coverage-pages:
-    name: Publish coverage to GitHub Pages
-    needs: kunit-coverage
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
-    runs-on: ubuntu-latest
-    permissions:
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - name: Download coverage artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: kunit-coverage-master
-          path: artifact
-
-      - uses: actions/configure-pages@v5
-
-      # genhtml's own output (artifact/coverage/html/*) has to become the
-      # site *root* -- Pages looks for index.html at the top level, and a
-      # nested html/index.html 404s at the bare site URL. coverage.info
-      # goes in alongside it, not inside html/, so coverage-diff below (or
-      # anyone else) can fetch the raw tracefile without walking into the
-      # report's own directory.
-      - name: Assemble the Pages site
-        run: |
-          mkdir site
-          cp -r artifact/coverage/html/. site/
-          cp artifact/coverage/coverage.info site/
-
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: site
-
-      - id: deployment
-        uses: actions/deploy-pages@v4
-
-  # Runs on every trigger (push, PR, schedule, workflow_dispatch): diffs
-  # this run's coverage.info against the latest successful push-to-master
-  # run's, via coverage-diff.py, and always writes the result to the job's
-  # step summary. On a pull_request event it additionally posts/updates
-  # one PR comment with the same content. Deliberately independent of
-  # publish-coverage-pages above -- it reads the base coverage.info from
-  # Actions artifact storage, not from the published Pages site, so it
-  # still works before Pages is ever enabled or if a Pages deploy fails.
-  #
-  # On a fork PR, GITHUB_TOKEN is read-only and this can't post a comment;
-  # continue-on-error keeps that a silent no-op rather than a red X. The
-  # step summary still gets written regardless, since that needs no token
-  # permissions beyond the job's own log output.
-  coverage-diff:
-    name: Coverage diff vs master
-    needs: kunit-coverage
-    runs-on: ubuntu-latest
-    permissions:
-      actions: read
-      pull-requests: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: false
-
-      - name: Download this run's coverage
-        uses: actions/download-artifact@v4
-        with:
-          name: kunit-coverage-master
-          path: head-coverage
-
-      - name: Find the latest successful master coverage run
-        id: base-run
-        uses: actions/github-script@v7
-        with:
-          script: |
-            // Other matrix legs may fail or time out; only the coverage job matters.
-            const runs = await github.rest.actions.listWorkflowRuns({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              workflow_id: 'kunit.yml',
-              branch: 'master',
-              event: 'push',
-              status: 'completed',
-              per_page: 20,
-            });
-            for (const run of runs.data.workflow_runs) {
-              const jobs = await github.rest.actions.listJobsForWorkflowRun({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                run_id: run.id,
-                per_page: 100,
-              });
-              const cov = jobs.data.jobs.find(j => j.name === 'kunit coverage (linux master)');
-              if (cov && cov.conclusion === 'success') {
-                core.setOutput('run_id', String(run.id));
-                break;
-              }
-            }
-
-      - name: Download master's coverage
-        if: steps.base-run.outputs.run_id
-        uses: actions/download-artifact@v4
-        with:
-          name: kunit-coverage-master
-          path: base-coverage
-          run-id: ${{ steps.base-run.outputs.run_id }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Compute diff
-        if: steps.base-run.outputs.run_id
-        run: |
-          python3 scripts/kunit/coverage-diff.py \
-            base-coverage/coverage/coverage.info \
-            head-coverage/coverage/coverage.info \
-            > coverage-diff.md
-
-      - name: Write the diff to the job summary
-        if: always()
-        run: |
-          if [ -f coverage-diff.md ]; then
-            cat coverage-diff.md >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo 'No prior push-to-master run with a successful coverage job found to diff against.' \
-              >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-      - name: Comment on the PR
-        if: steps.base-run.outputs.run_id && github.event_name == 'pull_request'
-        continue-on-error: true
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs');
-            const marker = '<!-- kunit-coverage-diff -->';
-            const body = marker + '\n' + fs.readFileSync('coverage-diff.md', 'utf8');
-            const { data: comments } = await github.rest.issues.listComments({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-            });
-            const existing = comments.find(c => c.body.includes(marker));
-            if (existing) {
-              await github.rest.issues.updateComment({
-                owner: context.repo.owner, repo: context.repo.repo,
-                comment_id: existing.id, body,
-              });
-            } else {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner, repo: context.repo.repo,
-                issue_number: context.issue.number, body,
-              });
-            }

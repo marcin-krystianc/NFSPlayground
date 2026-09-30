@@ -283,15 +283,25 @@ for entry in "${UNSTATIC[@]}"; do
 
     log "exposing ${func}() in ${relpath} for testing"
 
-    grep -q '#include <kunit/visibility.h>' "$src" ||
-        sed -i "0,/^#include/s|^#include|#include <kunit/visibility.h>\n#include|" "$src"
+    # VISIBLE_IF_KUNIT comes from <kunit/visibility.h>. It is force-included
+    # through this object's CFLAGS rather than added as an #include line:
+    # an inserted line would move every later line down by one, and the
+    # coverage from this run is merged line by line with coverage from
+    # pristine trees (.github/workflows/coverage.yml).
+    obj="$(basename "$relpath" .c)"
+    mk="${LINUX_DIR}/$(dirname "$relpath")/Makefile"
+    grep -qF "CFLAGS_${obj}.o += -include \$(srctree)/include/kunit/visibility.h" "$mk" ||
+        printf '\nCFLAGS_%s.o += -include $(srctree)/include/kunit/visibility.h\n' "$obj" >> "$mk"
 
     # Drop the `static` on the definition only, not on forward decls.
     # Three layouts occur in this code: "static int foo(" on one line,
     # "static int" with "foo(" on the next, and "static struct x *foo("
     # where the pointer star abuts the name. \s* covers all three, since
-    # \s matches the newline too.
-    perl -0pi -e "s/^static\s+\Q${rettype}\E\s*\Q${func}\E\(/VISIBLE_IF_KUNIT ${rettype} ${func}(/mg" "$src"
+    # \s matches the newline too. The whitespace is captured and put back
+    # as it was, newline included: joining the two-line layout into one line
+    # would move every later line up, which breaks the line-by-line merge
+    # with pristine-tree coverage in coverage.yml.
+    perl -0pi -e "s/^static(\s+)\Q${rettype}\E(\s*)\Q${func}\E\(/VISIBLE_IF_KUNIT\${1}${rettype}\${2}${func}(/mg" "$src"
 
     # Verify by absence: the definition must no longer be static.
     grep -qE "^static .*\b${func}\(" "$src" &&
