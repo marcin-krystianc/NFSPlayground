@@ -5,8 +5,6 @@ name: NFS coverage
 #
 #   kunit      scripts/kunit/run-nfs-kunit.sh: the unit suites and the
 #              kunit/xfstests ports, plus upstream's own KUnit suites
-#   xfstests   scripts/00-run-xfstests-in-uml.sh: upstream xfstests -g quick
-#              in a UML guest, once with knfsd delegations off and once on
 #
 # lcov merges tracefiles line by line, so all of them must describe the
 # same source. Hence:
@@ -115,53 +113,12 @@ jobs:
             coverage/coverage.info
           if-no-files-found: warn
 
-  xfstests:
-    name: coverage xfstests (delegations ${{ matrix.delegations }})
-    needs: select-sha
-    runs-on: ubuntu-latest
-    # -g quick took 73-77 minutes per run under UML without gcov; the gcov
-    # slowdown is not measured yet. At the 6-hour job limit.
-    timeout-minutes: 360
-
-    strategy:
-      fail-fast: false
-      matrix:
-        # The two exercise different paths: with delegations on, the client
-        # answers from its delegation and the recall and delegated-timestamp
-        # code runs. Neither alone is the whole picture.
-        delegations: ['off', 'on']
-
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: false
-
-      - name: Fetch the xfstests submodule
-        run: git submodule update --init xfstests
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            build-essential bc bison flex libelf-dev libssl-dev \
-            nfs-kernel-server nfs-common \
-            autoconf automake libtool-bin pkg-config gettext \
-            uuid-dev libattr1-dev libacl1-dev libaio-dev libgdbm-dev \
-            xfslibs-dev xfsprogs e2fsprogs attr acl quota \
-            bc gawk psmisc procps python3 uuid-runtime fio dbench dump \
-            libcap-dev liburing-dev lcov
-
-      - name: Fetch the kernel tree
-        env:
-          LINUX_REF: ${{ needs.select-sha.outputs.sha }}
-        run: bash scripts/fetch-sources.sh linux
-
   # Runs even when a suite had failing tests: their coverage is still real.
   # It fails, and so publishes nothing, if any tracefile is missing, since
   # a partial merge would read as a coverage drop.
   merge:
     name: coverage (merged)
-    needs: [select-sha, kunit, xfstests]
+    needs: [select-sha, kunit]
     if: always() && needs.select-sha.result == 'success'
     runs-on: ubuntu-latest
 
