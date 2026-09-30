@@ -17,9 +17,8 @@ on:
         required: false
         default: '-g quick'
       trace_events:
-        description: 'Kernel trace events recorded in the guest (uml-run/trace.txt in the artifact).'
+        description: 'Kernel trace events recorded in the guest (uml-run/trace.txt). Empty uses the list in the run step.'
         required: false
-        default: 'nfs4:nfs4_set_delegation nfs4:nfs4_setattr nfs4:nfs4_delegreturn nfs4:nfs4_delegreturn_exit nfs4:nfs4_cb_getattr nfs4:nfs4_cb_recall nfs:nfs_setattr_enter nfsd:nfsd_deleg_write nfsd:nfsd_deleg_read nfsd:nfsd_deleg_return nfsd:nfsd_vfs_setattr nfsd:nfsd_cb_getattr_done nfsd:nfsd_cb_recall_done'
 
 permissions:
   contents: read
@@ -28,29 +27,23 @@ jobs:
   xfstests-uml:
     name: xfstests (UML, linux ${{ matrix.linux_ref }}, delegations ${{ matrix.delegations }})
     runs-on: ubuntu-latest
-    # How long -g quick takes under UML on a runner is not measured yet.
-    # Just under the 6-hour job limit, so a slow leg still uploads results.
+    # -g quick took 73-77 minutes per leg. Below the 6-hour limit so a slow
+    # leg still uploads its results.
     timeout-minutes: 350
 
     strategy:
       fail-fast: false
       matrix:
         linux_ref: ['v6.12.57', 'v6.18.52', 'v7.2.6', 'master']
-        # knfsd delegations in the guest, via its fs.leases-enable. With them
-        # on, the client answers timestamp and attribute questions itself;
-        # a failure only in the 'on' leg points at the delegated path.
+        # A failure only in the 'on' leg points at the delegated path.
         delegations: ['on', 'off']
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: false
 
       - name: Fetch the xfstests submodule
         run: git submodule update --init xfstests
 
-      # Kernel build dependencies, plus xfstests' own and the NFS server
-      # userspace the guest runs from the host.
       - name: Install dependencies
         run: |
           sudo apt-get update
@@ -60,7 +53,7 @@ jobs:
             autoconf automake libtool-bin pkg-config gettext \
             uuid-dev libattr1-dev libacl1-dev libaio-dev libgdbm-dev \
             xfslibs-dev xfsprogs e2fsprogs attr acl quota \
-            bc gawk psmisc procps python3 uuid-runtime fio dbench dump \
+            gawk psmisc procps python3 uuid-runtime fio dbench dump \
             libcap-dev liburing-dev
 
       - name: Fetch the kernel tree
@@ -96,7 +89,7 @@ jobs:
           {
             echo '```'
             sed -n '/^==> under test/,/^$/p' xfstests.log 2>/dev/null
-            grep -E '^(Ran|Not run|Failures|Failed|Passed)' xfstests.log 2>/dev/null ||
+            grep -E '^(Failures|Failed|Passed)' xfstests.log 2>/dev/null ||
               echo "no result trailer -- the run did not finish"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"

@@ -45,9 +45,9 @@ NFS_DELEGATIONS="${NFS_DELEGATIONS:-1}"
 TRACE_EVENTS="${TRACE_EVENTS:-}"
 TRACE_BUFFER_KB="${TRACE_BUFFER_KB:-65536}"
 # 1 builds the kernel with UML's gcov support and, after the run, writes
-# COVERAGE_DIR/coverage.info and an HTML report, as COVERAGE=1
-# scripts/kunit/run-nfs-kunit.sh does. UML is an ordinary host process, so
-# the .gcda files land in BUILD_DIR when it exits.
+# COVERAGE_DIR/coverage.info. UML is an ordinary host process, so the .gcda
+# files land in BUILD_DIR when it exits. No HTML: it is ~250 MB, and
+# genhtml -o html coverage.info makes it when wanted.
 COVERAGE="${COVERAGE:-0}"
 COVERAGE_DIR="${COVERAGE_DIR:-${REPO_ROOT}/coverage/xfstests-uml}"
 
@@ -92,8 +92,7 @@ for cmd in mkfs.xfs rpc.nfsd rpc.mountd exportfs rpcbind ip; do
         die "$cmd not found -- the guest runs the host's userspace, so install it here"
 done
 if [ "$COVERAGE" = 1 ]; then
-    command -v lcov >/dev/null && command -v genhtml >/dev/null ||
-        die "COVERAGE=1 needs lcov and genhtml (apt install lcov)"
+    command -v lcov >/dev/null || die "COVERAGE=1 needs lcov (apt install lcov)"
     # UML's linker scripts keep only the plain .fini_array section, so gcov's
     # exit destructor, emitted into .fini_array.NNNNN, is dropped and no
     # .gcda is ever written. Same fix as scripts/kunit/run-nfs-kunit.sh,
@@ -191,10 +190,9 @@ echo "  coverage:     $([ "$COVERAGE" = 1 ] && echo "on (${COVERAGE_DIR})" || ec
 echo "  check args:   ${check_args[*]}"
 
 # ---------------------------------------------------------------------------
-# Boot. Arguments after "--" go to init. init is bash with the script as its
-# argument, so the script needs no exec bit, which git does not record here.
-# The guest powers itself off when check finishes; the status file is how
-# its result gets out.
+# Boot. Arguments after "--" go to init: bash, with the script as its
+# argument, so the script needs no exec bit. The guest powers itself off
+# when check finishes; the status file is how its result gets out.
 # ---------------------------------------------------------------------------
 # Counters from an earlier run would otherwise be added to this one's.
 [ "$COVERAGE" != 1 ] || find "$BUILD_DIR" -name '*.gcda' -delete
@@ -219,8 +217,6 @@ if [ "$COVERAGE" = 1 ]; then
     lcov -q -t xfstests-uml -o "${COVERAGE_DIR}/coverage.info" -c -d "$BUILD_DIR" \
         --ignore-errors mismatch 2>"${COVERAGE_DIR}/lcov.log" ||
         die "lcov found no coverage -- see ${COVERAGE_DIR}/lcov.log"
-    genhtml -q -o "${COVERAGE_DIR}/html" "${COVERAGE_DIR}/coverage.info" \
-        2>>"${COVERAGE_DIR}/lcov.log"
     lcov --summary "${COVERAGE_DIR}/coverage.info" 2>&1 | sed 's/^/  /'
 fi
 
