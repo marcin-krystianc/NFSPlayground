@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Diff two lcov tracefiles and print a GitHub-flavored Markdown summary.
 
-Used by the kunit-coverage-diff CI job to compare a PR's coverage.info
+Used by coverage.yml's coverage-diff job to compare a PR's merged coverage.info
 against the latest master run's, since lcov's own --diff wants a patch file
 rather than two tracefiles, and genhtml's differential mode produces an
 HTML tree, not a PR-comment-sized summary.
@@ -29,26 +29,27 @@ def parse_lcov(path):
     head can come from different machines (a local VM vs. a GitHub Actions
     runner) with different fetched-tree roots, and matching on the full
     path would make every file look removed-and-re-added.
+
+    A merged tracefile (coverage.yml) has one record per file per suite
+    (TN:), so a file's lines are the union across its records, and a line
+    counts as hit if any suite hit it.
     """
-    files = {}
+    lines = {}
     cur = None
-    keep = False
-    hit = total = 0
     with open(path) as f:
         for line in f:
             line = line.rstrip("\n")
             if line.startswith("SF:"):
                 cur = line[3:].split("/linux/", 1)[-1]
-                keep = cur.startswith("fs/")
-                hit = total = 0
-            elif keep and line.startswith("DA:"):
-                total += 1
-                if int(line[3:].split(",")[1]) > 0:
-                    hit += 1
-            elif line == "end_of_record" and keep and cur is not None:
-                files[cur] = (hit, total)
+                if not cur.startswith("fs/"):
+                    cur = None
+            elif cur is not None and line.startswith("DA:"):
+                no, count = line[3:].split(",")[:2]
+                file_lines = lines.setdefault(cur, {})
+                file_lines[no] = file_lines.get(no, False) or int(count) > 0
+            elif line == "end_of_record":
                 cur = None
-    return files
+    return {f: (sum(l.values()), len(l)) for f, l in lines.items()}
 
 
 def pct(hit, total):
@@ -66,7 +67,7 @@ def main():
     head_hit = sum(h for h, _ in head.values())
     head_total = sum(t for _, t in head.values())
 
-    print("### KUnit coverage vs `master` (/fs/ only)\n")
+    print("### Coverage (KUnit + xfstests) vs `master` (/fs/ only)\n")
     print(
         f"Overall: {pct(base_hit, base_total):.1f}% -> "
         f"{pct(head_hit, head_total):.1f}% "
