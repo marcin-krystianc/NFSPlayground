@@ -29,8 +29,6 @@ on:
   schedule:
     - cron: '0 */6 * * *'
 
-# Coverage, its GitHub Pages report and the PR coverage diff are in
-# coverage.yml, which merges this suite's coverage with xfstests'.
 permissions:
   contents: read
 
