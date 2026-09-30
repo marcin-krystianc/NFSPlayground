@@ -63,6 +63,7 @@ mount --bind /run/passwd /etc/passwd
 mount --bind /run/group /etc/group
 
 # The exports: xfs on the two UML block devices, under an fsid=0 pseudo-root.
+# 00-run-xfstests-in-uml.sh writes this path into NFSv3 device names.
 base=/run/nfs-test-env
 mkdir -p "${base}/test" "${base}/scratch"
 mkfs.xfs -f -q /dev/ubda
@@ -80,6 +81,11 @@ touch /var/lib/nfs/etab /var/lib/nfs/rmtab
 mount -t rpc_pipefs sunrpc /var/lib/nfs/rpc_pipefs
 mount -t nfsd nfsd /proc/fs/nfsd
 rpcbind -w
+# NFSv3 locking needs statd on both ends of lockd; mount.nfs would try to
+# start it through systemd, which the guest does not run.
+case "$NFS_VERS" in
+    3*) mkdir -p /var/lib/nfs/sm /var/lib/nfs/sm.bak && rpc.statd ;;
+esac
 # No client has state to reclaim in a fresh guest. 10 s is the shortest
 # grace period nfsd accepts, and it can only be set before nfsd starts;
 # v4_end_grace cannot end it early here, since nfsd4_force_end_grace()
@@ -94,7 +100,9 @@ rpc.nfsd 8
 exportfs -v
 
 mkdir -p /mnt/nfs-test-env/test /mnt/nfs-test-env/scratch
-mount -t nfs -o "vers=${NFS_VERS}" 127.0.0.1:/test /mnt/nfs-test-env/test
+mount -t nfs -o "$NFS_OPTS" "127.0.0.1:${NFS_ROOT}/test" /mnt/nfs-test-env/test
+# The options the kernel settled on, which is what the run log should show.
+echo "nfs mount: $(awk '$2 == "/mnt/nfs-test-env/test" { print $4 }' /proc/mounts)"
 umount /mnt/nfs-test-env/test
 
 echo "guest kernel: $(uname -r), delegations: $(cat /proc/sys/fs/leases-enable)"

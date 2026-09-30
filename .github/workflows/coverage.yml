@@ -1,7 +1,7 @@
 name: NFS coverage
 
 # Coverage of upstream master merged from KUnit (run-nfs-kunit.sh) and UML
-# xfstests (00-run-xfstests-in-uml.sh, delegations off and on). lcov merges
+# xfstests (00-run-xfstests-in-uml.sh, one job per mount variant). lcov merges
 # line by line, so every job builds the one commit select-sha resolves. The
 # jobs are described in docs/kunit-nfs.md, "CI".
 
@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
     inputs:
       check_args:
-        description: 'Arguments for xfstests check in the two xfstests jobs.'
+        description: 'Arguments for xfstests check in every xfstests job.'
         required: false
         default: '-g quick'
 
@@ -89,7 +89,7 @@ jobs:
           if-no-files-found: warn
 
   xfstests:
-    name: coverage xfstests (delegations ${{ matrix.delegations }})
+    name: coverage xfstests (${{ matrix.variant }})
     needs: select-sha
     runs-on: ubuntu-latest
     # -g quick took 73-77 minutes per run without gcov; gcov's cost is not
@@ -98,8 +98,20 @@ jobs:
 
     strategy:
       fail-fast: false
+      # Each variant reaches code the others do not. delegations-on: the
+      # client answers from its delegation, and the recall and
+      # delegated-timestamp code runs. v4.1 and v4.0: older minor versions
+      # (v4.0 has no sessions). v3: the v3 client and server, lockd, statd
+      # and NFSACL. nconnect-4: several transports per mount. The merge job
+      # lists the variant names again.
       matrix:
-        delegations: ['off', 'on']
+        include:
+          - { variant: delegations-off, vers: '4.2', delegations: 'off', opts: '' }
+          - { variant: delegations-on,  vers: '4.2', delegations: 'on',  opts: '' }
+          - { variant: v4.1,            vers: '4.1', delegations: 'on',  opts: '' }
+          - { variant: v4.0,            vers: '4.0', delegations: 'on',  opts: '' }
+          - { variant: v3,              vers: '3',   delegations: 'on',  opts: '' }
+          - { variant: nconnect-4,      vers: '4.2', delegations: 'on',  opts: 'nconnect=4' }
 
     steps:
       - uses: actions/checkout@v4
@@ -130,6 +142,8 @@ jobs:
         shell: bash
         env:
           CHECK_ARGS: ${{ inputs.check_args || '-g quick' }}
+          NFS_VERS: ${{ matrix.vers }}
+          NFS_MOUNT_OPTS: ${{ matrix.opts }}
           NFS_DELEGATIONS: ${{ matrix.delegations == 'on' && '1' || '0' }}
           COVERAGE: '1'
         run: |
@@ -151,7 +165,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: coverage-xfstests-delegations-${{ matrix.delegations }}
+          name: coverage-xfstests-${{ matrix.variant }}
           path: |
             xfstests.log
             xfstests/results/
@@ -199,9 +213,13 @@ jobs:
           set -e
           mkdir -p coverage/by-suite
           args=()
-          for pair in kunit:coverage-kunit/coverage/coverage.info \
-                      xfstests_delegations_off:coverage-xfstests-delegations-off/coverage/xfstests-uml/coverage.info \
-                      xfstests_delegations_on:coverage-xfstests-delegations-on/coverage/xfstests-uml/coverage.info; do
+          # One entry per xfstests matrix variant. The test name gets '_' for
+          # '.' and '-', keeping the existing xfstests_delegations_* names.
+          pairs=(kunit:coverage-kunit/coverage/coverage.info)
+          for v in delegations-off delegations-on v4.1 v4.0 v3 nconnect-4; do
+            pairs+=("xfstests_$(tr '.-' '__' <<<"$v"):coverage-xfstests-${v}/coverage/xfstests-uml/coverage.info")
+          done
+          for pair in "${pairs[@]}"; do
             name="${pair%%:*}"; src="in/${pair#*:}"
             [ -f "$src" ] || { echo "::error::no tracefile from ${name} (${src})"; exit 1; }
             python3 scripts/coverage-filter.py linux "$name" "$src" "coverage/by-suite/${name}.info"
