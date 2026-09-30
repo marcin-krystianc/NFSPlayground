@@ -81,7 +81,7 @@ jobs:
       - name: Run xfstests in UML
         shell: bash
         env:
-          CHECK_ARGS: ${{ inputs.check_args || 'generic/003' }}
+          CHECK_ARGS: ${{ inputs.check_args || '-g quick' }}
           NFS_DELEGATIONS: ${{ matrix.delegations == 'on' && '1' || '0' }}
           # The delegation and setattr path behind generic/258 and 634.
           TRACE_EVENTS: ${{ inputs.trace_events || 'nfs4:nfs4_set_delegation nfs4:nfs4_setattr nfs4:nfs4_delegreturn nfs4:nfs4_delegreturn_exit nfs4:nfs4_cb_getattr nfs4:nfs4_cb_recall nfs:nfs_setattr_enter nfsd:nfsd_deleg_write nfsd:nfsd_deleg_read nfsd:nfsd_deleg_return nfsd:nfsd_vfs_setattr nfsd:nfsd_cb_getattr_done nfsd:nfsd_cb_recall_done' }}

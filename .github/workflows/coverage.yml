@@ -161,7 +161,7 @@ jobs:
       - name: Run xfstests in UML with coverage
         shell: bash
         env:
-          CHECK_ARGS: ${{ inputs.check_args || '-g quick' }}
+          CHECK_ARGS: ${{ inputs.check_args || 'generic/003' }}
           NFS_DELEGATIONS: ${{ matrix.delegations == 'on' && '1' || '0' }}
           COVERAGE: '1'
         run: |
