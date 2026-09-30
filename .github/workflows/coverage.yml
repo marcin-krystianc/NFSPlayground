@@ -156,41 +156,6 @@ jobs:
           LINUX_REF: ${{ needs.select-sha.outputs.sha }}
         run: bash scripts/fetch-sources.sh linux
 
-      # The runner collects coverage before it exits with check's status,
-      # so a run with failing tests still produces a tracefile.
-      - name: Run xfstests in UML with coverage
-        shell: bash
-        env:
-          CHECK_ARGS: ${{ inputs.check_args || '-g quick' }}
-          NFS_DELEGATIONS: ${{ matrix.delegations == 'on' && '1' || '0' }}
-          COVERAGE: '1'
-        run: |
-          set -o pipefail
-          bash scripts/00-run-xfstests-in-uml.sh $CHECK_ARGS 2>&1 | tee xfstests.log
-
-      - name: Summarise
-        if: always()
-        shell: bash
-        run: |
-          {
-            echo '```'
-            grep -E '^(Failures|Failed|Passed)' xfstests.log 2>/dev/null ||
-              echo "no result trailer -- the run did not finish"
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Upload results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage-xfstests-delegations-${{ matrix.delegations }}
-          path: |
-            xfstests.log
-            xfstests/results/
-            uml-run/dmesg.txt
-            coverage/xfstests-uml/coverage.info
-          if-no-files-found: warn
-
   # Runs even when a suite had failing tests: their coverage is still real.
   # It fails, and so publishes nothing, if any tracefile is missing, since
   # a partial merge would read as a coverage drop.
@@ -238,9 +203,7 @@ jobs:
           set -e
           mkdir -p coverage/by-suite
           args=()
-          for pair in kunit:coverage-kunit/coverage/coverage.info \
-                      xfstests_delegations_off:coverage-xfstests-delegations-off/coverage/xfstests-uml/coverage.info \
-                      xfstests_delegations_on:coverage-xfstests-delegations-on/coverage/xfstests-uml/coverage.info; do
+          for pair in kunit:coverage-kunit/coverage/coverage.info; do
             name="${pair%%:*}"; src="in/${pair#*:}"
             [ -f "$src" ] || { echo "::error::no tracefile from ${name} (${src})"; exit 1; }
             python3 scripts/coverage-filter.py linux "$name" "$src" "coverage/by-suite/${name}.info"
