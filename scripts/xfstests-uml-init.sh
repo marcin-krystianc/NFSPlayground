@@ -49,18 +49,31 @@ done
 ip link set lo up
 hostname uml-xfstests
 
-# Users xfstests' _require_user wants. Added to a tmpfs copy of passwd and
-# group, bind-mounted over the host's, only when the host lacks them.
-cp /etc/passwd /etc/group /run/
-grep -q '^fsgqa:' /run/group || echo 'fsgqa:x:1100:' >> /run/group
-gid="$(awk -F: '$1 == "fsgqa" { print $3 }' /run/group)"
-uid=1100
-for u in fsgqa fsgqa2 123456-fsgqa; do
-    grep -q "^${u}:" /run/passwd ||
-        echo "${u}:x:$((uid++)):${gid}::/tmp:/bin/bash" >> /run/passwd
+# The users and groups xfstests' _require_user and _require_group want,
+# defined here whether or not the host has them, in tmpfs copies of passwd,
+# group and shadow bind-mounted over the host's:
+#  - A host user's home is on hostfs, which the unprivileged host user
+#    running UML cannot enter, so su warns and the test output differs.
+#    Home is /tmp here.
+#  - su goes through PAM, whose unix_chkpwd reads /etc/shadow. The host's is
+#    root-only, so no host entry is readable. Root needs no password to su,
+#    so "*" will do.
+qa_users=(fsgqa fsgqa2 123456-fsgqa)
+for f in passwd group; do
+    grep -vE "^($(IFS='|'; echo "${qa_users[*]}")):" "/etc/${f}" > "/run/${f}"
 done
-mount --bind /run/passwd /etc/passwd
-mount --bind /run/group /etc/group
+: > /run/shadow
+id=1100
+for u in "${qa_users[@]}"; do
+    echo "${u}:x:${id}:" >> /run/group
+    echo "${u}:x:${id}:1100::/tmp:/bin/bash" >> /run/passwd
+    echo "${u}:*:19000:0:99999:7:::" >> /run/shadow
+    id=$((id + 1))
+done
+chmod 600 /run/shadow
+for f in passwd group shadow; do
+    mount --bind "/run/${f}" "/etc/${f}"
+done
 
 # The exports: xfs on the two UML block devices, under an fsid=0 pseudo-root.
 # 00-run-xfstests-in-uml.sh writes this path into NFSv3 device names.
