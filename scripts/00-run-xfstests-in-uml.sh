@@ -38,6 +38,10 @@ NFS_VERS="${NFS_VERS:-4.2}"
 # Extra mount options, comma-separated, appended to vers= for every NFS
 # mount in the guest (for example "nconnect=4").
 NFS_MOUNT_OPTS="${NFS_MOUNT_OPTS:-}"
+# Extra export options, comma-separated, for the test and scratch exports
+# (for example "pnfs", which with NFSD_FLEXFILELAYOUT makes knfsd hand out
+# flexfiles layouts that point back at itself over NFSv3).
+NFS_EXPORT_OPTS="${NFS_EXPORT_OPTS:-}"
 # 0 turns off fs.leases-enable in the guest, which disables knfsd
 # delegations. The sysctl is the guest kernel's, so nothing needs restoring.
 NFS_DELEGATIONS="${NFS_DELEGATIONS:-1}"
@@ -65,7 +69,7 @@ KCONFIG_ENABLE=(
     HOSTFS BLK_DEV BLK_DEV_UBD BLK_DEV_LOOP
     XFS_FS XFS_POSIX_ACL
     NETWORK_FILESYSTEMS NFS_FS NFS_V3 NFS_V3_ACL NFS_V4 NFS_V4_1 NFS_V4_2 NFS_SWAP
-    NFSD NFSD_V3_ACL NFSD_V4
+    NFSD NFSD_V3_ACL NFSD_V4 NFSD_FLEXFILELAYOUT
     FILE_LOCKING FS_POSIX_ACL TMPFS TMPFS_POSIX_ACL TMPFS_XATTR
     DEVTMPFS PROC_FS SYSFS MAGIC_SYSRQ
     NET INET IPV6 UNIX
@@ -186,6 +190,7 @@ cat > "${RUN_DIR}/env" <<EOF
 XFSTESTS_DIR='${XFSTESTS_DIR}'
 NFS_VERS='${NFS_VERS}'
 NFS_OPTS='${nfs_opts}'
+NFS_EXPORT_OPTS='${NFS_EXPORT_OPTS}'
 NFS_ROOT='${nfs_root}'
 NFS_DELEGATIONS='${NFS_DELEGATIONS}'
 TRACE_EVENTS='${TRACE_EVENTS}'
@@ -198,6 +203,7 @@ echo "  kernel:       $(make -s -C "$LINUX_DIR" O="$BUILD_DIR" ARCH=um kernelrel
 echo "  source:       $(git -C "$LINUX_DIR" describe --always --dirty 2>/dev/null || echo unknown)"
 echo "  nfs-utils:    $(dpkg-query -W -f='${Version}' nfs-common 2>/dev/null || echo unknown)"
 echo "  mount opts:   ${nfs_opts}"
+echo "  export opts:  ${NFS_EXPORT_OPTS:-(none)}"
 echo "  delegations:  $([ "$NFS_DELEGATIONS" = 1 ] && echo on || echo off)"
 echo "  trace events: ${TRACE_EVENTS:-(none)}"
 echo "  coverage:     $([ "$COVERAGE" = 1 ] && echo "on (${COVERAGE_DIR})" || echo off)"

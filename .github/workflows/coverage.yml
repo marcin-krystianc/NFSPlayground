@@ -112,6 +112,9 @@ jobs:
           - { variant: v4.0,            vers: '4.0', delegations: 'on',  opts: '' }
           - { variant: v3,              vers: '3',   delegations: 'on',  opts: '' }
           - { variant: nconnect-4,      vers: '4.2', delegations: 'on',  opts: 'nconnect=4' }
+          # knfsd hands out flexfiles layouts pointing back at itself, so
+          # the client's pNFS code does the data I/O, as NFSv3.
+          - { variant: pnfs,            vers: '4.2', delegations: 'on',  opts: '', export_opts: 'pnfs' }
 
     steps:
       - uses: actions/checkout@v4
@@ -144,6 +147,7 @@ jobs:
           CHECK_ARGS: ${{ inputs.check_args || '-g quick' }}
           NFS_VERS: ${{ matrix.vers }}
           NFS_MOUNT_OPTS: ${{ matrix.opts }}
+          NFS_EXPORT_OPTS: ${{ matrix.export_opts }}
           NFS_DELEGATIONS: ${{ matrix.delegations == 'on' && '1' || '0' }}
           COVERAGE: '1'
         run: |
@@ -217,7 +221,7 @@ jobs:
           # One entry per xfstests matrix variant. The test name gets '_' for
           # '.' and '-', keeping the existing xfstests_delegations_* names.
           pairs=(kunit:coverage-kunit/coverage/coverage.info)
-          for v in delegations-off delegations-on v4.1 v4.0 v3 nconnect-4; do
+          for v in delegations-off delegations-on v4.1 v4.0 v3 nconnect-4 pnfs; do
             pairs+=("xfstests_$(tr '.-' '__' <<<"$v"):coverage-xfstests-${v}/coverage/xfstests-uml/coverage.info")
           done
           for pair in "${pairs[@]}"; do
