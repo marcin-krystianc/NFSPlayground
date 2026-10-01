@@ -89,6 +89,14 @@ chmod 777 "${base}/test" "${base}/scratch"
 
 # The knfsd start sequence nfs-server.service would run. exportfs -i
 # ignores /etc/exports, so the host's is neither read nor written.
+#
+# nfs-utils' built-in defaults, not the host's nfs.conf: Ubuntu's sets
+# manage-gids=y for mountd, which makes the server replace the client's
+# supplementary groups with its own /etc/group lookup, and xfstests' ACL
+# tests (generic/099) run as ids that have no entry there.
+: > /run/nfs.conf
+mount --bind /run/nfs.conf /etc/nfs.conf
+[ -d /etc/nfs.conf.d ] && mount -t tmpfs tmpfs /etc/nfs.conf.d
 mkdir -p /var/lib/nfs/rpc_pipefs /var/lib/nfs/v4recovery
 touch /var/lib/nfs/etab /var/lib/nfs/rmtab
 mount -t rpc_pipefs sunrpc /var/lib/nfs/rpc_pipefs
