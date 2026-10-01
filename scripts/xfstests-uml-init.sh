@@ -159,9 +159,5 @@ fi
 
 mapfile -t check_args < "${RUN_DIR}/check-args"
 set +e
-# check traps SIGTERM and wraps up, so timeout(1) stops it cleanly.
-budget=()
-[ -z "$CHECK_TIMEOUT" ] || budget=(timeout -k 60 "$CHECK_TIMEOUT")
-( cd "$XFSTESTS_DIR" &&
-    HOST_OPTIONS="${RUN_DIR}/local.config" "${budget[@]}" ./check -nfs "${check_args[@]}" )
+( cd "$XFSTESTS_DIR" && HOST_OPTIONS="${RUN_DIR}/local.config" ./check -nfs "${check_args[@]}" )
 status=$?

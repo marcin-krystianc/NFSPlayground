@@ -92,9 +92,8 @@ jobs:
     name: coverage xfstests (${{ matrix.variant }})
     needs: select-sha
     runs-on: ubuntu-latest
-    # CHECK_TIMEOUT below stops check in time for coverage to be collected
-    # and uploaded, so a slow variant (pnfs: fsstress ~30x slower) still
-    # contributes a tracefile instead of failing the merge.
+    # -g quick took 73-77 minutes per run without gcov; gcov's cost is not
+    # measured yet.
     timeout-minutes: 360
 
     strategy:
@@ -149,7 +148,6 @@ jobs:
           NFS_VERS: ${{ matrix.vers }}
           NFS_MOUNT_OPTS: ${{ matrix.opts }}
           NFS_EXPORT_OPTS: ${{ matrix.export_opts }}
-          CHECK_TIMEOUT: 300m
           NFS_DELEGATIONS: ${{ matrix.delegations == 'on' && '1' || '0' }}
           COVERAGE: '1'
         run: |

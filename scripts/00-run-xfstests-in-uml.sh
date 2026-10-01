@@ -42,10 +42,6 @@ NFS_MOUNT_OPTS="${NFS_MOUNT_OPTS:-}"
 # (for example "pnfs", which with NFSD_FLEXFILELAYOUT makes knfsd hand out
 # flexfiles layouts that point back at itself over NFSv3).
 NFS_EXPORT_OPTS="${NFS_EXPORT_OPTS:-}"
-# Time budget for check inside the guest, in timeout(1) syntax (for example
-# "280m"). When it runs out check is stopped and the guest still powers off
-# cleanly, so coverage is collected for the tests that ran. Empty: no limit.
-CHECK_TIMEOUT="${CHECK_TIMEOUT:-}"
 # 0 turns off fs.leases-enable in the guest, which disables knfsd
 # delegations. The sysctl is the guest kernel's, so nothing needs restoring.
 NFS_DELEGATIONS="${NFS_DELEGATIONS:-1}"
@@ -195,7 +191,6 @@ XFSTESTS_DIR='${XFSTESTS_DIR}'
 NFS_VERS='${NFS_VERS}'
 NFS_OPTS='${nfs_opts}'
 NFS_EXPORT_OPTS='${NFS_EXPORT_OPTS}'
-CHECK_TIMEOUT='${CHECK_TIMEOUT}'
 NFS_ROOT='${nfs_root}'
 NFS_DELEGATIONS='${NFS_DELEGATIONS}'
 TRACE_EVENTS='${TRACE_EVENTS}'
