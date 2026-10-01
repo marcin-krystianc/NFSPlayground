@@ -228,9 +228,11 @@ if [ "$COVERAGE" = 1 ]; then
     mkdir -p "$COVERAGE_DIR"
     # --ignore-errors mismatch: see the same call in run-nfs-kunit.sh.
     # geninfo warns per source line; that goes to lcov.log, not the console.
-    lcov -q -t xfstests-uml -o "${COVERAGE_DIR}/coverage.info" -c -d "$BUILD_DIR" \
-        --ignore-errors mismatch 2>"${COVERAGE_DIR}/lcov.log" ||
-        die "lcov found no coverage -- see ${COVERAGE_DIR}/lcov.log"
+    if ! lcov -q -t xfstests-uml -o "${COVERAGE_DIR}/coverage.info" -c -d "$BUILD_DIR" \
+            --ignore-errors mismatch 2>"${COVERAGE_DIR}/lcov.log"; then
+        grep -v 'WARNING' "${COVERAGE_DIR}/lcov.log" | tail -n 20 >&2
+        die "lcov failed -- the errors above are from ${COVERAGE_DIR}/lcov.log"
+    fi
     lcov --summary "${COVERAGE_DIR}/coverage.info" 2>&1 | sed 's/^/  /'
 fi
 

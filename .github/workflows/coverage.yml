@@ -171,6 +171,7 @@ jobs:
             xfstests/results/
             uml-run/dmesg.txt
             coverage/xfstests-uml/coverage.info
+            coverage/xfstests-uml/lcov.log
           if-no-files-found: warn
 
   # Runs even when a suite had failing tests: their coverage is still real.
@@ -221,7 +222,7 @@ jobs:
           done
           for pair in "${pairs[@]}"; do
             name="${pair%%:*}"; src="in/${pair#*:}"
-            [ -f "$src" ] || { echo "::error::no tracefile from ${name} (${src})"; exit 1; }
+            [ -s "$src" ] || { echo "::error::no or empty tracefile from ${name} (${src})"; exit 1; }
             python3 scripts/coverage-filter.py linux "$name" "$src" "coverage/by-suite/${name}.info"
             args+=(-a "coverage/by-suite/${name}.info")
           done
