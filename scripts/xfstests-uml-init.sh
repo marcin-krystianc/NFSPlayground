@@ -114,8 +114,9 @@ esac
 # time is left at its default, so test timing is unchanged.
 echo 10 > /proc/fs/nfsd/nfsv4gracetime
 exportfs -i -o ro,sync,no_subtree_check,no_root_squash,fsid=0 "127.0.0.1:${base}"
-exportfs -i -o rw,sync,no_subtree_check,no_root_squash,fsid=1 "127.0.0.1:${base}/test"
-exportfs -i -o rw,sync,no_subtree_check,no_root_squash,fsid=2 "127.0.0.1:${base}/scratch"
+rw="rw,sync,no_subtree_check,no_root_squash${NFS_EXPORT_OPTS:+,${NFS_EXPORT_OPTS}}"
+exportfs -i -o "${rw},fsid=1" "127.0.0.1:${base}/test"
+exportfs -i -o "${rw},fsid=2" "127.0.0.1:${base}/scratch"
 rpc.mountd
 rpc.nfsd 8
 exportfs -v
@@ -158,5 +159,9 @@ fi
 
 mapfile -t check_args < "${RUN_DIR}/check-args"
 set +e
-( cd "$XFSTESTS_DIR" && HOST_OPTIONS="${RUN_DIR}/local.config" ./check -nfs "${check_args[@]}" )
+# check traps SIGTERM and wraps up, so timeout(1) stops it cleanly.
+budget=()
+[ -z "$CHECK_TIMEOUT" ] || budget=(timeout -k 60 "$CHECK_TIMEOUT")
+( cd "$XFSTESTS_DIR" &&
+    HOST_OPTIONS="${RUN_DIR}/local.config" "${budget[@]}" ./check -nfs "${check_args[@]}" )
 status=$?
