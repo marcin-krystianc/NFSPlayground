@@ -46,3 +46,13 @@
 # is expected to keep failing with delegations on.
 generic/258
 generic/634
+
+# generic/444: NFSv3 with POSIX ACLs drops setgid on a new subdirectory of a
+# setgid directory with a default ACL, when the creator is not in its group.
+# The client sends MKDIR, then a separate SETACL as that user, and the
+# server's posix_acl_update_mode() clears S_ISGID for a non-member. Local
+# filesystems apply the inherited ACL during mkdir and keep the bit, which
+# is what the test expects. An NFSv3 protocol limitation: MKDIR cannot carry
+# an ACL, so the server cannot tell this SETACL belongs to the create.
+# Reproduced by hand on master with vers=3.
+generic/444

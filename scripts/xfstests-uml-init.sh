@@ -49,20 +49,34 @@ done
 ip link set lo up
 hostname uml-xfstests
 
-# Users xfstests' _require_user wants. Added to a tmpfs copy of passwd and
-# group, bind-mounted over the host's, only when the host lacks them.
-cp /etc/passwd /etc/group /run/
-grep -q '^fsgqa:' /run/group || echo 'fsgqa:x:1100:' >> /run/group
-gid="$(awk -F: '$1 == "fsgqa" { print $3 }' /run/group)"
-uid=1100
-for u in fsgqa fsgqa2 123456-fsgqa; do
-    grep -q "^${u}:" /run/passwd ||
-        echo "${u}:x:$((uid++)):${gid}::/tmp:/bin/bash" >> /run/passwd
+# The users and groups xfstests' _require_user and _require_group want,
+# defined here whether or not the host has them, in tmpfs copies of passwd,
+# group and shadow bind-mounted over the host's:
+#  - A host user's home is on hostfs, which the unprivileged host user
+#    running UML cannot enter, so su warns and the test output differs.
+#    Home is /tmp here.
+#  - su goes through PAM, whose unix_chkpwd reads /etc/shadow. The host's is
+#    root-only, so no host entry is readable. Root needs no password to su,
+#    so "*" will do.
+qa_users=(fsgqa fsgqa2 123456-fsgqa)
+for f in passwd group; do
+    grep -vE "^($(IFS='|'; echo "${qa_users[*]}")):" "/etc/${f}" > "/run/${f}"
 done
-mount --bind /run/passwd /etc/passwd
-mount --bind /run/group /etc/group
+: > /run/shadow
+id=1100
+for u in "${qa_users[@]}"; do
+    echo "${u}:x:${id}:" >> /run/group
+    echo "${u}:x:${id}:1100::/tmp:/bin/bash" >> /run/passwd
+    echo "${u}:*:19000:0:99999:7:::" >> /run/shadow
+    id=$((id + 1))
+done
+chmod 600 /run/shadow
+for f in passwd group shadow; do
+    mount --bind "/run/${f}" "/etc/${f}"
+done
 
 # The exports: xfs on the two UML block devices, under an fsid=0 pseudo-root.
+# 00-run-xfstests-in-uml.sh writes this path into NFSv3 device names.
 base=/run/nfs-test-env
 mkdir -p "${base}/test" "${base}/scratch"
 mkfs.xfs -f -q /dev/ubda
@@ -75,11 +89,24 @@ chmod 777 "${base}/test" "${base}/scratch"
 
 # The knfsd start sequence nfs-server.service would run. exportfs -i
 # ignores /etc/exports, so the host's is neither read nor written.
+#
+# nfs-utils' built-in defaults, not the host's nfs.conf: Ubuntu's sets
+# manage-gids=y for mountd, which makes the server replace the client's
+# supplementary groups with its own /etc/group lookup, and xfstests' ACL
+# tests (generic/099) run as ids that have no entry there.
+: > /run/nfs.conf
+mount --bind /run/nfs.conf /etc/nfs.conf
+[ -d /etc/nfs.conf.d ] && mount -t tmpfs tmpfs /etc/nfs.conf.d
 mkdir -p /var/lib/nfs/rpc_pipefs /var/lib/nfs/v4recovery
 touch /var/lib/nfs/etab /var/lib/nfs/rmtab
 mount -t rpc_pipefs sunrpc /var/lib/nfs/rpc_pipefs
 mount -t nfsd nfsd /proc/fs/nfsd
 rpcbind -w
+# NFSv3 locking needs statd on both ends of lockd; mount.nfs would try to
+# start it through systemd, which the guest does not run.
+case "$NFS_VERS" in
+    3*) mkdir -p /var/lib/nfs/sm /var/lib/nfs/sm.bak && rpc.statd ;;
+esac
 # No client has state to reclaim in a fresh guest. 10 s is the shortest
 # grace period nfsd accepts, and it can only be set before nfsd starts;
 # v4_end_grace cannot end it early here, since nfsd4_force_end_grace()
@@ -94,7 +121,9 @@ rpc.nfsd 8
 exportfs -v
 
 mkdir -p /mnt/nfs-test-env/test /mnt/nfs-test-env/scratch
-mount -t nfs -o "vers=${NFS_VERS}" 127.0.0.1:/test /mnt/nfs-test-env/test
+mount -t nfs -o "$NFS_OPTS" "127.0.0.1:${NFS_ROOT}/test" /mnt/nfs-test-env/test
+# The options the kernel settled on, which is what the run log should show.
+echo "nfs mount: $(awk '$2 == "/mnt/nfs-test-env/test" { print $4 }' /proc/mounts)"
 umount /mnt/nfs-test-env/test
 
 echo "guest kernel: $(uname -r), delegations: $(cat /proc/sys/fs/leases-enable)"
