@@ -25,7 +25,7 @@ permissions:
 
 jobs:
   xfstests-uml:
-    name: xfstests (UML, linux ${{ matrix.linux_ref }}, delegations ${{ matrix.delegations }})
+    name: xfstests (UML, linux ${{ matrix.linux_ref }}, ${{ matrix.variant.name }})
     runs-on: ubuntu-latest
     # -g quick took 73-77 minutes per leg. Below the 6-hour limit so a slow
     # leg still uploads its results.
@@ -35,8 +35,20 @@ jobs:
       fail-fast: false
       matrix:
         linux_ref: ['v6.12.57', 'master']
-        # A failure only in the 'on' leg points at the delegated path.
-        delegations: ['on', 'off']
+        # The same variants as coverage.yml's xfstests matrix. A failure only
+        # with delegations on points at the delegated path; v4.1, v4.0 and v3
+        # are the older protocol versions (v3 adds lockd, statd and NFSACL);
+        # nconnect-4 uses several transports per mount; krb5i and krb5p run
+        # RPCSEC_GSS with a KDC in the guest.
+        variant:
+          - { name: delegations-off, vers: '4.2', delegations: 'off', opts: '' }
+          - { name: delegations-on,  vers: '4.2', delegations: 'on',  opts: '' }
+          - { name: v4.1,            vers: '4.1', delegations: 'on',  opts: '' }
+          - { name: v4.0,            vers: '4.0', delegations: 'on',  opts: '' }
+          - { name: v3,              vers: '3',   delegations: 'on',  opts: '' }
+          - { name: nconnect-4,      vers: '4.2', delegations: 'on',  opts: 'nconnect=4' }
+          - { name: krb5i,           vers: '4.2', delegations: 'on',  opts: '', sec: 'krb5i' }
+          - { name: krb5p,           vers: '4.2', delegations: 'on',  opts: '', sec: 'krb5p' }
 
     steps:
       - uses: actions/checkout@v4
@@ -54,7 +66,8 @@ jobs:
             uuid-dev libattr1-dev libacl1-dev libaio-dev libgdbm-dev \
             xfslibs-dev xfsprogs e2fsprogs attr acl quota \
             gawk psmisc procps python3 uuid-runtime fio dbench dump \
-            libcap-dev liburing-dev
+            libcap-dev liburing-dev \
+            krb5-kdc krb5-admin-server krb5-user
 
       - name: Fetch the kernel tree
         env:
@@ -75,7 +88,10 @@ jobs:
         shell: bash
         env:
           CHECK_ARGS: ${{ inputs.check_args || '-g quick' }}
-          NFS_DELEGATIONS: ${{ matrix.delegations == 'on' && '1' || '0' }}
+          NFS_VERS: ${{ matrix.variant.vers }}
+          NFS_MOUNT_OPTS: ${{ matrix.variant.opts }}
+          NFS_SEC: ${{ matrix.variant.sec }}
+          NFS_DELEGATIONS: ${{ matrix.variant.delegations == 'on' && '1' || '0' }}
           # The delegation and setattr path behind generic/258 and 634.
           TRACE_EVENTS: ${{ inputs.trace_events || 'nfs4:nfs4_set_delegation nfs4:nfs4_setattr nfs4:nfs4_delegreturn nfs4:nfs4_delegreturn_exit nfs4:nfs4_cb_getattr nfs4:nfs4_cb_recall nfs:nfs_setattr_enter nfsd:nfsd_deleg_write nfsd:nfsd_deleg_read nfsd:nfsd_deleg_return nfsd:nfsd_vfs_setattr nfsd:nfsd_cb_getattr_done nfsd:nfsd_cb_recall_done' }}
         run: |
@@ -117,7 +133,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: xfstests-uml-results-${{ matrix.linux_ref }}-delegations-${{ matrix.delegations }}
+          name: xfstests-uml-results-${{ matrix.linux_ref }}-${{ matrix.variant.name }}
           path: |
             xfstests.log
             xfstests/results/
