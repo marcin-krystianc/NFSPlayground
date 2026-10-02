@@ -1,16 +1,43 @@
-# Candidate fix, not yet upstream, against mainline (tested on 4982d3552).
-#
-# svcauth_gss_unwrap_priv() (net/sunrpc/auth_gss/svcauth_gss.c) adjusts only
-# xdr->nwords after gss_unwrap(). For krb5p, gss_krb5_unwrap_v2() moves the
-# plaintext down over the token header and confounder and shortens
-# buf->head[0].iov_len by 32 bytes (AES), so xdr->end is left 32 bytes past
-# the head. An argument that crosses from the head into the pages is then
-# consumed 32 bytes short by xdr_stream_subsegment(), and the next COMPOUND
-# operation is decoded from argument data: xfstests generic/486 (64 KiB
-# SETXATTR) gets NFS4ERR_OP_ILLEGAL on the following GETATTR, EREMOTEIO on
-# the client. The client side already re-initialises its stream after
-# unwrapping (gss_unwrap_resp_priv() calls xdr_init_decode()); this does the
-# same on the server.
+From: Marcin Krystianc <marcin.krystianc@gmail.com>
+Subject: [PATCH] SUNRPC: reset the svc decode stream after unwrapping a privacy request
+
+For RPCSEC_GSS privacy (krb5p), gss_krb5_unwrap_v2() decrypts the request
+in place and then removes the GSS token header and the confounder from the
+head iovec: it memmoves the plaintext down to @offset and subtracts
+GSS_KRB5_TOK_HDR_LEN + headskip (32 bytes for the AES enctypes) from
+buf->head[0].iov_len.
+
+svcauth_gss_unwrap_priv() only accounts for that in xdr->nwords. The
+stream's xdr->end still points at the end of the head as it was before
+unwrapping, 32 bytes past the data that is now there.
+
+Decoding is unaffected while every argument lies within the head. It breaks
+once an argument spans the head and the page array: xdr_stream_subsegment()
+advances to the stale xdr->end, so it counts 32 bytes of leftover head
+buffer as argument data and then takes 32 bytes too few from the pages.
+xdr_stream_set_pos() corrects the position counter but not xdr->p, which is
+left 32 bytes inside the argument. The next operation of the COMPOUND is
+then decoded from argument data.
+
+Do what the client already does in gss_unwrap_resp_priv() after decrypting
+a reply: discard the stream and build a new one over the buffer as it now
+is.
+
+Fixes: <commit that added the xdr->nwords adjustment>
+Signed-off-by: Marcin Krystianc <marcin.krystianc@gmail.com>
+---
+Found with xfstests generic/486 (a 1-byte to 64 KiB XATTR_REPLACE) on an
+NFSv4.2 mount with sec=krb5p; sec=sys and sec=krb5i pass. Tested with
+knfsd and the NFS client in one UML kernel over loopback, an MIT KDC in the
+guest and an xfs-backed export: generic/486 fails without this change and
+passes with it, and xfstests -g quick under krb5p shows no other
+difference.
+
+The deferred-request path (rq_deferred, "goto out_seq") skips the unwrap
+and so also skips this re-init. That looks right, because such a request is
+reprocessed from an already-decrypted buffer over a freshly initialised
+stream, but I have not exercised it.
+
 diff --git a/net/sunrpc/auth_gss/svcauth_gss.c b/net/sunrpc/auth_gss/svcauth_gss.c
 index 967e9d530..83c35e47b 100644
 --- a/net/sunrpc/auth_gss/svcauth_gss.c
