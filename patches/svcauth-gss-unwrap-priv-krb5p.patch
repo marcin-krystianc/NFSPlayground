@@ -23,7 +23,7 @@ index 967e9d530..83c35e47b 100644
  
  	if (xdr_stream_decode_u32(xdr, &len) < 0)
  		goto unwrap_failed;
-@@ -953,11 +952,17 @@ svcauth_gss_unwrap_priv(struct svc_rqst *rqstp, u32 seq, struct gss_ctx *ctx)
+@@ -953,11 +952,15 @@ svcauth_gss_unwrap_priv(struct svc_rqst *rqstp, u32 seq, struct gss_ctx *ctx)
  		goto unwrap_failed;
  	offset = xdr_stream_pos(xdr);
  
@@ -32,10 +32,8 @@ index 967e9d530..83c35e47b 100644
  	if (maj_stat != GSS_S_COMPLETE)
  		goto bad_unwrap;
 -	xdr->nwords -= XDR_QUADLEN(saved_len - buf->len);
-+	/*
-+	 * gss_unwrap() moved the plaintext down to @offset and shortened
-+	 * buf->head, so xdr->end still marks the old end of the head. Start
-+	 * the stream again at @offset over the buffer as it is now.
++	/* gss_unwrap redacts the opaque blob from the head iovec.
++	 * buf has changed, thus the stream needs to be reset.
 +	 */
 +	xdr_init_decode(xdr, buf,
 +			(__be32 *)((char *)buf->head[0].iov_base + offset), NULL);
