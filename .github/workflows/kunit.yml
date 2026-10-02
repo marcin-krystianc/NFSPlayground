@@ -1,7 +1,7 @@
 name: NFS KUnit
 
-# Runs the NFS/SunRPC KUnit suites in kunit/ under User Mode Linux. The job
-# itself is kunit-run.yml; this file only picks the kernel refs and patches.
+# Runs the NFS/SunRPC KUnit suites in kunit/ under User Mode Linux. The steps
+# are .github/actions/kunit; this file only picks the kernel refs and patches.
 
 on:
   push:
@@ -54,16 +54,20 @@ jobs:
   kunit:
     name: kunit (linux ${{ matrix.linux_ref }})
     needs: select-matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         linux_ref: ${{ fromJson(needs.select-matrix.outputs.linux_refs) }}
-    uses: ./.github/workflows/kunit-run.yml
-    with:
-      linux_ref: ${{ matrix.linux_ref }}
-      filter_glob: ${{ inputs.filter_glob || '*' }}
-      extra_args: ${{ inputs.extra_args }}
-      artifact: kunit-results-${{ matrix.linux_ref }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/kunit
+        with:
+          linux_ref: ${{ matrix.linux_ref }}
+          filter_glob: ${{ inputs.filter_glob || '*' }}
+          extra_args: ${{ inputs.extra_args }}
+          artifact: kunit-results-${{ matrix.linux_ref }}
 
   # v6.12.57 is the upstream base of VAST NFS 4.5.8 (vastnfs-4.5.8/scripts/BASE).
   # It gets the backported UML livelock fix, so the full suite completes, and
@@ -75,11 +79,15 @@ jobs:
   kunit-v6-12-57-patched:
     name: kunit (linux v6.12.57, livelock fix backported)
     if: github.event_name != 'schedule'
-    uses: ./.github/workflows/kunit-run.yml
-    with:
-      linux_ref: v6.12.57
-      patches: um-thread-info-in-task-v6.12.57.patch nfs-eof-page-pollution-v6.12.57.patch
-      kconfig_add: CONFIG_UBSAN=n
-      filter_glob: ${{ inputs.filter_glob || '*' }}
-      extra_args: ${{ inputs.extra_args }}
-      artifact: kunit-results-v6.12.57-patched
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/kunit
+        with:
+          linux_ref: v6.12.57
+          patches: um-thread-info-in-task-v6.12.57.patch nfs-eof-page-pollution-v6.12.57.patch
+          kconfig_add: CONFIG_UBSAN=n
+          filter_glob: ${{ inputs.filter_glob || '*' }}
+          extra_args: ${{ inputs.extra_args }}
+          artifact: kunit-results-v6.12.57-patched

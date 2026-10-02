@@ -1,0 +1,132 @@
+name: xfstests in UML
+description: >-
+  Build a UML kernel from linux_ref and run upstream xfstests against its own
+  knfsd and NFS client, via scripts/00-run-xfstests-in-uml.sh. Expects the
+  repository to be checked out. Used by xfstests-uml.yml and coverage.yml;
+  the callers own the matrices.
+
+inputs:
+  linux_ref:
+    description: 'Kernel ref or commit for fetch-sources.sh.'
+    required: true
+  variant:
+    description: 'One entry of .github/xfstests-variants.json, as JSON.'
+    required: true
+  patches:
+    description: 'Space-separated files in patches/ to apply to the kernel, in order.'
+    default: ''
+  coverage:
+    description: "'true' to build with gcov and collect coverage."
+    default: 'false'
+  trace_events:
+    description: 'Kernel trace events recorded in the guest (uml-run/trace.txt).'
+    default: ''
+  check_args:
+    default: '-g quick'
+  artifact:
+    description: 'Name of the uploaded results artifact.'
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Fetch the xfstests submodule
+      shell: bash
+      run: git submodule update --init xfstests
+
+    # The kernel build, xfstests' own build and runtime, the NFS server
+    # userspace the guest runs from the host, the KDC for the krb5 variants,
+    # and lcov for coverage.
+    - name: Install dependencies
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+          build-essential bc bison flex libelf-dev libssl-dev \
+          nfs-kernel-server nfs-common \
+          autoconf automake libtool-bin pkg-config gettext \
+          uuid-dev libattr1-dev libacl1-dev libaio-dev libgdbm-dev \
+          xfslibs-dev xfsprogs e2fsprogs attr acl quota \
+          gawk psmisc procps python3 uuid-runtime fio dbench dump \
+          libcap-dev liburing-dev lcov \
+          krb5-kdc krb5-admin-server krb5-user
+
+    - name: Fetch the kernel tree
+      shell: bash
+      env:
+        LINUX_REF: ${{ inputs.linux_ref }}
+      run: bash scripts/fetch-sources.sh linux
+
+    - name: Apply patches
+      if: inputs.patches != ''
+      shell: bash
+      env:
+        PATCHES: ${{ inputs.patches }}
+      run: |
+        for p in $PATCHES; do
+          git -C linux apply --check "${GITHUB_WORKSPACE}/patches/${p}"
+          git -C linux apply "${GITHUB_WORKSPACE}/patches/${p}"
+          echo "applied ${p}"
+        done
+
+    # With coverage, the runner collects it before exiting with check's
+    # status, so a run with failing tests still produces a tracefile.
+    - name: Run xfstests in UML
+      shell: bash
+      env:
+        CHECK_ARGS: ${{ inputs.check_args }}
+        NFS_VERS: ${{ fromJson(inputs.variant).vers }}
+        NFS_MOUNT_OPTS: ${{ fromJson(inputs.variant).opts }}
+        NFS_SEC: ${{ fromJson(inputs.variant).sec }}
+        NFS_DELEGATIONS: ${{ fromJson(inputs.variant).delegations == 'on' && '1' || '0' }}
+        COVERAGE: ${{ inputs.coverage == 'true' && '1' || '0' }}
+        TRACE_EVENTS: ${{ inputs.trace_events }}
+      run: |
+        set -o pipefail
+        bash scripts/00-run-xfstests-in-uml.sh $CHECK_ARGS 2>&1 | tee xfstests.log
+
+    - name: Summarise
+      if: always()
+      shell: bash
+      run: |
+        {
+          echo '```'
+          sed -n '/^==> under test/,/^$/p' xfstests.log 2>/dev/null
+          grep -E '^(Failures|Failed|Passed)' xfstests.log 2>/dev/null ||
+            echo "no result trailer -- the run did not finish"
+          echo '```'
+        } >> "$GITHUB_STEP_SUMMARY"
+
+    # The diff and .full tail of each failure, so the job log alone is enough
+    # to see what failed.
+    - name: Show failure details
+      if: always()
+      shell: bash
+      run: |
+        shopt -s nullglob
+        for f in xfstests/results/*/*.out.bad; do
+          t=${f#xfstests/results/}; t=${t%.out.bad}
+          echo "::group::${t} diff"
+          diff -u "xfstests/tests/${t}.out" "$f" || true
+          echo "::endgroup::"
+          if [ -f "xfstests/results/${t}.full" ]; then
+            echo "::group::${t}.full (last 200 lines)"
+            tail -n 200 "xfstests/results/${t}.full"
+            echo "::endgroup::"
+          fi
+        done
+
+    - name: Upload results
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.artifact }}
+        path: |
+          xfstests.log
+          xfstests/results/
+          uml-run/dmesg.txt
+          uml-run/trace.txt
+          coverage/xfstests-uml/coverage.info
+          coverage/xfstests-uml/lcov.log
+          linux/.xfstests-uml/build.log
+        if-no-files-found: warn

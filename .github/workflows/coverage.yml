@@ -1,7 +1,7 @@
 name: NFS coverage
 
-# Coverage of upstream master merged from KUnit (kunit-run.yml) and UML
-# xfstests (xfstests-uml-run.yml, one job per variant in
+# Coverage of upstream master merged from KUnit (.github/actions/kunit) and
+# UML xfstests (.github/actions/xfstests-uml, one job per variant in
 # .github/xfstests-variants.json). lcov merges line by line, so every job
 # builds the one commit select-sha resolves. The jobs are described in
 # docs/kunit-nfs.md, "CI".
@@ -41,26 +41,37 @@ jobs:
   kunit:
     name: coverage kunit
     needs: select-sha
-    uses: ./.github/workflows/kunit-run.yml
-    with:
-      linux_ref: ${{ needs.select-sha.outputs.sha }}
-      coverage: true
-      artifact: coverage-kunit
+    runs-on: ubuntu-latest
+    # A CONFIG_GCOV-instrumented build compiles slower than a plain one.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/kunit
+        with:
+          linux_ref: ${{ needs.select-sha.outputs.sha }}
+          coverage: 'true'
+          artifact: coverage-kunit
 
   xfstests:
     name: coverage xfstests (${{ matrix.variant.name }})
     needs: select-sha
+    runs-on: ubuntu-latest
+    # -g quick took 73-77 minutes per run without gcov; gcov's cost is not
+    # measured yet.
+    timeout-minutes: 350
     strategy:
       fail-fast: false
       matrix:
         variant: ${{ fromJson(needs.select-sha.outputs.variants) }}
-    uses: ./.github/workflows/xfstests-uml-run.yml
-    with:
-      linux_ref: ${{ needs.select-sha.outputs.sha }}
-      variant: ${{ toJson(matrix.variant) }}
-      coverage: true
-      check_args: ${{ inputs.check_args || '-g quick' }}
-      artifact: coverage-xfstests-${{ matrix.variant.name }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/xfstests-uml
+        with:
+          linux_ref: ${{ needs.select-sha.outputs.sha }}
+          variant: ${{ toJson(matrix.variant) }}
+          coverage: 'true'
+          check_args: ${{ inputs.check_args || '-g quick' }}
+          artifact: coverage-xfstests-${{ matrix.variant.name }}
 
   # Runs even when a suite had failing tests, and merges whatever tracefiles
   # exist, so coverage-diff always has something to compare. It ends red when
