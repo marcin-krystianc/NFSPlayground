@@ -1,9 +1,10 @@
 name: NFS coverage
 
-# Coverage of upstream master merged from KUnit (run-nfs-kunit.sh) and UML
-# xfstests (00-run-xfstests-in-uml.sh, one job per mount variant). lcov merges
-# line by line, so every job builds the one commit select-sha resolves. The
-# jobs are described in docs/kunit-nfs.md, "CI".
+# Coverage of upstream master merged from KUnit (.github/actions/kunit) and
+# UML xfstests (.github/actions/xfstests-uml, one job per variant in
+# .github/xfstests-variants.json). lcov merges line by line, so every job
+# builds the one commit select-sha resolves. The jobs are described in
+# docs/kunit-nfs.md, "CI".
 
 on:
   push:
@@ -24,6 +25,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       sha: ${{ steps.resolve.outputs.sha }}
+      variants: ${{ steps.resolve.outputs.variants }}
     steps:
       - uses: actions/checkout@v4
 
@@ -34,6 +36,7 @@ jobs:
           [ -n "$sha" ] || { echo "could not resolve master at $url" >&2; exit 1; }
           echo "linux master is $sha"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "variants=$(jq -c . .github/xfstests-variants.json)" >> "$GITHUB_OUTPUT"
 
   kunit:
     name: coverage kunit
@@ -41,142 +44,39 @@ jobs:
     runs-on: ubuntu-latest
     # A CONFIG_GCOV-instrumented build compiles slower than a plain one.
     timeout-minutes: 45
-
     steps:
       - uses: actions/checkout@v4
-
-      # run-nfs-kunit.sh builds xfstests' ltp/fsx from it for the fsx ports.
-      - name: Fetch the xfstests submodule
-        run: git submodule update --init xfstests
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential bc bison flex libelf-dev libssl-dev lcov
-
-      - name: Fetch the kernel tree
-        env:
-          LINUX_REF: ${{ needs.select-sha.outputs.sha }}
-        run: bash scripts/fetch-sources.sh linux
-
-      - name: Run the KUnit suites with coverage
-        shell: bash
-        env:
-          COVERAGE: '1'
-        run: |
-          set -o pipefail
-          bash scripts/kunit/run-nfs-kunit.sh \
-            --json="${GITHUB_WORKSPACE}/kunit-results.json" \
-            '*' 2>&1 | tee kunit.log
-
-      - name: Summarise
-        if: always()
-        shell: bash
-        run: |
-          grep -E '^\[.*\] (Testing complete|Failures:)' kunit.log \
-            >> "$GITHUB_STEP_SUMMARY" || true
-
-      - name: Upload results
-        if: always()
-        uses: actions/upload-artifact@v4
+      - uses: ./.github/actions/kunit
         with:
-          name: coverage-kunit
-          path: |
-            kunit.log
-            kunit-results.json
-            coverage/coverage.info
-          if-no-files-found: warn
+          linux_ref: ${{ needs.select-sha.outputs.sha }}
+          coverage: 'true'
+          artifact: coverage-kunit
 
   xfstests:
-    name: coverage xfstests (${{ matrix.variant }})
+    name: coverage xfstests (${{ matrix.variant.name }})
     needs: select-sha
     runs-on: ubuntu-latest
     # -g quick took 73-77 minutes per run without gcov; gcov's cost is not
     # measured yet.
-    timeout-minutes: 360
-
+    timeout-minutes: 350
     strategy:
       fail-fast: false
-      # Each variant reaches code the others do not. delegations-on: the
-      # client answers from its delegation, and the recall and
-      # delegated-timestamp code runs. v4.1 and v4.0: older minor versions
-      # (v4.0 has no sessions). v3: the v3 client and server, lockd, statd
-      # and NFSACL. nconnect-4: several transports per mount. The merge job
-      # lists the variant names again.
       matrix:
-        include:
-          - { variant: delegations-off, vers: '4.2', delegations: 'off', opts: '' }
-          - { variant: delegations-on,  vers: '4.2', delegations: 'on',  opts: '' }
-          - { variant: v4.1,            vers: '4.1', delegations: 'on',  opts: '' }
-          - { variant: v4.0,            vers: '4.0', delegations: 'on',  opts: '' }
-          - { variant: v3,              vers: '3',   delegations: 'on',  opts: '' }
-          - { variant: nconnect-4,      vers: '4.2', delegations: 'on',  opts: 'nconnect=4' }
-
+        variant: ${{ fromJson(needs.select-sha.outputs.variants) }}
     steps:
       - uses: actions/checkout@v4
-
-      - name: Fetch the xfstests submodule
-        run: git submodule update --init xfstests
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            build-essential bc bison flex libelf-dev libssl-dev \
-            nfs-kernel-server nfs-common \
-            autoconf automake libtool-bin pkg-config gettext \
-            uuid-dev libattr1-dev libacl1-dev libaio-dev libgdbm-dev \
-            xfslibs-dev xfsprogs e2fsprogs attr acl quota \
-            gawk psmisc procps python3 uuid-runtime fio dbench dump \
-            libcap-dev liburing-dev lcov
-
-      - name: Fetch the kernel tree
-        env:
-          LINUX_REF: ${{ needs.select-sha.outputs.sha }}
-        run: bash scripts/fetch-sources.sh linux
-
-      # The runner collects coverage before it exits with check's status,
-      # so a run with failing tests still produces a tracefile.
-      - name: Run xfstests in UML with coverage
-        shell: bash
-        env:
-          CHECK_ARGS: ${{ inputs.check_args || '-g quick' }}
-          NFS_VERS: ${{ matrix.vers }}
-          NFS_MOUNT_OPTS: ${{ matrix.opts }}
-          NFS_DELEGATIONS: ${{ matrix.delegations == 'on' && '1' || '0' }}
-          COVERAGE: '1'
-        run: |
-          set -o pipefail
-          bash scripts/00-run-xfstests-in-uml.sh $CHECK_ARGS 2>&1 | tee xfstests.log
-
-      - name: Summarise
-        if: always()
-        shell: bash
-        run: |
-          {
-            echo '```'
-            grep -E '^(Failures|Failed|Passed)' xfstests.log 2>/dev/null ||
-              echo "no result trailer -- the run did not finish"
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Upload results
-        if: always()
-        uses: actions/upload-artifact@v4
+      - uses: ./.github/actions/xfstests-uml
         with:
-          name: coverage-xfstests-${{ matrix.variant }}
-          path: |
-            xfstests.log
-            xfstests/results/
-            uml-run/dmesg.txt
-            coverage/xfstests-uml/coverage.info
-            coverage/xfstests-uml/lcov.log
-          if-no-files-found: warn
+          linux_ref: ${{ needs.select-sha.outputs.sha }}
+          variant: ${{ toJson(matrix.variant) }}
+          coverage: 'true'
+          check_args: ${{ inputs.check_args || '-g quick' }}
+          artifact: coverage-xfstests-${{ matrix.variant.name }}
 
-  # Runs even when a suite had failing tests: their coverage is still real.
-  # It fails, and so publishes nothing, if any tracefile is missing, since
-  # a partial merge would read as a coverage drop.
+  # Runs even when a suite had failing tests, and merges whatever tracefiles
+  # exist, so coverage-diff always has something to compare. It ends red when
+  # any suite was red or a tracefile is missing, and publish-coverage-pages
+  # then publishes nothing: the results are incomplete.
   merge:
     name: coverage (merged)
     needs: [select-sha, kunit, xfstests]
@@ -209,23 +109,31 @@ jobs:
       # lines, and lcov 2.0 aborts on that with an error code no
       # --ignore-errors value matches ($ERROR_INCONSISTENT is never defined).
       - name: Filter and merge
+        id: merge
         shell: bash
         run: |
           set -e
           mkdir -p coverage/by-suite
           args=()
-          # One entry per xfstests matrix variant. The test name gets '_' for
-          # '.' and '-', keeping the existing xfstests_delegations_* names.
+          missing=0
+          # One entry per xfstests variant. The test name gets '_' for '.' and
+          # '-', keeping the existing xfstests_delegations_* names.
           pairs=(kunit:coverage-kunit/coverage/coverage.info)
-          for v in delegations-off delegations-on v4.1 v4.0 v3 nconnect-4; do
+          for v in $(jq -r '.[].name' .github/xfstests-variants.json); do
             pairs+=("xfstests_$(tr '.-' '__' <<<"$v"):coverage-xfstests-${v}/coverage/xfstests-uml/coverage.info")
           done
           for pair in "${pairs[@]}"; do
             name="${pair%%:*}"; src="in/${pair#*:}"
-            [ -s "$src" ] || { echo "::error::no or empty tracefile from ${name} (${src})"; exit 1; }
+            if [ ! -s "$src" ]; then
+              echo "::error::no or empty tracefile from ${name} (${src}); merged without it"
+              missing=1
+              continue
+            fi
             python3 scripts/coverage-filter.py linux "$name" "$src" "coverage/by-suite/${name}.info"
             args+=(-a "coverage/by-suite/${name}.info")
           done
+          echo "missing=${missing}" >> "$GITHUB_OUTPUT"
+          [ ${#args[@]} -gt 0 ] || { echo "::error::no tracefiles at all"; exit 1; }
           rc=(--ignore-errors mismatch --rc derive_function_end_line=0)
           lcov -q "${args[@]}" -o coverage/coverage.info "${rc[@]}"
           genhtml -q --show-details -o coverage/html coverage/coverage.info "${rc[@]}"
@@ -251,19 +159,35 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload the merged coverage
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: coverage-master
           path: coverage/
-          if-no-files-found: error
+          if-no-files-found: warn
+
+      # Last, after the upload, so coverage-diff still gets the merge.
+      - name: Fail if any suite failed or is missing
+        if: >-
+          always() && (needs.kunit.result != 'success' ||
+          needs.xfstests.result != 'success' ||
+          steps.merge.outputs.missing != '0')
+        run: |
+          echo "::error::kunit: ${{ needs.kunit.result }}, xfstests: ${{ needs.xfstests.result }}, missing tracefile: ${{ steps.merge.outputs.missing }}"
+          exit 1
 
   # Push to master only: Pages serves one site, so a PR must not overwrite it.
+  # Only when every suite and the merge are green: anything red means the
+  # results are incomplete.
   # One-time manual step this job depends on: repo Settings -> Pages ->
   # Source: GitHub Actions. Not settable from a workflow.
   publish-coverage-pages:
     name: Publish coverage to GitHub Pages
-    needs: merge
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    needs: [kunit, xfstests, merge]
+    if: >-
+      github.event_name == 'push' && github.ref == 'refs/heads/master' &&
+      needs.kunit.result == 'success' && needs.xfstests.result == 'success' &&
+      needs.merge.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       pages: write
@@ -295,11 +219,13 @@ jobs:
       - id: deployment
         uses: actions/deploy-pages@v4
 
-  # Base is the latest successful push-to-master run's artifact, not Pages.
+  # Runs whenever merge ran, red or not. Base is the latest push-to-master run
+  # whose merge was green (so complete), from its artifact, not Pages.
   # On a fork PR GITHUB_TOKEN is read-only, so the comment step may no-op.
   coverage-diff:
     name: Coverage diff vs master
     needs: merge
+    if: always() && (needs.merge.result == 'success' || needs.merge.result == 'failure')
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -308,6 +234,8 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Download this run's coverage
+        id: head
+        continue-on-error: true
         uses: actions/download-artifact@v4
         with:
           name: coverage-master
@@ -351,7 +279,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Compute diff
-        if: steps.base-run.outputs.run_id
+        if: steps.base-run.outputs.run_id && hashFiles('head-coverage/coverage.info') != ''
         run: |
           python3 scripts/kunit/coverage-diff.py \
             base-coverage/coverage.info \
@@ -363,13 +291,15 @@ jobs:
         run: |
           if [ -f coverage-diff.md ]; then
             cat coverage-diff.md >> "$GITHUB_STEP_SUMMARY"
+          elif [ ! -f head-coverage/coverage.info ]; then
+            echo 'This run produced no merged coverage to diff.' >> "$GITHUB_STEP_SUMMARY"
           else
             echo 'No prior push-to-master run with a successful merged coverage job found to diff against.' \
               >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Comment on the PR
-        if: steps.base-run.outputs.run_id && github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' && hashFiles('coverage-diff.md') != ''
         continue-on-error: true
         uses: actions/github-script@v7
         with:
