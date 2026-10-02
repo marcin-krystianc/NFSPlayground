@@ -1,10 +1,11 @@
 name: NFS xfstests (UML)
 
 # Runs upstream xfstests against NFS inside a User Mode Linux kernel built
-# from each linux_ref, via scripts/00-run-xfstests-in-uml.sh. The NFS client
-# and knfsd under test are that kernel's, unlike the NFS xfstests workflow,
-# which can only test the runner's own kernel. Userspace (xfstests, xfsprogs,
-# nfs-utils) is the runner's, reached from the guest over hostfs.
+# from each linux_ref, so the NFS client and knfsd under test are that
+# kernel's, unlike the NFS xfstests workflow, which can only test the
+# runner's own kernel. The job itself is xfstests-uml-run.yml; the mount
+# and server variants are .github/xfstests-variants.json, shared with
+# coverage.yml.
 
 on:
   push:
@@ -17,222 +18,57 @@ on:
         required: false
         default: '-g quick'
       trace_events:
-        description: 'Kernel trace events recorded in the guest (uml-run/trace.txt). Empty uses the list in the run step.'
+        description: 'Kernel trace events recorded in the guest (uml-run/trace.txt). Empty uses the default list below.'
         required: false
 
 permissions:
   contents: read
 
 jobs:
+  variants:
+    runs-on: ubuntu-latest
+    outputs:
+      list: ${{ steps.read.outputs.list }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: read
+        run: echo "list=$(jq -c . .github/xfstests-variants.json)" >> "$GITHUB_OUTPUT"
+
+  # The v6.12.57 legs get the UML host-signal livelock fix, a harness fix
+  # (docs/kunit-nfs-reference.md). The NFS fixes in patches/ are not
+  # applied, so every leg tests the tree as released. The trace events are
+  # the delegation and setattr path behind generic/258 and 634.
   xfstests-uml:
     name: xfstests (UML, linux ${{ matrix.linux_ref }}, ${{ matrix.variant.name }})
-    runs-on: ubuntu-latest
-    # -g quick took 73-77 minutes per leg. Below the 6-hour limit so a slow
-    # leg still uploads its results.
-    timeout-minutes: 350
-
+    needs: variants
     strategy:
       fail-fast: false
       matrix:
         linux_ref: ['v6.12.57', 'master']
-        # The same variants as coverage.yml's xfstests matrix. A failure only
-        # with delegations on points at the delegated path; v4.1, v4.0 and v3
-        # are the older protocol versions (v3 adds lockd, statd and NFSACL);
-        # nconnect-4 uses several transports per mount; krb5i and krb5p run
-        # RPCSEC_GSS with a KDC in the guest.
-        variant:
-          - { name: delegations-off, vers: '4.2', delegations: 'off', opts: '' }
-          - { name: delegations-on,  vers: '4.2', delegations: 'on',  opts: '' }
-          - { name: v4.1,            vers: '4.1', delegations: 'on',  opts: '' }
-          - { name: v4.0,            vers: '4.0', delegations: 'on',  opts: '' }
-          - { name: v3,              vers: '3',   delegations: 'on',  opts: '' }
-          - { name: nconnect-4,      vers: '4.2', delegations: 'on',  opts: 'nconnect=4' }
-          - { name: krb5i,           vers: '4.2', delegations: 'on',  opts: '', sec: 'krb5i' }
-          - { name: krb5p,           vers: '4.2', delegations: 'on',  opts: '', sec: 'krb5p' }
+        variant: ${{ fromJson(needs.variants.outputs.list) }}
+    uses: ./.github/workflows/xfstests-uml-run.yml
+    with:
+      linux_ref: ${{ matrix.linux_ref }}
+      variant: ${{ toJson(matrix.variant) }}
+      patches: ${{ matrix.linux_ref == 'v6.12.57' && 'um-thread-info-in-task-v6.12.57.patch' || '' }}
+      check_args: ${{ inputs.check_args || '-g quick' }}
+      trace_events: ${{ inputs.trace_events || 'nfs4:nfs4_set_delegation nfs4:nfs4_setattr nfs4:nfs4_delegreturn nfs4:nfs4_delegreturn_exit nfs4:nfs4_cb_getattr nfs4:nfs4_cb_recall nfs:nfs_setattr_enter nfsd:nfsd_deleg_write nfsd:nfsd_deleg_read nfsd:nfsd_deleg_return nfsd:nfsd_vfs_setattr nfsd:nfsd_cb_getattr_done nfsd:nfsd_cb_recall_done' }}
+      artifact: xfstests-uml-results-${{ matrix.linux_ref }}-${{ matrix.variant.name }}
 
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Fetch the xfstests submodule
-        run: git submodule update --init xfstests
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            build-essential bc bison flex libelf-dev libssl-dev \
-            nfs-kernel-server nfs-common \
-            autoconf automake libtool-bin pkg-config gettext \
-            uuid-dev libattr1-dev libacl1-dev libaio-dev libgdbm-dev \
-            xfslibs-dev xfsprogs e2fsprogs attr acl quota \
-            gawk psmisc procps python3 uuid-runtime fio dbench dump \
-            libcap-dev liburing-dev \
-            krb5-kdc krb5-admin-server krb5-user
-
-      - name: Fetch the kernel tree
-        env:
-          LINUX_REF: ${{ matrix.linux_ref }}
-        run: bash scripts/fetch-sources.sh linux
-
-      # A harness fix, not an NFS one: without it the v6.12.57 UML kernel
-      # can livelock on host signals (docs/kunit-nfs-reference.md). The
-      # NFS fixes in patches/ are deliberately not applied, so every leg
-      # tests the tree as released.
-      - name: Apply the UML host-signal livelock fix
-        if: matrix.linux_ref == 'v6.12.57'
-        run: |
-          git -C linux apply --check "${GITHUB_WORKSPACE}/patches/um-thread-info-in-task-v6.12.57.patch"
-          git -C linux apply "${GITHUB_WORKSPACE}/patches/um-thread-info-in-task-v6.12.57.patch"
-
-      - name: Run xfstests in UML
-        shell: bash
-        env:
-          CHECK_ARGS: ${{ inputs.check_args || '-g quick' }}
-          NFS_VERS: ${{ matrix.variant.vers }}
-          NFS_MOUNT_OPTS: ${{ matrix.variant.opts }}
-          NFS_SEC: ${{ matrix.variant.sec }}
-          NFS_DELEGATIONS: ${{ matrix.variant.delegations == 'on' && '1' || '0' }}
-          # The delegation and setattr path behind generic/258 and 634.
-          TRACE_EVENTS: ${{ inputs.trace_events || 'nfs4:nfs4_set_delegation nfs4:nfs4_setattr nfs4:nfs4_delegreturn nfs4:nfs4_delegreturn_exit nfs4:nfs4_cb_getattr nfs4:nfs4_cb_recall nfs:nfs_setattr_enter nfsd:nfsd_deleg_write nfsd:nfsd_deleg_read nfsd:nfsd_deleg_return nfsd:nfsd_vfs_setattr nfsd:nfsd_cb_getattr_done nfsd:nfsd_cb_recall_done' }}
-        run: |
-          set -o pipefail
-          bash scripts/00-run-xfstests-in-uml.sh $CHECK_ARGS 2>&1 | tee xfstests.log
-
-      - name: Summarise
-        if: always()
-        shell: bash
-        run: |
-          {
-            echo '```'
-            sed -n '/^==> under test/,/^$/p' xfstests.log 2>/dev/null
-            grep -E '^(Failures|Failed|Passed)' xfstests.log 2>/dev/null ||
-              echo "no result trailer -- the run did not finish"
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      # The diff and .full tail of each failure, so the job log alone is
-      # enough to see what failed.
-      - name: Show failure details
-        if: always()
-        shell: bash
-        run: |
-          shopt -s nullglob
-          for f in xfstests/results/*/*.out.bad; do
-            t=${f#xfstests/results/}; t=${t%.out.bad}
-            echo "::group::${t} diff"
-            diff -u "xfstests/tests/${t}.out" "$f" || true
-            echo "::endgroup::"
-            if [ -f "xfstests/results/${t}.full" ]; then
-              echo "::group::${t}.full (last 200 lines)"
-              tail -n 200 "xfstests/results/${t}.full"
-              echo "::endgroup::"
-            fi
-          done
-
-      - name: Upload results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: xfstests-uml-results-${{ matrix.linux_ref }}-${{ matrix.variant.name }}
-          path: |
-            xfstests.log
-            xfstests/results/
-            uml-run/dmesg.txt
-            uml-run/trace.txt
-            linux/.xfstests-uml/build.log
-          if-no-files-found: warn
-
-  # The candidate fix in patches/svcauth-gss-unwrap-priv-krb5p.patch, tested
-  # where it matters: master, sec=krb5p, full -g quick, with and without the
-  # patch. Without it generic/486 fails under krb5p (see the patch header);
-  # with it, it should pass and nothing else should change. No coverage or
-  # tracing, so it builds and runs at plain speed.
+  # The candidate fix in patches/svcauth-gss-unwrap-priv-krb5p.patch, on
+  # master with sec=krb5p, with and without the patch. Without it
+  # generic/486 fails (see the patch header); with it, it should pass and
+  # nothing else should change. No coverage or tracing.
   xfstests-uml-krb5p-fix:
     name: xfstests (UML, linux master, krb5p, svcauth_gss unwrap fix ${{ matrix.fix }})
-    runs-on: ubuntu-latest
-    timeout-minutes: 350
-
     strategy:
       fail-fast: false
       matrix:
         fix: ['with', 'without']
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Fetch the xfstests submodule
-        run: git submodule update --init xfstests
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            build-essential bc bison flex libelf-dev libssl-dev \
-            nfs-kernel-server nfs-common \
-            autoconf automake libtool-bin pkg-config gettext \
-            uuid-dev libattr1-dev libacl1-dev libaio-dev libgdbm-dev \
-            xfslibs-dev xfsprogs e2fsprogs attr acl quota \
-            gawk psmisc procps python3 uuid-runtime fio dbench dump \
-            libcap-dev liburing-dev \
-            krb5-kdc krb5-admin-server krb5-user
-
-      - name: Fetch the kernel tree
-        env:
-          LINUX_REF: master
-        run: bash scripts/fetch-sources.sh linux
-
-      - name: Apply the svcauth_gss unwrap fix
-        if: matrix.fix == 'with'
-        run: |
-          git -C linux apply --check "${GITHUB_WORKSPACE}/patches/svcauth-gss-unwrap-priv-krb5p.patch"
-          git -C linux apply "${GITHUB_WORKSPACE}/patches/svcauth-gss-unwrap-priv-krb5p.patch"
-
-      - name: Run xfstests in UML
-        shell: bash
-        env:
-          CHECK_ARGS: ${{ inputs.check_args || '-g quick' }}
-          NFS_SEC: krb5p
-        run: |
-          set -o pipefail
-          bash scripts/00-run-xfstests-in-uml.sh $CHECK_ARGS 2>&1 | tee xfstests.log
-
-      - name: Summarise
-        if: always()
-        shell: bash
-        run: |
-          {
-            echo '```'
-            sed -n '/^==> under test/,/^$/p' xfstests.log 2>/dev/null
-            grep -E '^(Failures|Failed|Passed)' xfstests.log 2>/dev/null ||
-              echo "no result trailer -- the run did not finish"
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Show failure details
-        if: always()
-        shell: bash
-        run: |
-          shopt -s nullglob
-          for f in xfstests/results/*/*.out.bad; do
-            t=${f#xfstests/results/}; t=${t%.out.bad}
-            echo "::group::${t} diff"
-            diff -u "xfstests/tests/${t}.out" "$f" || true
-            echo "::endgroup::"
-            if [ -f "xfstests/results/${t}.full" ]; then
-              echo "::group::${t}.full (last 200 lines)"
-              tail -n 200 "xfstests/results/${t}.full"
-              echo "::endgroup::"
-            fi
-          done
-
-      - name: Upload results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: xfstests-uml-results-master-krb5p-${{ matrix.fix }}-fix
-          path: |
-            xfstests.log
-            xfstests/results/
-            uml-run/dmesg.txt
-            linux/.xfstests-uml/build.log
-          if-no-files-found: warn
+    uses: ./.github/workflows/xfstests-uml-run.yml
+    with:
+      linux_ref: master
+      variant: '{ "name": "krb5p", "vers": "4.2", "delegations": "on", "opts": "", "sec": "krb5p" }'
+      patches: ${{ matrix.fix == 'with' && 'svcauth-gss-unwrap-priv-krb5p.patch' || '' }}
+      check_args: ${{ inputs.check_args || '-g quick' }}
+      artifact: xfstests-uml-results-master-krb5p-${{ matrix.fix }}-fix

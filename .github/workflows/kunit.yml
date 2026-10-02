@@ -1,12 +1,9 @@
 name: NFS KUnit
 
-# Runs the NFS/SunRPC KUnit suites in kunit/ under User Mode Linux, via
-# scripts/kunit/run-nfs-kunit.sh. No VM and no kernel install: kunit.py
-# builds an ARCH=um kernel and runs it as an ordinary process.
+# Runs the NFS/SunRPC KUnit suites in kunit/ under User Mode Linux. The job
+# itself is kunit-run.yml; this file only picks the kernel refs and patches.
 
 on:
-  # The two path lists are duplicated on purpose: GitHub Actions does not
-  # support YAML anchors, so they have to be kept in step by hand.
   push:
     branches: [master]
   pull_request:
@@ -51,171 +48,38 @@ jobs:
             echo 'linux_refs=["v6.18.52","v7.2.6","master"]' >> "$GITHUB_OUTPUT"
           fi
 
+  # UBSAN is left on (the .kunitconfig default). master can fail before any
+  # test runs: run-nfs-kunit.sh exposes static kernel functions by name, and
+  # upstream can rename one.
   kunit:
     name: kunit (linux ${{ matrix.linux_ref }})
     needs: select-matrix
-    runs-on: ubuntu-latest
-    # These legs run unpatched, so the v6.12.57 one can still hit the UML
-    # host-signal livelock and spin forever. Fail fast and visibly instead
-    # of consuming the runner's default multi-hour budget.
-    timeout-minutes: 30
-
-    # master can fail before any test runs: run-nfs-kunit.sh exposes
-    # static kernel functions by name, and upstream can rename one.
     strategy:
       fail-fast: false
       matrix:
         linux_ref: ${{ fromJson(needs.select-matrix.outputs.linux_refs) }}
-
-    steps:
-      - uses: actions/checkout@v4
-        # Of the submodules only xfstests is needed, fetched below.
-        with:
-          submodules: false
-
-      # run-nfs-kunit.sh builds xfstests' ltp/fsx static from it, for the
-      # ports that run fsx inside the test kernel (xfs_run_prog() in
-      # kunit/xfstests/nfs_fixture.c). Without it those ports fail.
-      - name: Fetch the xfstests submodule
-        run: git submodule update --init xfstests
-
-      # KUnit has no dependencies of its own; these are the kernel's.
-      - name: Install kernel build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential bc bison flex libelf-dev libssl-dev
-
-      # fetch-sources.sh does a full clone. Roughly 1.7 GB, re-fetched on
-      # every run since the tree is not cached.
-      - name: Fetch the kernel tree
-        env:
-          LINUX_REF: ${{ matrix.linux_ref }}
-        run: bash scripts/fetch-sources.sh linux
-
-      # UBSAN is left on (the .kunitconfig default). On v6.12.57 it reports
-      # a misaligned access in kernel/exit.c:774 that kunit.py pins on
-      # whichever test was running; see "The UBSAN artefact" in
-      # docs/kunit-nfs-reference.md. Only kunit-v6-12-57-patched turns it off.
-      #
-      # --json needs the `=` form: its value is optional (nargs='?'), so
-      # `--json path` leaves --json empty and path is taken as the positional
-      # filter_glob instead, which silently runs zero tests.
-      #
-      # filter_glob defaults to '*', so this runs every suite. The v6.12.57
-      # leg can therefore still hit the UML host-signal livelock -- see
-      # "A confirmed host-signal livelock on v6.12.57" in docs/kunit-nfs-reference.md
-      # -- and hang until the job timeout. That is deliberate: this leg
-      # stays unpatched, and kunit-v6-12-57-patched below is the leg that
-      # applies the backported fix. Narrow filter_glob (workflow_dispatch)
-      # to get a result out of this leg without waiting on a hang.
-      - name: Run the KUnit suites
-        shell: bash
-        env:
-          FILTER_GLOB: ${{ inputs.filter_glob || '*' }}
-          EXTRA_ARGS: ${{ inputs.extra_args }}
-        run: |
-          set -o pipefail
-          bash scripts/kunit/run-nfs-kunit.sh \
-            --json="${GITHUB_WORKSPACE}/kunit-results.json" \
-            "$FILTER_GLOB" \
-            $EXTRA_ARGS 2>&1 | tee kunit.log
-
-      - name: Summarise
-        if: always()
-        shell: bash
-        run: |
-          grep -E '^\[.*\] (Testing complete|Failures:)' kunit.log \
-            >> "$GITHUB_STEP_SUMMARY" || true
-
-      - name: Upload results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: kunit-results-${{ matrix.linux_ref }}
-          path: |
-            kunit.log
-            kunit-results.json
-          if-no-files-found: warn
+    uses: ./.github/workflows/kunit-run.yml
+    with:
+      linux_ref: ${{ matrix.linux_ref }}
+      filter_glob: ${{ inputs.filter_glob || '*' }}
+      extra_args: ${{ inputs.extra_args }}
+      artifact: kunit-results-${{ matrix.linux_ref }}
 
   # v6.12.57 is the upstream base of VAST NFS 4.5.8 (vastnfs-4.5.8/scripts/BASE).
-  # Applies fixes from patches/.
+  # It gets the backported UML livelock fix, so the full suite completes, and
+  # the NFS 'eof page pollution' fix, without which generic/363 fails (see
+  # the patch headers). CONFIG_UBSAN=n: with UBSAN on, v6.12.57 under UML
+  # reports two misaligned accesses in kernel/exit.c:774, unrelated to
+  # kunit/, which kunit.py pins on whichever test was running ("The UBSAN
+  # artefact" in docs/kunit-nfs-reference.md).
   kunit-v6-12-57-patched:
     name: kunit (linux v6.12.57, livelock fix backported)
     if: github.event_name != 'schedule'
-    runs-on: ubuntu-latest
-    # With the fix applied a full run completes. This bounds the job if
-    # that stops holding, instead of consuming the runner's default
-    # multi-hour budget.
-    timeout-minutes: 30
-
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: false
-
-      # See the kunit job: run-nfs-kunit.sh builds ltp/fsx from it.
-      - name: Fetch the xfstests submodule
-        run: git submodule update --init xfstests
-
-      - name: Install kernel build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential bc bison flex libelf-dev libssl-dev
-
-      - name: Fetch the kernel tree
-        env:
-          LINUX_REF: v6.12.57
-        run: bash scripts/fetch-sources.sh linux
-
-      - name: Apply the UML host-signal livelock fix
-        run: |
-          git -C linux apply --check "${GITHUB_WORKSPACE}/patches/um-thread-info-in-task-v6.12.57.patch"
-          git -C linux apply "${GITHUB_WORKSPACE}/patches/um-thread-info-in-task-v6.12.57.patch"
-
-      # generic/363 fails on v6.12.57 without it: the NFS client does not
-      # discard data written through a mapping past EOF when the file is
-      # extended. See the patch header.
-      - name: Apply the NFS 'eof page pollution' fix
-        run: |
-          git -C linux apply --check "${GITHUB_WORKSPACE}/patches/nfs-eof-page-pollution-v6.12.57.patch"
-          git -C linux apply "${GITHUB_WORKSPACE}/patches/nfs-eof-page-pollution-v6.12.57.patch"
-
-      # CONFIG_UBSAN=n: with UBSAN on, v6.12.57 under UML reports two
-      # misaligned accesses in kernel/exit.c:774, unrelated to anything in
-      # kunit/. kunit.py attributes them to whichever test happened to be
-      # running, so they surface as two failures that move between runs
-      # ("The UBSAN artefact" in docs/kunit-nfs-reference.md). filter_glob
-      # defaults to '*' (see FILTER_GLOB below): the whole point of this
-      # leg is to run the full, unfiltered suite and show it completing
-      # without the livelock.
-      - name: Run the KUnit suites
-        shell: bash
-        env:
-          FILTER_GLOB: ${{ inputs.filter_glob || '*' }}
-          EXTRA_ARGS: ${{ inputs.extra_args }}
-        run: |
-          set -o pipefail
-          bash scripts/kunit/run-nfs-kunit.sh \
-            --kconfig_add CONFIG_UBSAN=n \
-            --json="${GITHUB_WORKSPACE}/kunit-results.json" \
-            "$FILTER_GLOB" \
-            $EXTRA_ARGS 2>&1 | tee kunit.log
-
-      - name: Summarise
-        if: always()
-        shell: bash
-        run: |
-          grep -E '^\[.*\] (Testing complete|Failures:)' kunit.log \
-            >> "$GITHUB_STEP_SUMMARY" || true
-
-      - name: Upload results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: kunit-results-v6.12.57-patched
-          path: |
-            kunit.log
-            kunit-results.json
-          if-no-files-found: warn
+    uses: ./.github/workflows/kunit-run.yml
+    with:
+      linux_ref: v6.12.57
+      patches: um-thread-info-in-task-v6.12.57.patch nfs-eof-page-pollution-v6.12.57.patch
+      kconfig_add: CONFIG_UBSAN=n
+      filter_glob: ${{ inputs.filter_glob || '*' }}
+      extra_args: ${{ inputs.extra_args }}
+      artifact: kunit-results-v6.12.57-patched

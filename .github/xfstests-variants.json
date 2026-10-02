@@ -1,0 +1,10 @@
+[
+  { "name": "delegations-off", "vers": "4.2", "delegations": "off", "opts": "",           "sec": "" },
+  { "name": "delegations-on",  "vers": "4.2", "delegations": "on",  "opts": "",           "sec": "" },
+  { "name": "v4.1",            "vers": "4.1", "delegations": "on",  "opts": "",           "sec": "" },
+  { "name": "v4.0",            "vers": "4.0", "delegations": "on",  "opts": "",           "sec": "" },
+  { "name": "v3",              "vers": "3",   "delegations": "on",  "opts": "",           "sec": "" },
+  { "name": "nconnect-4",      "vers": "4.2", "delegations": "on",  "opts": "nconnect=4", "sec": "" },
+  { "name": "krb5i",           "vers": "4.2", "delegations": "on",  "opts": "",           "sec": "krb5i" },
+  { "name": "krb5p",           "vers": "4.2", "delegations": "on",  "opts": "",           "sec": "krb5p" }
+]

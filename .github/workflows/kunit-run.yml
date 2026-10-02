@@ -1,0 +1,110 @@
+name: NFS KUnit (reusable)
+
+# One run of the NFS/SunRPC KUnit suites under User Mode Linux, via
+# scripts/kunit/run-nfs-kunit.sh: kunit.py builds an ARCH=um kernel and runs
+# it as an ordinary process. Called by kunit.yml and coverage.yml.
+
+on:
+  workflow_call:
+    inputs:
+      linux_ref:
+        description: 'Kernel ref or commit for fetch-sources.sh.'
+        type: string
+        required: true
+      patches:
+        description: 'Space-separated files in patches/ to apply to the kernel, in order.'
+        type: string
+        default: ''
+      kconfig_add:
+        description: 'One kunit.py --kconfig_add option, e.g. CONFIG_UBSAN=n.'
+        type: string
+        default: ''
+      coverage:
+        type: boolean
+        default: false
+      filter_glob:
+        type: string
+        default: '*'
+      extra_args:
+        type: string
+        default: ''
+      artifact:
+        description: 'Name of the uploaded results artifact.'
+        type: string
+        required: true
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    # Bounds a hang (the v6.12.57 UML host-signal livelock) instead of the
+    # runner's multi-hour default. A gcov build compiles slower.
+    timeout-minutes: ${{ inputs.coverage && 45 || 30 }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # run-nfs-kunit.sh builds xfstests' ltp/fsx static from it, for the
+      # ports that run fsx inside the test kernel (xfs_run_prog() in
+      # kunit/xfstests/nfs_fixture.c). Without it those ports fail.
+      - name: Fetch the xfstests submodule
+        run: git submodule update --init xfstests
+
+      # KUnit has no dependencies of its own; these are the kernel's, and
+      # lcov for coverage.
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential bc bison flex libelf-dev libssl-dev lcov
+
+      # A full clone, roughly 1.7 GB, re-fetched on every run.
+      - name: Fetch the kernel tree
+        env:
+          LINUX_REF: ${{ inputs.linux_ref }}
+        run: bash scripts/fetch-sources.sh linux
+
+      - name: Apply patches
+        if: inputs.patches != ''
+        env:
+          PATCHES: ${{ inputs.patches }}
+        run: |
+          for p in $PATCHES; do
+            git -C linux apply --check "${GITHUB_WORKSPACE}/patches/${p}"
+            git -C linux apply "${GITHUB_WORKSPACE}/patches/${p}"
+            echo "applied ${p}"
+          done
+
+      # --json needs the `=` form: its value is optional (nargs='?'), so
+      # `--json path` leaves --json empty and path is taken as the positional
+      # filter_glob instead, which silently runs zero tests.
+      - name: Run the KUnit suites
+        shell: bash
+        env:
+          COVERAGE: ${{ inputs.coverage && '1' || '0' }}
+          KCONFIG_ADD: ${{ inputs.kconfig_add }}
+          FILTER_GLOB: ${{ inputs.filter_glob }}
+          EXTRA_ARGS: ${{ inputs.extra_args }}
+        run: |
+          set -o pipefail
+          args=(--json="${GITHUB_WORKSPACE}/kunit-results.json")
+          [ -z "$KCONFIG_ADD" ] || args+=(--kconfig_add "$KCONFIG_ADD")
+          bash scripts/kunit/run-nfs-kunit.sh "${args[@]}" "$FILTER_GLOB" \
+            $EXTRA_ARGS 2>&1 | tee kunit.log
+
+      - name: Summarise
+        if: always()
+        shell: bash
+        run: |
+          grep -E '^\[.*\] (Testing complete|Failures:)' kunit.log \
+            >> "$GITHUB_STEP_SUMMARY" || true
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact }}
+          path: |
+            kunit.log
+            kunit-results.json
+            coverage/coverage.info
+          if-no-files-found: warn
