@@ -125,3 +125,98 @@ jobs:
             uml-run/trace.txt
             linux/.xfstests-uml/build.log
           if-no-files-found: warn
+
+  # The candidate fix in patches/svcauth-gss-unwrap-priv-krb5p.patch, tested
+  # where it matters: master, sec=krb5p, full -g quick, with and without the
+  # patch. Without it generic/486 fails under krb5p (see the patch header);
+  # with it, it should pass and nothing else should change. No coverage or
+  # tracing, so it builds and runs at plain speed.
+  xfstests-uml-krb5p-fix:
+    name: xfstests (UML, linux master, krb5p, svcauth_gss unwrap fix ${{ matrix.fix }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+
+    strategy:
+      fail-fast: false
+      matrix:
+        fix: ['with', 'without']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch the xfstests submodule
+        run: git submodule update --init xfstests
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential bc bison flex libelf-dev libssl-dev \
+            nfs-kernel-server nfs-common \
+            autoconf automake libtool-bin pkg-config gettext \
+            uuid-dev libattr1-dev libacl1-dev libaio-dev libgdbm-dev \
+            xfslibs-dev xfsprogs e2fsprogs attr acl quota \
+            gawk psmisc procps python3 uuid-runtime fio dbench dump \
+            libcap-dev liburing-dev \
+            krb5-kdc krb5-admin-server krb5-user
+
+      - name: Fetch the kernel tree
+        env:
+          LINUX_REF: master
+        run: bash scripts/fetch-sources.sh linux
+
+      - name: Apply the svcauth_gss unwrap fix
+        if: matrix.fix == 'with'
+        run: |
+          git -C linux apply --check "${GITHUB_WORKSPACE}/patches/svcauth-gss-unwrap-priv-krb5p.patch"
+          git -C linux apply "${GITHUB_WORKSPACE}/patches/svcauth-gss-unwrap-priv-krb5p.patch"
+
+      - name: Run xfstests in UML
+        shell: bash
+        env:
+          CHECK_ARGS: ${{ inputs.check_args || '-g quick' }}
+          NFS_SEC: krb5p
+        run: |
+          set -o pipefail
+          bash scripts/00-run-xfstests-in-uml.sh $CHECK_ARGS 2>&1 | tee xfstests.log
+
+      - name: Summarise
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '```'
+            sed -n '/^==> under test/,/^$/p' xfstests.log 2>/dev/null
+            grep -E '^(Failures|Failed|Passed)' xfstests.log 2>/dev/null ||
+              echo "no result trailer -- the run did not finish"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Show failure details
+        if: always()
+        shell: bash
+        run: |
+          shopt -s nullglob
+          for f in xfstests/results/*/*.out.bad; do
+            t=${f#xfstests/results/}; t=${t%.out.bad}
+            echo "::group::${t} diff"
+            diff -u "xfstests/tests/${t}.out" "$f" || true
+            echo "::endgroup::"
+            if [ -f "xfstests/results/${t}.full" ]; then
+              echo "::group::${t}.full (last 200 lines)"
+              tail -n 200 "xfstests/results/${t}.full"
+              echo "::endgroup::"
+            fi
+          done
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xfstests-uml-results-master-krb5p-${{ matrix.fix }}-fix
+          path: |
+            xfstests.log
+            xfstests/results/
+            uml-run/dmesg.txt
+            linux/.xfstests-uml/build.log
+          if-no-files-found: warn

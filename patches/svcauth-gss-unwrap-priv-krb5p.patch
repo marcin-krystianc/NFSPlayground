@@ -1,0 +1,45 @@
+# Candidate fix, not yet upstream, against mainline (tested on 4982d3552).
+#
+# svcauth_gss_unwrap_priv() (net/sunrpc/auth_gss/svcauth_gss.c) adjusts only
+# xdr->nwords after gss_unwrap(). For krb5p, gss_krb5_unwrap_v2() moves the
+# plaintext down over the token header and confounder and shortens
+# buf->head[0].iov_len by 32 bytes (AES), so xdr->end is left 32 bytes past
+# the head. An argument that crosses from the head into the pages is then
+# consumed 32 bytes short by xdr_stream_subsegment(), and the next COMPOUND
+# operation is decoded from argument data: xfstests generic/486 (64 KiB
+# SETXATTR) gets NFS4ERR_OP_ILLEGAL on the following GETATTR, EREMOTEIO on
+# the client. The client side already re-initialises its stream after
+# unwrapping (gss_unwrap_resp_priv() calls xdr_init_decode()); this does the
+# same on the server.
+diff --git a/net/sunrpc/auth_gss/svcauth_gss.c b/net/sunrpc/auth_gss/svcauth_gss.c
+index 967e9d530..83c35e47b 100644
+--- a/net/sunrpc/auth_gss/svcauth_gss.c
++++ b/net/sunrpc/auth_gss/svcauth_gss.c
+@@ -938,7 +938,6 @@ svcauth_gss_unwrap_priv(struct svc_rqst *rqstp, u32 seq, struct gss_ctx *ctx)
+ 	struct xdr_stream *xdr = &rqstp->rq_arg_stream;
+ 	u32 len, maj_stat, seq_num, offset;
+ 	struct xdr_buf *buf = xdr->buf;
+-	unsigned int saved_len;
+ 
+ 	if (xdr_stream_decode_u32(xdr, &len) < 0)
+ 		goto unwrap_failed;
+@@ -953,11 +952,17 @@ svcauth_gss_unwrap_priv(struct svc_rqst *rqstp, u32 seq, struct gss_ctx *ctx)
+ 		goto unwrap_failed;
+ 	offset = xdr_stream_pos(xdr);
+ 
+-	saved_len = buf->len;
+ 	maj_stat = gss_unwrap(ctx, offset, offset + len, buf);
+ 	if (maj_stat != GSS_S_COMPLETE)
+ 		goto bad_unwrap;
+-	xdr->nwords -= XDR_QUADLEN(saved_len - buf->len);
++	/*
++	 * gss_unwrap() moved the plaintext down to @offset and shortened
++	 * buf->head, so xdr->end still marks the old end of the head. Start
++	 * the stream again at @offset over the buffer as it is now.
++	 */
++	xdr_init_decode(xdr, buf,
++			(__be32 *)((char *)buf->head[0].iov_base + offset), NULL);
++	xdr_set_scratch_folio(xdr, rqstp->rq_scratch_folio);
+ 
+ out_seq:
+ 	/* gss_unwrap() decrypted the sequence number. */
