@@ -1,0 +1,75 @@
+From: Marcin Krystianc <marcin.krystianc@gmail.com>
+Subject: [PATCH] SUNRPC: account for the page the krb5i checksum lands on
+
+svcauth_gss_wrap_integ() appends the integrity checksum to the Reply
+with xdr_stream_encode_opaque(). When the Reply already fills the
+current page, as an NFSv4.2 READ of rsize bytes does, that call
+advances xdr->page_ptr onto the next page and writes the checksum
+there.
+
+Nothing then updates rq_next_page. As nfsd4_encode_operation() puts it,
+"the xdr_stream primitives don't manage rq_next_page", so each caller
+syncs it after encoding. The GSS wrap runs last and leaves it behind.
+
+That page is therefore outside [rq_respages, rq_next_page), so
+svc_rqst_release_pages() neither drops the reference nor NULLs the
+slot, and svc_alloc_arg() refills only NULLed slots. The page is handed
+to the next Reply built by that nfsd thread, while svc_tcp_sendmsg()
+has passed it to the socket with MSG_SPLICE_PAGES and the socket still
+holds a reference. The first Reply goes out carrying the second Reply's
+checksum.
+
+The client then fails to verify the MIC and returns -EIO from
+gss_unwrap_resp_integ(). Most occurrences are hidden by RPC retries;
+the rest reach userspace as EIO on a READ.
+
+Observed with xfstests -g quick over NFSv4.2 with sec=krb5i, where 16
+of 641 tests failed on reads with EIO. Reduced to a loop of 1 MB
+O_DIRECT reads of a 4 MB file: 2 to 3 of 20 reads fail, and the trace
+shows 5 to 11 rpcgss_verify_mic GSS_S_BAD_SIG events per run. In each
+case the data the MIC covers is byte-identical on client and server,
+while the token the client verifies carries the SND_SEQ of a Reply the
+same nfsd thread signed one to three MICs later. Dropping
+MSG_SPLICE_PAGES from svc_tcp_sendmsg() also makes the failures go
+away, confirming the Reply is modified after being handed to the
+socket.
+
+With this change the reproducer reports no failed reads and no bad
+MICs.
+
+Fixes: <commit that introduced MSG_SPLICE_PAGES in svc_tcp_sendmsg>
+Signed-off-by: Marcin Krystianc <marcin.krystianc@gmail.com>
+---
+The guard rather than a plain assignment: nfs3proc.c reserves pages by
+advancing rq_next_page ahead of the stream (svcxdr_init_encode() sets
+page_ptr = rq_next_page - 1), and assigning unconditionally there would
+move rq_next_page backwards and leak those pages.
+
+svcauth_gss_wrap_priv() does not use the xdr_stream page_ptr, so it
+would need a different expression if it has the same exposure;
+gss_wrap() can also grow the Reply. I have not seen it fail in testing,
+a full xfstests -g quick with sec=krb5p shows no MIC or unwrap
+failures, so I have left it alone.
+
+Tested with knfsd and the NFS client in one UML kernel over loopback,
+an MIT KDC in the guest and an xfs-backed export.
+
+diff --git a/net/sunrpc/auth_gss/svcauth_gss.c b/net/sunrpc/auth_gss/svcauth_gss.c
+index 967e9d530..06efede54 100644
+--- a/net/sunrpc/auth_gss/svcauth_gss.c
++++ b/net/sunrpc/auth_gss/svcauth_gss.c
+@@ -1819,6 +1819,14 @@ static int svcauth_gss_wrap_integ(struct svc_rqst *rqstp)
+ 	if (xdr_stream_encode_opaque(xdr, checksum.data, checksum.len) < 0)
+ 		goto wrap_failed;
+ 	xdr_commit_encode(xdr);
++	/*
++	 * Account for a page the checksum spilled onto. The xdr_stream
++	 * primitives don't manage rq_next_page, and a page past it is
++	 * neither released nor replaced once the Reply has been sent, so
++	 * it would be reused while this Reply is still being transmitted.
++	 */
++	if (rqstp->rq_next_page < xdr->page_ptr + 1)
++		rqstp->rq_next_page = xdr->page_ptr + 1;
+ 
+ out:
+ 	return 0;
