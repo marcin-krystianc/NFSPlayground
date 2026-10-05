@@ -61,6 +61,9 @@ COVERAGE_DIR="${COVERAGE_DIR:-${REPO_ROOT}/coverage/xfstests-uml}"
 DEFAULT_CHECK_ARGS=(-g attr -g acl -g dir)
 # Shared with 00-run-xfstests-on-gh-ci.sh; see the file for the rules.
 EXCLUDE_FILE="${EXCLUDE_FILE:-${REPO_ROOT}/scripts/xfstests-exclude}"
+# A second exclude file, for tests that fail in one configuration only (for
+# example scripts/xfstests-exclude-krb5p). Same format and the same rules.
+EXCLUDE_FILE_EXTRA="${EXCLUDE_FILE_EXTRA:-}"
 
 # Everything the guest needs, built in. UML loads no modules here: the guest
 # sees the host's /lib/modules, which belongs to a different kernel.
@@ -84,10 +87,16 @@ die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
 
 check_args=("$@")
 [ ${#check_args[@]} -gt 0 ] || check_args=("${DEFAULT_CHECK_ARGS[@]}")
-# The guest sees the host's filesystem, so the host path works in there.
-if [ -s "$EXCLUDE_FILE" ] && grep -qvE '^\s*(#|$)' "$EXCLUDE_FILE"; then
-    check_args=(-E "$EXCLUDE_FILE" "${check_args[@]}")
-fi
+# The guest sees the host's filesystem, so the host paths work in there.
+# check takes -E more than once and appends the lists. A named file that is
+# missing is an error: silently excluding nothing is how a run goes
+# mysteriously red.
+for f in "$EXCLUDE_FILE" "$EXCLUDE_FILE_EXTRA"; do
+    [ -n "$f" ] || continue
+    [ -f "$f" ] || die "no exclude file at ${f}"
+    grep -qvE '^\s*(#|$)' "$f" || continue
+    check_args=(-E "$f" "${check_args[@]}")
+done
 
 [ -f "${LINUX_DIR}/init/main.c" ] ||
     die "${LINUX_DIR} is not a kernel tree -- run: scripts/fetch-sources.sh linux"

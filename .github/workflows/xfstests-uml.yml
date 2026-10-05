@@ -78,7 +78,8 @@ jobs:
       - uses: ./.github/actions/xfstests-uml
         with:
           linux_ref: master
-          variant: '{ "name": "krb5p", "vers": "4.2", "delegations": "on", "opts": "", "sec": "krb5p" }'
+          # No exclude_file: 486 is the test this job is about.
+          variant: '{ "name": "krb5p", "vers": "4.2", "delegations": "on", "opts": "", "sec": "krb5p", "exclude_file": "" }'
           patches: ${{ matrix.fix == 'with' && 'svcauth-gss-unwrap-priv-krb5p.patch' || '' }}
           check_args: ${{ inputs.check_args || '-g quick' }}
           artifact: xfstests-uml-results-master-krb5p-${{ matrix.fix }}-fix

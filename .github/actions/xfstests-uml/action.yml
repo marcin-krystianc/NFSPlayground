@@ -81,8 +81,10 @@ runs:
         NFS_DELEGATIONS: ${{ fromJson(inputs.variant).delegations == 'on' && '1' || '0' }}
         COVERAGE: ${{ inputs.coverage == 'true' && '1' || '0' }}
         TRACE_EVENTS: ${{ inputs.trace_events }}
+        EXCLUDE_EXTRA: ${{ fromJson(inputs.variant).exclude_file }}
       run: |
         set -o pipefail
+        [ -z "$EXCLUDE_EXTRA" ] || export EXCLUDE_FILE_EXTRA="${GITHUB_WORKSPACE}/${EXCLUDE_EXTRA}"
         bash scripts/00-run-xfstests-in-uml.sh $CHECK_ARGS 2>&1 | tee xfstests.log
 
     - name: Summarise
