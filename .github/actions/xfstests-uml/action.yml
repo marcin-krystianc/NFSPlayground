@@ -10,10 +10,15 @@ inputs:
     description: 'Kernel ref or commit for fetch-sources.sh.'
     required: true
   variant:
-    description: 'One entry of .github/xfstests-variants.json, as JSON.'
+    description: >-
+      One entry of .github/xfstests-variants.json, as JSON. Its "patches"
+      list is applied to the kernel before this action's patches input.
     required: true
   patches:
-    description: 'Space-separated files in patches/ to apply to the kernel, in order.'
+    description: >-
+      Space-separated files in patches/ to apply to the kernel, in order,
+      after the variant's own list. For patches that belong to the caller's
+      matrix rather than to the variant, such as a per-linux_ref backport.
     default: ''
   coverage:
     description: "'true' to build with gcov and collect coverage."
@@ -57,15 +62,21 @@ runs:
         LINUX_REF: ${{ inputs.linux_ref }}
       run: bash scripts/fetch-sources.sh linux
 
+    # The variant's patches first, then the caller's. A variant without a
+    # "patches" key contributes none, so the step is a no-op when neither
+    # names anything.
     - name: Apply patches
-      if: inputs.patches != ''
       shell: bash
       env:
+        VARIANT: ${{ inputs.variant }}
         PATCHES: ${{ inputs.patches }}
       run: |
-        for p in $PATCHES; do
-          git -C linux apply --check "${GITHUB_WORKSPACE}/patches/${p}"
-          git -C linux apply "${GITHUB_WORKSPACE}/patches/${p}"
+        variant_patches="$(jq -r '.patches // [] | join(" ")' <<<"$VARIANT")"
+        for p in $variant_patches $PATCHES; do
+          f="${GITHUB_WORKSPACE}/patches/${p}"
+          [ -f "$f" ] || { echo "no such patch: patches/${p}" >&2; exit 1; }
+          git -C linux apply --check "$f"
+          git -C linux apply "$f"
           echo "applied ${p}"
         done
 

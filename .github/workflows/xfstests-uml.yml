@@ -35,9 +35,12 @@ jobs:
         run: echo "list=$(jq -c . .github/xfstests-variants.json)" >> "$GITHUB_OUTPUT"
 
   # The v6.12.57 legs get the UML host-signal livelock fix, a harness fix
-  # (docs/kunit-nfs-reference.md). The NFS fixes in patches/ are not
-  # applied, so every leg tests the tree as released. The trace events are
-  # the delegation and setattr path behind generic/258 and 634.
+  # (docs/kunit-nfs-reference.md), passed here because it belongs to the
+  # kernel ref rather than to a variant. The candidate NFS fixes in patches/
+  # belong to the variant each one concerns, so they are named in
+  # .github/xfstests-variants.json: krb5i and krb5p apply theirs, every other
+  # leg tests the tree as released. The trace events are the delegation and
+  # setattr path behind generic/258 and 634.
   xfstests-uml:
     name: xfstests (UML, linux ${{ matrix.linux_ref }}, ${{ matrix.variant.name }})
     needs: variants
@@ -48,7 +51,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        linux_ref: ['v6.12.57', 'master']
+        linux_ref: ['master']
         variant: ${{ fromJson(needs.variants.outputs.list) }}
     steps:
       - uses: actions/checkout@v4
@@ -60,37 +63,3 @@ jobs:
           check_args: ${{ inputs.check_args || '-g quick' }}
           trace_events: ${{ inputs.trace_events || 'nfs4:nfs4_set_delegation nfs4:nfs4_setattr nfs4:nfs4_delegreturn nfs4:nfs4_delegreturn_exit nfs4:nfs4_cb_getattr nfs4:nfs4_cb_recall nfs:nfs_setattr_enter nfsd:nfsd_deleg_write nfsd:nfsd_deleg_read nfsd:nfsd_deleg_return nfsd:nfsd_vfs_setattr nfsd:nfsd_cb_getattr_done nfsd:nfsd_cb_recall_done' }}
           artifact: xfstests-uml-results-${{ matrix.linux_ref }}-${{ matrix.variant.name }}
-
-  # The candidate kernel fixes in patches/, each on master with the security
-  # flavour it concerns, with and without the patch. The "without" legs are
-  # deliberate controls and are expected to fail: that is what the patch
-  # fixes. Both legs run the test the patch is about, so neither uses an
-  # exclude file. No coverage or tracing, so they build and run at plain
-  # speed.
-  #
-  #   krb5p-xattr: generic/486, a 64 KiB SETXATTR, gets NFS4ERR_OP_ILLEGAL
-  #                on the next operation of the COMPOUND
-  #   krb5i-mic:   reads fail with EIO because the client cannot verify the
-  #                reply's integrity checksum (16 of 641 tests in -g quick)
-  #
-  # See each patch's header for the mechanism.
-  xfstests-uml-patch:
-    name: xfstests (UML, linux master, ${{ matrix.case.name }}, fix ${{ matrix.fix }})
-    runs-on: ubuntu-latest
-    timeout-minutes: 350
-    strategy:
-      fail-fast: false
-      matrix:
-        case:
-          - { name: krb5p-xattr, sec: krb5p, patch: svcauth-gss-unwrap-priv-krb5p.patch }
-          - { name: krb5i-mic,   sec: krb5i, patch: svcauth-gss-wrap-integ-rq_next_page.patch }
-        fix: ['with', 'without']
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/xfstests-uml
-        with:
-          linux_ref: master
-          variant: '{ "name": "${{ matrix.case.sec }}", "vers": "4.2", "delegations": "on", "opts": "", "sec": "${{ matrix.case.sec }}", "exclude_file": "" }'
-          patches: ${{ matrix.fix == 'with' && matrix.case.patch || '' }}
-          check_args: ${{ inputs.check_args || '-g quick' }}
-          artifact: xfstests-uml-results-master-${{ matrix.case.name }}-${{ matrix.fix }}-fix
