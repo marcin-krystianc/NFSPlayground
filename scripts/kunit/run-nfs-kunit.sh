@@ -492,8 +492,18 @@ if [ "$COVERAGE" = "1" ]; then
     # mismatch: geninfo misattributes end lines for some syscall-wrapper
     # macros (e.g. __do_sys_socketcall in net/socket.c) across gcc/lcov
     # version combinations; a hard error otherwise, confirmed on CI.
+    #
+    # negative: a negative hit count, which lcov 2.x makes a hard error, so
+    # the whole collection aborts and the tracefile is left empty. geninfo
+    # attributes it to gcc PR 68080 (gcov counters are not thread-safe) and
+    # recommends recompiling with -fprofile-update=atomic. Seen on 2026-10-02
+    # and 2026-10-06 in coverage.yml's UML xfstests legs, always as '-1' at
+    # mm/page-writeback.c:2979, in runs where every test passed, and in a
+    # different leg each time. Atomic counters would cost build and run time
+    # on legs that already take 50 to 100 minutes, so the one bad counter in
+    # mm/ is dropped instead.
     lcov -t nfs-kunit -o "${REPO_ROOT}/coverage/coverage.info" -c -d "${BUILD_DIR}" \
-        --ignore-errors mismatch
+        --ignore-errors mismatch,negative
     genhtml -o "${REPO_ROOT}/coverage/html" "${REPO_ROOT}/coverage/coverage.info"
     log "coverage report: ${REPO_ROOT}/coverage/html/index.html"
 

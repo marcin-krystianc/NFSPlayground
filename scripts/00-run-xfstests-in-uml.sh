@@ -244,10 +244,11 @@ rm -f "${RUN_DIR}/test.img" "${RUN_DIR}/scratch.img"
 if [ "$COVERAGE" = 1 ]; then
     log "collecting coverage into ${COVERAGE_DIR}"
     mkdir -p "$COVERAGE_DIR"
-    # --ignore-errors mismatch: see the same call in run-nfs-kunit.sh.
-    # geninfo warns per source line; that goes to lcov.log, not the console.
+    # --ignore-errors mismatch,negative: see the same call in
+    # run-nfs-kunit.sh. geninfo warns per source line; that goes to
+    # lcov.log, not the console.
     if ! lcov -q -t xfstests-uml -o "${COVERAGE_DIR}/coverage.info" -c -d "$BUILD_DIR" \
-            --ignore-errors mismatch 2>"${COVERAGE_DIR}/lcov.log"; then
+            --ignore-errors mismatch,negative 2>"${COVERAGE_DIR}/lcov.log"; then
         grep -v 'WARNING' "${COVERAGE_DIR}/lcov.log" | tail -n 20 >&2
         die "lcov failed -- the errors above are from ${COVERAGE_DIR}/lcov.log"
     fi
