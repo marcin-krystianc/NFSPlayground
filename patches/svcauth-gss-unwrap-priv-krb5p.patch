@@ -34,7 +34,7 @@ passes with it, and xfstests -g quick under krb5p shows no other
 difference.
 
 diff --git a/net/sunrpc/auth_gss/svcauth_gss.c b/net/sunrpc/auth_gss/svcauth_gss.c
-index 967e9d530..83c35e47b 100644
+index 967e9d5308..3be602b2b6 100644
 --- a/net/sunrpc/auth_gss/svcauth_gss.c
 +++ b/net/sunrpc/auth_gss/svcauth_gss.c
 @@ -938,7 +938,6 @@ svcauth_gss_unwrap_priv(struct svc_rqst *rqstp, u32 seq, struct gss_ctx *ctx)
@@ -45,7 +45,7 @@ index 967e9d530..83c35e47b 100644
  
  	if (xdr_stream_decode_u32(xdr, &len) < 0)
  		goto unwrap_failed;
-@@ -953,11 +952,15 @@ svcauth_gss_unwrap_priv(struct svc_rqst *rqstp, u32 seq, struct gss_ctx *ctx)
+@@ -953,11 +952,14 @@ svcauth_gss_unwrap_priv(struct svc_rqst *rqstp, u32 seq, struct gss_ctx *ctx)
  		goto unwrap_failed;
  	offset = xdr_stream_pos(xdr);
  
@@ -57,8 +57,7 @@ index 967e9d530..83c35e47b 100644
 +	/* gss_unwrap redacts the opaque blob from the head iovec.
 +	 * buf has changed, thus the stream needs to be reset.
 +	 */
-+	xdr_init_decode(xdr, buf,
-+			(__be32 *)((char *)buf->head[0].iov_base + offset), NULL);
++	xdr_init_decode(xdr, buf, buf->head[0].iov_base + offset, NULL);
 +	xdr_set_scratch_folio(xdr, rqstp->rq_scratch_folio);
  
  out_seq:
