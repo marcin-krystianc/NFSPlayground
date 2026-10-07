@@ -23,8 +23,10 @@ Do what the client already does in gss_unwrap_resp_priv() after decrypting
 a reply: discard the stream and build a new one over the buffer as it now
 is.
 
-Fixes: <commit that added the xdr->nwords adjustment>
+Fixes: 42140718ea26 ("SUNRPC: Convert unwrap_priv_data() to use xdr_stream")
 Signed-off-by: Marcin Krystianc <marcin.krystianc@gmail.com>
+Assisted-by: LLM
+Cc: stable@vger.kernel.org
 ---
 Found with xfstests generic/486 (a 1-byte to 64 KiB XATTR_REPLACE) on an
 NFSv4.2 mount with sec=krb5p; sec=sys and sec=krb5i pass. Tested with
@@ -32,11 +34,6 @@ knfsd and the NFS client in one UML kernel over loopback, an MIT KDC in the
 guest and an xfs-backed export: generic/486 fails without this change and
 passes with it, and xfstests -g quick under krb5p shows no other
 difference.
-
-The deferred-request path (rq_deferred, "goto out_seq") skips the unwrap
-and so also skips this re-init. That looks right, because such a request is
-reprocessed from an already-decrypted buffer over a freshly initialised
-stream, but I have not exercised it.
 
 diff --git a/net/sunrpc/auth_gss/svcauth_gss.c b/net/sunrpc/auth_gss/svcauth_gss.c
 index 967e9d530..83c35e47b 100644
