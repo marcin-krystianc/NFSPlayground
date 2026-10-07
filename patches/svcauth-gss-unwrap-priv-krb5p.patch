@@ -25,8 +25,6 @@ is.
 
 Fixes: 42140718ea26 ("SUNRPC: Convert unwrap_priv_data() to use xdr_stream")
 Signed-off-by: Marcin Krystianc <marcin.krystianc@gmail.com>
-Assisted-by: LLM
-Cc: stable@vger.kernel.org
 ---
 Found with xfstests generic/486 (a 1-byte to 64 KiB XATTR_REPLACE) on an
 NFSv4.2 mount with sec=krb5p; sec=sys and sec=krb5i pass. Tested with
