@@ -60,11 +60,22 @@ without VAST hardware, and how it behaves under failure.
 
 ## Also here
 
+- [TODO.md](TODO.md) — the patches waiting to be sent, the bugs found so far,
+  and the harness decisions each one leaves open.
+- [docs/krb5i-reply-page-reuse.md](docs/krb5i-reply-page-reuse.md) — NFS reads
+  over `sec=krb5i` failing with `EIO`, a knfsd reply-page accounting bug.
+  Patch in `patches/`.
+- [docs/nfs-read-ebusy.md](docs/nfs-read-ebusy.md) — a buffered `read()` on
+  NFS returning `EBUSY`, which is why generic/095 flakes. Client bug, no
+  patch yet.
 - [docs/xfstests-vs-pynfs.md](docs/xfstests-vs-pynfs.md) — what each suite
   actually tests, and where they differ.
-- `patches/` — backports applied to the fetched kernel tree for `v6.12.57`:
-  the UML host-signal livelock fix needed for a full KUnit run, and the NFS
-  client's 'eof page pollution' fix, without which generic/363 fails.
+- `patches/` — two kinds. Backports applied to the fetched kernel tree for
+  `v6.12.57`: the UML host-signal livelock fix needed for a full KUnit run,
+  and the NFS client's 'eof page pollution' fix, without which generic/363
+  fails. Plus the candidate knfsd fixes found here, applied by the `krb5i`
+  and `krb5p` variants in `.github/xfstests-variants.json`; `TODO.md` tracks
+  what each still needs before it is sent.
 - `scripts/` — xfstests runners (GitHub CI, a VM plus Docker servers, a
   container) and `fetch-sources.sh`.
 
