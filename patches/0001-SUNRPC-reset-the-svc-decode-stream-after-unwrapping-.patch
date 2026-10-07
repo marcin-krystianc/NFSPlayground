@@ -1,6 +1,6 @@
-From 6d46ee9eca6adb0a951a86b103fc54dbf87e6e89 Mon Sep 17 00:00:00 2001
+From 39dcd1c5caee175bc0940e4609d850e8dc1db116 Mon Sep 17 00:00:00 2001
 From: Marcin Krystianc <marcin.krystianc@gmail.com>
-Date: Wed, 7 Oct 2026 11:52:19 +0000
+Date: Wed, 7 Oct 2026 12:30:48 +0000
 Subject: [PATCH] SUNRPC: reset the svc decode stream after unwrapping a
  privacy request
 
@@ -36,11 +36,11 @@ guest and an xfs-backed export: generic/486 fails without this change and
 passes with it, and xfstests -g quick under krb5p shows no other
 difference.
 
- net/sunrpc/auth_gss/svcauth_gss.c | 9 ++++++---
- 1 file changed, 6 insertions(+), 3 deletions(-)
+ net/sunrpc/auth_gss/svcauth_gss.c | 8 +++++---
+ 1 file changed, 5 insertions(+), 3 deletions(-)
 
 diff --git a/net/sunrpc/auth_gss/svcauth_gss.c b/net/sunrpc/auth_gss/svcauth_gss.c
-index ab01156a1af9..b6fe3c559d44 100644
+index ab01156a1af9..d5da541353e7 100644
 --- a/net/sunrpc/auth_gss/svcauth_gss.c
 +++ b/net/sunrpc/auth_gss/svcauth_gss.c
 @@ -944,7 +944,6 @@ svcauth_gss_unwrap_priv(struct svc_rqst *rqstp, u32 seq, struct gss_ctx *ctx)
@@ -51,7 +51,7 @@ index ab01156a1af9..b6fe3c559d44 100644
  
  	if (xdr_stream_decode_u32(xdr, &len) < 0)
  		goto unwrap_failed;
-@@ -959,11 +958,15 @@ svcauth_gss_unwrap_priv(struct svc_rqst *rqstp, u32 seq, struct gss_ctx *ctx)
+@@ -959,11 +958,14 @@ svcauth_gss_unwrap_priv(struct svc_rqst *rqstp, u32 seq, struct gss_ctx *ctx)
  		goto unwrap_failed;
  	offset = xdr_stream_pos(xdr);
  
@@ -63,8 +63,7 @@ index ab01156a1af9..b6fe3c559d44 100644
 +	/* gss_unwrap redacts the opaque blob from the head iovec.
 +	 * buf has changed, thus the stream needs to be reset.
 +	 */
-+	xdr_init_decode(xdr, buf,
-+			(__be32 *)((char *)buf->head[0].iov_base + offset), NULL);
++	xdr_init_decode(xdr, buf, buf->head[0].iov_base + offset, NULL);
 +	xdr_set_scratch_folio(xdr, rqstp->rq_scratch_folio);
  
  out_seq:
