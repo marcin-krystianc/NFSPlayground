@@ -99,7 +99,7 @@ jobs:
           - name: krb5p
             vers: '4.2'
             sec: krb5p
-            patches: svcauth-gss-unwrap-priv-krb5p.patch
+            patches: 0001-SUNRPC-reset-the-svc-decode-stream-after-unwrapping-.patch
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/xfstests-uml
