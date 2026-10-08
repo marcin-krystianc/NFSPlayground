@@ -169,8 +169,7 @@ tracked", which now fits. This is a coverage decision.
 `scripts/xfstests-exclude-krb5p` excludes it, and the comment still says
 "These legs deliberately run the tree as released, so the patch is not
 applied here. xfstests-uml.yml's krb5p-fix jobs run 486 with and without
-it". Both statements are now false: the `krb5p` variant in
-`.github/xfstests-variants.json` applies
+it". Both statements are now false: the `krb5p` variant applies
 `svcauth-gss-unwrap-priv-krb5p.patch`, and the `xfstests-uml-patch` job has
 been removed. As it stands the leg applies the fix and then skips the only
 test that exercises it. Dropping the entry would test the fix, and can also
@@ -202,7 +201,7 @@ Item 6's write mode has no fix and no exclude entry. There is no krb5i
 exclude file at all, so `-g quick` runs 761 on that leg every time and it
 fails at random: once in the last five runs. Either create
 `scripts/xfstests-exclude-krb5i`, wire it into the `krb5i` variant's
-`exclude_file` in `.github/xfstests-variants.json`, and list 761 with item
+`exclude_file` in each workflow's matrix, and list 761 with item
 6's mechanism as the reason, or leave the leg to flake and know why when it
 does. The exclude rules want "a reason that is understood", and the
 request-side checksum mechanism in `docs/krb5i-reply-page-reuse.md` is one.

@@ -9,16 +9,28 @@ inputs:
   linux_ref:
     description: 'Kernel ref or commit for fetch-sources.sh.'
     required: true
-  variant:
-    description: >-
-      One entry of .github/xfstests-variants.json, as JSON. Its "patches"
-      list is applied to the kernel before this action's patches input.
+  nfs_vers:
+    description: "NFS version to mount: 3, 4.0, 4.1 or 4.2."
     required: true
+  nfs_opts:
+    description: "Extra mount options, such as nconnect=4. Empty for none."
+    default: ''
+  nfs_sec:
+    description: "Mount sec= flavour, such as krb5i. Empty for sys."
+    default: ''
+  nfs_delegations:
+    description: "'on' or 'off', for nfsd's delegation setting."
+    default: 'on'
+  exclude_file:
+    description: >-
+      A second xfstests exclude file for this configuration only, on top of
+      scripts/xfstests-exclude. Empty for none.
+    default: ''
   patches:
     description: >-
-      Space-separated files in patches/ to apply to the kernel, in order,
-      after the variant's own list. For patches that belong to the caller's
-      matrix rather than to the variant, such as a per-linux_ref backport.
+      Space-separated files in patches/ to apply to the kernel, in order.
+      Candidate fixes that belong to one configuration, and per-linux_ref
+      backports, both come through here.
     default: ''
   coverage:
     description: "'true' to build with gcov and collect coverage."
@@ -62,17 +74,14 @@ runs:
         LINUX_REF: ${{ inputs.linux_ref }}
       run: bash scripts/fetch-sources.sh linux
 
-    # The variant's patches first, then the caller's. A variant without a
-    # "patches" key contributes none, so the step is a no-op when neither
-    # names anything.
+    # A no-op when patches is empty, which is every configuration that tests
+    # the tree as it stands.
     - name: Apply patches
       shell: bash
       env:
-        VARIANT: ${{ inputs.variant }}
         PATCHES: ${{ inputs.patches }}
       run: |
-        variant_patches="$(jq -r '.patches // [] | join(" ")' <<<"$VARIANT")"
-        for p in $variant_patches $PATCHES; do
+        for p in $PATCHES; do
           f="${GITHUB_WORKSPACE}/patches/${p}"
           [ -f "$f" ] || { echo "no such patch: patches/${p}" >&2; exit 1; }
           git -C linux apply --check "$f"
@@ -86,13 +95,13 @@ runs:
       shell: bash
       env:
         CHECK_ARGS: ${{ inputs.check_args }}
-        NFS_VERS: ${{ fromJson(inputs.variant).vers }}
-        NFS_MOUNT_OPTS: ${{ fromJson(inputs.variant).opts }}
-        NFS_SEC: ${{ fromJson(inputs.variant).sec }}
-        NFS_DELEGATIONS: ${{ fromJson(inputs.variant).delegations == 'on' && '1' || '0' }}
+        NFS_VERS: ${{ inputs.nfs_vers }}
+        NFS_MOUNT_OPTS: ${{ inputs.nfs_opts }}
+        NFS_SEC: ${{ inputs.nfs_sec }}
+        NFS_DELEGATIONS: ${{ inputs.nfs_delegations == 'on' && '1' || '0' }}
         COVERAGE: ${{ inputs.coverage == 'true' && '1' || '0' }}
         TRACE_EVENTS: ${{ inputs.trace_events }}
-        EXCLUDE_EXTRA: ${{ fromJson(inputs.variant).exclude_file }}
+        EXCLUDE_EXTRA: ${{ inputs.exclude_file }}
       run: |
         set -o pipefail
         [ -z "$EXCLUDE_EXTRA" ] || export EXCLUDE_FILE_EXTRA="${GITHUB_WORKSPACE}/${EXCLUDE_EXTRA}"

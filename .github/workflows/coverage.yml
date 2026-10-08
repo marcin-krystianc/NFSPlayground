@@ -1,8 +1,8 @@
 name: NFS coverage
 
 # Coverage of upstream master merged from KUnit (.github/actions/kunit) and
-# UML xfstests (.github/actions/xfstests-uml, one job per variant in
-# .github/xfstests-variants.json). lcov merges line by line, so every job
+# UML xfstests (.github/actions/xfstests-uml, one job per entry in the
+# xfstests job's matrix). lcov merges line by line, so every job
 # builds the one commit select-sha resolves. The jobs are described in
 # docs/kunit-nfs.md, "CI".
 
@@ -25,7 +25,6 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       sha: ${{ steps.resolve.outputs.sha }}
-      variants: ${{ steps.resolve.outputs.variants }}
     steps:
       - uses: actions/checkout@v4
 
@@ -36,7 +35,6 @@ jobs:
           [ -n "$sha" ] || { echo "could not resolve master at $url" >&2; exit 1; }
           echo "linux master is $sha"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
-          echo "variants=$(jq -c . .github/xfstests-variants.json)" >> "$GITHUB_OUTPUT"
 
   kunit:
     name: coverage kunit
@@ -52,8 +50,13 @@ jobs:
           coverage: 'true'
           artifact: coverage-kunit
 
+  # This workflow's own mount and server configurations. xfstests-uml.yml has
+  # a separate matrix on purpose, so changing either does not silently change
+  # the other. include with no other matrix key gives one job per entry; a
+  # base dimension alongside it would merge the entries into a single job.
+  # Keep the names in step with the merge job's "names" array below.
   xfstests:
-    name: coverage xfstests (${{ matrix.variant.name }})
+    name: coverage xfstests (${{ matrix.name }})
     needs: select-sha
     runs-on: ubuntu-latest
     # -g quick took 73-77 minutes per run without gcov; gcov's cost is not
@@ -62,16 +65,43 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: ${{ fromJson(needs.select-sha.outputs.variants) }}
+        include:
+          - name: delegations-off
+            vers: '4.2'
+            delegations: 'off'
+          - name: delegations-on
+            vers: '4.2'
+          - name: v4.1
+            vers: '4.1'
+          - name: v4.0
+            vers: '4.0'
+          - name: v3
+            vers: '3'
+          - name: nconnect-4
+            vers: '4.2'
+            opts: nconnect=4
+          - name: krb5i
+            vers: '4.2'
+            sec: krb5i
+            patches: svc-send-account-reply-pages.patch
+          - name: krb5p
+            vers: '4.2'
+            sec: krb5p
+            patches: svcauth-gss-unwrap-priv-krb5p.patch
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/xfstests-uml
         with:
           linux_ref: ${{ needs.select-sha.outputs.sha }}
-          variant: ${{ toJson(matrix.variant) }}
+          nfs_vers: ${{ matrix.vers }}
+          nfs_opts: ${{ matrix.opts }}
+          nfs_sec: ${{ matrix.sec }}
+          nfs_delegations: ${{ matrix.delegations || 'on' }}
+          exclude_file: ${{ matrix.exclude_file }}
+          patches: ${{ matrix.patches }}
           coverage: 'true'
           check_args: ${{ inputs.check_args || '-g quick' }}
-          artifact: coverage-xfstests-${{ matrix.variant.name }}
+          artifact: coverage-xfstests-${{ matrix.name }}
 
   # Runs even when a suite had failing tests, and merges whatever tracefiles
   # exist, so coverage-diff always has something to compare. It ends red when
@@ -119,7 +149,12 @@ jobs:
           # One entry per xfstests variant. The test name gets '_' for '.' and
           # '-', keeping the existing xfstests_delegations_* names.
           pairs=(kunit:coverage-kunit/coverage/coverage.info)
-          for v in $(jq -r '.[].name' .github/xfstests-variants.json); do
+          # The xfstests job's matrix names. Listed again here because a
+          # matrix is not readable from another job: this is what makes a leg
+          # that ran but produced no tracefile an error rather than a silent
+          # gap. Keep it in step with that matrix.
+          names=(delegations-off delegations-on v4.1 v4.0 v3 nconnect-4 krb5i krb5p)
+          for v in "${names[@]}"; do
             pairs+=("xfstests_$(tr '.-' '__' <<<"$v"):coverage-xfstests-${v}/coverage/xfstests-uml/coverage.info")
           done
           for pair in "${pairs[@]}"; do

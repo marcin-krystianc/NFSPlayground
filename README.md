@@ -74,7 +74,7 @@ without VAST hardware, and how it behaves under failure.
   `v6.12.57`: the UML host-signal livelock fix needed for a full KUnit run,
   and the NFS client's 'eof page pollution' fix, without which generic/363
   fails. Plus the candidate knfsd fixes found here, applied by the `krb5i`
-  and `krb5p` variants in `.github/xfstests-variants.json`; `TODO.md` tracks
+  and `krb5p` variants in each workflow's own matrix; `TODO.md` tracks
   what each still needs before it is sent.
 - `scripts/` — xfstests runners (GitHub CI, a VM plus Docker servers, a
   container) and `fetch-sources.sh`.

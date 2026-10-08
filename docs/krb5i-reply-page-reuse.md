@@ -140,8 +140,8 @@ Faster, without xfstests: in the guest, read a 4 MB file with
 20 reads fail. Add `TRACE_EVENTS="rpcgss:rpcgss_verify_mic"` to see the
 `GSS_S_BAD_SIG` events, including the ones retries hide.
 
-In CI the patch is part of the `krb5i` variant in
-`.github/xfstests-variants.json`, so the `xfstests-uml.yml` and
-`coverage.yml` legs for that flavour run the suite with it applied. There is
+In CI the patch is part of the `krb5i` variant, which `xfstests-uml.yml`
+and `coverage.yml` each define in their own matrix, so the legs for that
+flavour run the suite with it applied. There is
 no leg that runs krb5i without it, so the failure itself is not covered;
 reproduce it by hand as above.
