@@ -27,6 +27,11 @@ permissions:
 env:
   DEFAULT_LINUX_URL: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git
   DEFAULT_LINUX_REF: master
+  # Applied to every job here and to the merge job's render tree, never to
+  # one configuration only (A patch shifts line numbers in the files it touches)
+  COVERAGE_PATCHES: >-
+    svc-send-account-reply-pages.patch
+    0001-SUNRPC-reset-the-svc-decode-stream-after-unwrapping-.patch
 
 jobs:
   select-sha:
@@ -59,6 +64,7 @@ jobs:
         with:
           linux_ref: ${{ needs.select-sha.outputs.sha }}
           linux_url: ${{ env.DEFAULT_LINUX_URL }}
+          patches: ${{ env.COVERAGE_PATCHES }}
           coverage: 'true'
           artifact: coverage-kunit
 
@@ -95,11 +101,9 @@ jobs:
           - name: krb5i
             vers: '4.2'
             sec: krb5i
-            patches: svc-send-account-reply-pages.patch
           - name: krb5p
             vers: '4.2'
             sec: krb5p
-            patches: 0001-SUNRPC-reset-the-svc-decode-stream-after-unwrapping-.patch
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/xfstests-uml
@@ -111,7 +115,7 @@ jobs:
           nfs_sec: ${{ matrix.sec }}
           nfs_delegations: ${{ matrix.delegations || 'on' }}
           exclude_file: ${{ matrix.exclude_file }}
-          patches: ${{ matrix.patches }}
+          patches: ${{ env.COVERAGE_PATCHES }}
           coverage: 'true'
           check_args: ${{ inputs.check_args || '-g quick' }}
           artifact: coverage-xfstests-${{ matrix.name }}
@@ -141,6 +145,21 @@ jobs:
           LINUX_REF: ${{ needs.select-sha.outputs.sha }}
           LINUX_URL: ${{ env.DEFAULT_LINUX_URL }}
         run: bash scripts/fetch-sources.sh linux
+
+      # The same patches the suites built, so genhtml renders a source whose
+      # line numbers match their tracefiles. A no-op when COVERAGE_PATCHES is
+      # empty.
+      - name: Apply the coverage patches to the render tree
+        env:
+          PATCHES: ${{ env.COVERAGE_PATCHES }}
+        run: |
+          for p in $PATCHES; do
+            f="${GITHUB_WORKSPACE}/patches/${p}"
+            [ -f "$f" ] || { echo "no such patch: patches/${p}" >&2; exit 1; }
+            git -C linux apply --check "$f"
+            git -C linux apply "$f"
+            echo "applied ${p}"
+          done
 
       - name: Download the suites' coverage
         uses: actions/download-artifact@v4
