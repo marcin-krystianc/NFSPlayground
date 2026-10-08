@@ -75,12 +75,6 @@ jobs:
           - name: krb5i
             vers: '4.2'
             sec: krb5i
-            patches: svc-send-account-reply-pages.patch
-          # No patch: the fix landed in nfsd-testing as 97bf905e837e
-          # ("SUNRPC: reset the svc decode stream after unwrapping a privacy
-          # request", 2026-10-08), so this leg tests it as merged. It is
-          # still absent from mainline, which is why coverage.yml's matrix
-          # still applies patches/svcauth-gss-unwrap-priv-krb5p.patch.
           - name: krb5p
             vers: '4.2'
             sec: krb5p
