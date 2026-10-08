@@ -20,6 +20,14 @@ on:
 permissions:
   contents: read
 
+# The tree this workflow covers. Unlike xfstests-uml.yml, the matrix entries
+# here cannot override it: lcov merges line by line, so every job has to
+# build the one commit select-sha resolves. Change these to cover a different
+# branch, for example one of the NFSD queues in cel/linux.git.
+env:
+  DEFAULT_LINUX_URL: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git
+  DEFAULT_LINUX_REF: master
+
 jobs:
   select-sha:
     runs-on: ubuntu-latest
@@ -28,12 +36,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # A branch ref, since this resolves refs/heads. A tag or a bare SHA in
+      # DEFAULT_LINUX_REF would not resolve and the run stops here.
       - id: resolve
         run: |
-          url="$(sed -n 's/^LINUX_URL="\(.*\)"$/\1/p' scripts/fetch-sources.sh)"
-          sha="$(git ls-remote "$url" refs/heads/master | cut -f1)"
-          [ -n "$sha" ] || { echo "could not resolve master at $url" >&2; exit 1; }
-          echo "linux master is $sha"
+          sha="$(git ls-remote "$DEFAULT_LINUX_URL" \
+            "refs/heads/${DEFAULT_LINUX_REF}" | cut -f1)"
+          [ -n "$sha" ] ||
+            { echo "no ${DEFAULT_LINUX_REF} at ${DEFAULT_LINUX_URL}" >&2; exit 1; }
+          echo "linux ${DEFAULT_LINUX_REF} is $sha"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
   kunit:
@@ -47,6 +58,7 @@ jobs:
       - uses: ./.github/actions/kunit
         with:
           linux_ref: ${{ needs.select-sha.outputs.sha }}
+          linux_url: ${{ env.DEFAULT_LINUX_URL }}
           coverage: 'true'
           artifact: coverage-kunit
 
@@ -93,6 +105,7 @@ jobs:
       - uses: ./.github/actions/xfstests-uml
         with:
           linux_ref: ${{ needs.select-sha.outputs.sha }}
+          linux_url: ${{ env.DEFAULT_LINUX_URL }}
           nfs_vers: ${{ matrix.vers }}
           nfs_opts: ${{ matrix.opts }}
           nfs_sec: ${{ matrix.sec }}
@@ -126,6 +139,7 @@ jobs:
       - name: Fetch the kernel tree
         env:
           LINUX_REF: ${{ needs.select-sha.outputs.sha }}
+          LINUX_URL: ${{ env.DEFAULT_LINUX_URL }}
         run: bash scripts/fetch-sources.sh linux
 
       - name: Download the suites' coverage
@@ -180,7 +194,7 @@ jobs:
           rc=(--rc derive_function_end_line=0)
           lines() { lcov --summary "$1" "${rc[@]}" 2>&1 | grep -E '^ *lines' | tr -s ' '; }
           {
-            echo "Linux master \`${{ needs.select-sha.outputs.sha }}\`"
+            echo "Linux ${{ env.DEFAULT_LINUX_REF }} \`${{ needs.select-sha.outputs.sha }}\`"
             echo '```'
             for f in coverage/by-suite/*.info coverage/coverage.info; do
               [ -f "$f" ] || continue

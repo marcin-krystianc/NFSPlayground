@@ -9,6 +9,12 @@ inputs:
   linux_ref:
     description: 'Kernel ref or commit for fetch-sources.sh.'
     required: true
+  linux_url:
+    description: >-
+      Kernel remote for fetch-sources.sh. Empty uses its own default, the
+      stable tree. Needed for refs that live nowhere else, such as the NFSD
+      queues in cel/linux.git.
+    default: ''
   nfs_vers:
     description: "NFS version to mount: 3, 4.0, 4.1 or 4.2."
     required: true
@@ -72,7 +78,13 @@ runs:
       shell: bash
       env:
         LINUX_REF: ${{ inputs.linux_ref }}
-      run: bash scripts/fetch-sources.sh linux
+        URL: ${{ inputs.linux_url }}
+      run: |
+        # A linux_ref that resolved to empty would otherwise fall through to
+        # fetch-sources.sh's pinned default and silently test the wrong tree.
+        [ -n "$LINUX_REF" ] || { echo "linux_ref is empty" >&2; exit 1; }
+        [ -z "$URL" ] || export LINUX_URL="$URL"
+        bash scripts/fetch-sources.sh linux
 
     # A no-op when patches is empty, which is every configuration that tests
     # the tree as it stands.

@@ -25,9 +25,18 @@ on:
 permissions:
   contents: read
 
+# The tree every matrix entry builds unless it overrides them. nfsd-testing
+# is where submissions land and soak, so it is the line this repo's candidate
+# fixes are aimed at. It exists only in the NFSD tree, and that tree carries
+# no stable point-release tags, so kunit.yml and fetch-sources.sh keep the
+# stable tree. An entry sets "ref" or "url" to build something else.
+env:
+  DEFAULT_LINUX_URL: https://git.kernel.org/pub/scm/linux/kernel/git/cel/linux.git
+  DEFAULT_LINUX_REF: nfsd-testing
+
 jobs:
   xfstests-uml:
-    name: xfstests (UML, linux master, ${{ matrix.name }})
+    name: xfstests (UML, ${{ matrix.name }})
     runs-on: ubuntu-latest
     # -g quick took 73-77 minutes per leg. Below the 6-hour limit so a slow
     # leg still uploads its results.
@@ -36,10 +45,17 @@ jobs:
       fail-fast: false
       # include with no other matrix key gives one job per entry. A base
       # dimension alongside it would instead merge every entry into that
-      # dimension's combinations, collapsing this to a single job. A field an
-      # entry leaves out is empty, so each one states only what differs. The candidate fixes in patches/
-      # belong to the configuration each one concerns, so krb5i and krb5p
-      # name theirs; every other entry tests the tree as it stands.
+      # dimension's combinations, collapsing this to a single job.
+      #
+      # A field an entry leaves out is empty, so each entry states only what
+      # differs, and "url" and "ref" fall back to the env defaults above. The
+      # candidate fixes in patches/ belong to the configuration each one
+      # concerns, so krb5i and krb5p name theirs; every other entry tests the
+      # tree as it stands.
+      #
+      # "name" must be unique, since it is the artifact name. An entry that
+      # overrides url or ref should say so in its name: that is what the job
+      # list shows.
       matrix:
         include:
           - name: delegations-off
@@ -60,15 +76,20 @@ jobs:
             vers: '4.2'
             sec: krb5i
             patches: svc-send-account-reply-pages.patch
+          # No patch: the fix landed in nfsd-testing as 97bf905e837e
+          # ("SUNRPC: reset the svc decode stream after unwrapping a privacy
+          # request", 2026-10-08), so this leg tests it as merged. It is
+          # still absent from mainline, which is why coverage.yml's matrix
+          # still applies patches/svcauth-gss-unwrap-priv-krb5p.patch.
           - name: krb5p
             vers: '4.2'
             sec: krb5p
-            patches: svcauth-gss-unwrap-priv-krb5p.patch
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/xfstests-uml
         with:
-          linux_ref: master
+          linux_ref: ${{ matrix.ref || env.DEFAULT_LINUX_REF }}
+          linux_url: ${{ matrix.url || env.DEFAULT_LINUX_URL }}
           nfs_vers: ${{ matrix.vers }}
           nfs_opts: ${{ matrix.opts }}
           nfs_sec: ${{ matrix.sec }}
@@ -77,4 +98,4 @@ jobs:
           patches: ${{ matrix.patches }}
           check_args: ${{ inputs.check_args || '-g quick' }}
           trace_events: ${{ inputs.trace_events || 'nfs4:nfs4_set_delegation nfs4:nfs4_setattr nfs4:nfs4_delegreturn nfs4:nfs4_delegreturn_exit nfs4:nfs4_cb_getattr nfs4:nfs4_cb_recall nfs:nfs_setattr_enter nfsd:nfsd_deleg_write nfsd:nfsd_deleg_read nfsd:nfsd_deleg_return nfsd:nfsd_vfs_setattr nfsd:nfsd_cb_getattr_done nfsd:nfsd_cb_recall_done' }}
-          artifact: xfstests-uml-results-master-${{ matrix.name }}
+          artifact: xfstests-uml-results-${{ matrix.name }}
