@@ -1,7 +1,7 @@
 # TODO
 
 Patches to send, issues found, and the harness work each one leaves behind.
-Every entry says where the evidence is. Updated 2026-10-07.
+Every entry says where the evidence is. Updated 2026-10-08.
 
 ## Patches to send upstream
 
@@ -111,10 +111,32 @@ currently covered either.
 
 The test deliberately rewrites an O_DIRECT buffer during writeback, so the
 integrity checksum computed over the *request* cannot match what the server
-verifies. Probably inherent to the test under `sec=krb5i` rather than a
-kernel bug, but that has not been confirmed, and it has not been observed
-under krb5p. Decide whether it earns an entry in a krb5i exclude file, which
-does not exist yet.
+verifies. Inherent to the test under `sec=krb5i` rather than a kernel bug.
+Not observed under krb5p.
+
+It has two distinct failure modes under krb5i, and only one of them is item
+1's bug. Comparing the two legs of CI run 37292153575, which differ only by
+the fix:
+
+- Unpatched (job 111704817318) failed on the `cat` that reads the file back:
+  `cat: /mnt/nfs-test-env/scratch/foobar: Input/output error`, plus
+  `_check_dmesg: something found in dmesg`. That is the reply-page reuse bug,
+  and item 1's patch fixes it.
+- Patched (job 112983217085, run 37670049296, 2026-10-07) failed in the
+  O_DIRECT write loop instead: `io thread failed`, no dmesg complaint. That
+  is `xfstests/src/dio-writeback-race.c:129-131`, where a `write()` of
+  `blocksize` returned short or -1. The helper does not print errno, so the
+  log cannot say which. This is the request-side mode, and nothing fixes it.
+
+`docs/krb5i-reply-page-reuse.md:123-129` already recorded the second mode:
+`-g quick` krb5i went from 16 failures to 2 with the patch, and 761 was one
+of the two that remained.
+
+The write mode is intermittent, as a deliberate data race run 256 times
+would be. The patched krb5i leg passed 761 in runs 37436016204, 37480407624,
+37608031266 and 37621082137, then failed it in 37670049296. Do not read
+either outcome as a signal about item 1 or item 2. See item 13 for the
+coverage decision this forces.
 
 ## Known upstream, not ours to fix
 
@@ -173,6 +195,21 @@ no `negative` warning in the leg that was checked, so the race did not recur
 and the suppression has not been proven to work in CI. Confirm on a later run
 that a leg which hits it logs `WARNING: ('negative')` and still uploads a
 tracefile.
+
+### 13. generic/761 will keep flipping the krb5i leg red
+
+Item 6's write mode has no fix and no exclude entry. There is no krb5i
+exclude file at all, so `-g quick` runs 761 on that leg every time and it
+fails at random: once in the last five runs. Either create
+`scripts/xfstests-exclude-krb5i`, wire it into the `krb5i` variant's
+`exclude_file` in `.github/xfstests-variants.json`, and list 761 with item
+6's mechanism as the reason, or leave the leg to flake and know why when it
+does. The exclude rules want "a reason that is understood", and the
+request-side checksum mechanism in `docs/krb5i-reply-page-reuse.md` is one.
+
+Note that excluding it also drops coverage of the mode item 1's patch *does*
+fix, the EIO on read-back. Nothing else in `-g quick` was seen to exercise
+that.
 
 ## Backports carried, not for upstream
 
