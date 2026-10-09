@@ -78,6 +78,22 @@ jobs:
           - name: krb5p
             vers: '4.2'
             sec: krb5p
+          # A control for generic/761, which fails on the krb5i leg above
+          # and on no other leg. Two things changed together when it went
+          # from intermittent to failing every run: this patch stopped being
+          # applied, and nfsd-testing gained five delegation commits
+          # (3af417ce0f30 and the four before it), one of which changes when
+          # a delegation is granted. nfsd-next carries neither those commits
+          # nor 10cbdb3691a6, so this leg isolates the patch. If 761 passes
+          # here while it keeps failing on krb5i, the patch is doing the work
+          # and the upstream placement in svcauth_gss_wrap_integ() is not
+          # enough. 761 failed 2 of 7 runs with the patch applied, so one
+          # green run proves nothing; this needs a few.
+          - name: krb5i-nfsd-next-patched
+            vers: '4.2'
+            sec: krb5i
+            ref: nfsd-next
+            patches: svc-send-account-reply-pages.patch
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/xfstests-uml

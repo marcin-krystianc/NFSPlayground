@@ -58,6 +58,46 @@ without VAST hardware, and how it behaves under failure.
   running xfstests against vanilla NFS servers, then against the VAST
   modules.
 
+## Fixes these tests found
+
+knfsd bugs first seen here as xfstests failures, and where the fix landed.
+Both fixes are in Chuck Lever's `nfsd-testing` branch and have not reached
+mainline yet, so `coverage.yml` still applies both to the tree it builds.
+
+- **RPCSEC_GSS privacy left the decode stream stale.** After `gss_unwrap()`
+  shortens the head iovec by the GSS token header and the confounder,
+  `svcauth_gss_unwrap_priv()` adjusted only `xdr->nwords`, leaving
+  `xdr->end` 32 bytes past the plaintext. An argument spanning the head and
+  the page array was then consumed out of step, and nfsd decoded the next
+  COMPOUND operation from argument data and returned `NFS4ERR_OP_ILLEGAL`.
+  Found with `generic/486` under `sec=krb5p`, which failed in that
+  configuration and nowhere else.
+  Fix by us: [`97bf905e837e`](https://git.kernel.org/pub/scm/linux/kernel/git/cel/linux.git/commit/?id=97bf905e837e345107c2ed3efb2e65108e081e0e)
+  "SUNRPC: reset the svc decode stream after unwrapping a privacy request"
+  ([posting](https://patch.msgid.link/20261007204917.1818086-1-marcin.krystianc@gmail.com)).
+  `Fixes: 42140718ea26`, so the bug dates from v6.3.
+
+- **The GSS integrity checksum was written past `rq_next_page`.** The MIC is
+  encoded after the last operation, onto a page beyond `rq_next_page`, so
+  `svc_rqst_release_pages()` never releases it and the next reply from the
+  same nfsd thread overwrites it while TCP still holds a `MSG_SPLICE_PAGES`
+  reference to the previous one. The client receives another reply's token.
+  Found here as NFS reads over `sec=krb5i` failing with `EIO`; the analysis
+  and the evidence are in
+  [docs/krb5i-reply-page-reuse.md](docs/krb5i-reply-page-reuse.md).
+  Fix by Abhinandan Ekande:
+  [`10cbdb3691a6`](https://git.kernel.org/pub/scm/linux/kernel/git/cel/linux.git/commit/?id=10cbdb3691a67c97ff8761965caa0e46a911094d)
+  "SUNRPC: in svcauth_gss_wrap_integ() resync rq_next_page after the GSS
+  wrap"
+  ([posting](https://patch.msgid.link/20260922134858.2219136-1-aekande@redhat.com)).
+  Found independently of this workbench: that commit credits mmap and
+  fscache workloads, carries no `Reported-by`, and blames
+  `d7de37d6d7cc` where the analysis here blamed `5df5dd03a8f7`. It resyncs
+  in `svcauth_gss_wrap_integ()` rather than in `svc_send()`, which is where
+  `patches/svc-send-account-reply-pages.patch` does it.
+
+Bugs found here that are still unfixed are tracked in [TODO.md](TODO.md).
+
 ## Also here
 
 - [TODO.md](TODO.md) — the patches waiting to be sent, the bugs found so far,
@@ -70,12 +110,12 @@ without VAST hardware, and how it behaves under failure.
   patch yet.
 - [docs/xfstests-vs-pynfs.md](docs/xfstests-vs-pynfs.md) — what each suite
   actually tests, and where they differ.
-- `patches/` — two kinds. Backports applied to the fetched kernel tree for
-  `v6.12.57`: the UML host-signal livelock fix needed for a full KUnit run,
-  and the NFS client's 'eof page pollution' fix, without which generic/363
-  fails. Plus the candidate knfsd fixes found here, applied by the `krb5i`
-  and `krb5p` variants in each workflow's own matrix; `TODO.md` tracks
-  what each still needs before it is sent.
+- `patches/` — two kinds. Backports for the `v6.12.57` KUnit job: the UML
+  host-signal livelock fix needed for a full run, and the NFS client's 'eof
+  page pollution' fix, without which generic/363 fails. Plus the two knfsd
+  fixes above, which `coverage.yml` applies through `COVERAGE_PATCHES`
+  because it builds mainline, where neither has landed. `xfstests-uml.yml`
+  builds `nfsd-testing` and needs no patches.
 - `scripts/` — xfstests runners (GitHub CI, a VM plus Docker servers, a
   container) and `fetch-sources.sh`.
 

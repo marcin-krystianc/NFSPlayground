@@ -45,24 +45,6 @@ Before sending:
   READDIRPLUS taking `goto out` past the trim (`fs/nfsd/nfs3proc.c:670`), and
   a failed `nfsd_iter_read()`. Cite one of those instead.
 
-### 2. krb5p privacy decode stream
-
-`patches/svcauth-gss-unwrap-priv-krb5p.patch`, "SUNRPC: reset the svc decode
-stream after unwrapping a privacy request". `generic/486` under `sec=krb5p`
-gets NFS4ERR_OP_ILLEGAL because `svcauth_gss_unwrap_priv()` leaves
-`xdr->end` 32 bytes past the plaintext, so a 64 KiB value spanning the head
-and the pages is consumed out of step. Carries a real
-`Fixes: 42140718ea26`, `Cc: stable@vger.kernel.org` and `Assisted-by: LLM`.
-
-Before sending:
-
-- HEAD is `2dfb873 working on svcauth-gss-unwrap-priv-krb5p.patch`. Confirm
-  the patch is final rather than mid-edit.
-- There is no doc for this one. The mechanism lives only in the patch header
-  and in `scripts/xfstests-exclude-krb5p`. A short
-  `docs/krb5p-privacy-decode-stream.md` in the style of the krb5i doc would
-  give the posting something to point at.
-
 ## Issues found, no patch
 
 ### 3. read() returns EBUSY on NFS
