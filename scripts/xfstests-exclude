@@ -44,8 +44,8 @@
 # generic/258 and 634's two past dates. Per the series, "nfsd still clamps a
 # future time", so generic/634's future dates are not covered by it and 634
 # is expected to keep failing with delegations on.
-# generic/258
-# generic/634
+generic/258
+generic/634
 
 # generic/444: NFSv3 with POSIX ACLs drops setgid on a new subdirectory of a
 # setgid directory with a default ACL, when the creator is not in its group.
