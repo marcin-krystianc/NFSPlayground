@@ -17,7 +17,7 @@ on:
       check_args:
         description: 'Arguments for xfstests check.'
         required: false
-        default: 'generic/761'
+        default: '-g quick'
       trace_events:
         description: 'Kernel trace events recorded in the guest (uml-run/trace.txt). Empty uses the default list below.'
         required: false
@@ -106,10 +106,6 @@ jobs:
           nfs_delegations: ${{ matrix.delegations || 'on' }}
           exclude_file: ${{ matrix.exclude_file }}
           patches: ${{ matrix.patches }}
-          # TEMPORARY: narrowed to generic/761 while the krb5i failure in
-          # it is being chased. Put '-g quick' back, in both places, once
-          # that is settled. Leaving it here silently reduces every leg to
-          # one test.
-          check_args: ${{ inputs.check_args || 'generic/761' }}
+          check_args: ${{ inputs.check_args || '-g quick' }}
           trace_events: ${{ inputs.trace_events || 'nfs4:nfs4_set_delegation nfs4:nfs4_setattr nfs4:nfs4_delegreturn nfs4:nfs4_delegreturn_exit nfs4:nfs4_cb_getattr nfs4:nfs4_cb_recall nfs:nfs_setattr_enter nfsd:nfsd_deleg_write nfsd:nfsd_deleg_read nfsd:nfsd_deleg_return nfsd:nfsd_vfs_setattr nfsd:nfsd_cb_getattr_done nfsd:nfsd_cb_recall_done' }}
           artifact: xfstests-uml-results-${{ matrix.name }}
