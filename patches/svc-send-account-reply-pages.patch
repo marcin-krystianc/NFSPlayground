@@ -1,0 +1,85 @@
+From: Marcin Krystianc <marcin.krystianc@gmail.com>
+Subject: [PATCH] SUNRPC: account for Reply pages the encode stream consumed
+
+svcauth_gss_wrap_integ() appends the integrity checksum to the Reply
+with xdr_stream_encode_opaque(). When the Reply already fills the
+current page, as an NFSv4.2 READ of rsize bytes does, that call
+advances the stream's page_ptr onto the next page and writes the
+checksum there.
+
+Nothing then updates rq_next_page. As nfsd4_encode_operation() puts it,
+"the xdr_stream primitives don't manage rq_next_page", so nfsd syncs it
+after encoding each operation. The RPCSEC_GSS wrap runs later, from
+svc_authorise(), and no auth flavour touches rq_next_page.
+
+The checksum's page is therefore outside [rq_respages, rq_next_page),
+so svc_rqst_release_pages() neither drops the reference nor NULLs the
+slot, and svc_alloc_arg() refills only NULLed slots. The page is handed
+to the next Reply built by that nfsd thread, while svc_tcp_sendmsg()
+has passed it to the socket with MSG_SPLICE_PAGES and the socket still
+holds a reference. The first Reply goes out carrying the second Reply's
+checksum.
+
+The client then fails to verify the MIC and returns -EIO from
+gss_unwrap_resp_integ(). Most occurrences are hidden by RPC retries;
+the rest reach userspace as EIO on a READ.
+
+Sync rq_next_page in svc_send(), once the Reply is complete: it is the
+one place every server Reply passes after the auth wrap, and the layer
+that releases and refills the pages. svcxdr_init_encode() starts
+page_ptr at rq_next_page - 1 for every request, so the update is a
+no-op unless the encode stream really consumed a page past
+rq_next_page. It only ever moves rq_next_page forward: NFSv3
+procedures advance rq_next_page ahead of the stream to reserve pages,
+and those must not be un-reserved.
+
+Observed with xfstests -g quick over NFSv4.2 with sec=krb5i, where 16
+of 641 tests failed on reads with EIO. Reduced to a loop of 1 MB
+O_DIRECT reads of a 4 MB file: 2 to 3 of 20 reads fail, and the trace
+shows 5 to 11 rpcgss_verify_mic GSS_S_BAD_SIG events per run. In each
+case the data the MIC covers is byte-identical on client and server,
+while the token the client verifies carries the SND_SEQ of a Reply the
+same nfsd thread signed one to three MICs later. Dropping
+MSG_SPLICE_PAGES from svc_tcp_sendmsg() also makes the failures go
+away, confirming the Reply is modified after being handed to the
+socket.
+
+With this change the reproducer reports no failed reads and no bad
+MICs, and -g quick with sec=krb5i goes from 16 failures to 2, with no
+EIO anywhere in the run. The two that remain are unrelated to this
+path: generic/761 deliberately rewrites an O_DIRECT buffer during
+writeback, so the integrity checksum over the Request cannot match,
+and nfs/001 fails to set a large NFSv4 ACL with EINVAL under both
+krb5i and krb5p.
+
+Fixes: <commit that introduced MSG_SPLICE_PAGES in svc_tcp_sendmsg>
+Signed-off-by: Marcin Krystianc <marcin.krystianc@gmail.com>
+---
+An alternative was to sync rq_next_page in svcauth_gss_wrap_integ()
+itself, right after encoding the checksum. That also makes the
+failures disappear, but no auth flavour manages rq_next_page today,
+and a send-time sync covers any future late encoder as well.
+
+Tested with knfsd and the NFS client in one UML kernel over loopback,
+an MIT KDC in the guest and an xfs-backed export.
+
+diff --git a/net/sunrpc/svc_xprt.c b/net/sunrpc/svc_xprt.c
+index 40040af58..24a64482c 100644
+--- a/net/sunrpc/svc_xprt.c
++++ b/net/sunrpc/svc_xprt.c
+@@ -1003,6 +1003,15 @@ void svc_send(struct svc_rqst *rqstp)
+ 	xb->len = xb->head[0].iov_len +
+ 		xb->page_len +
+ 		xb->tail[0].iov_len;
++
++	/* The xdr_stream encode primitives don't manage rq_next_page. If
++	 * the Reply spilled onto a page past it, as the RPCSEC_GSS
++	 * integrity checksum can, account for that page here, lest it be
++	 * handed to the next Reply while the transport still references
++	 * it for this one.
++	 */
++	if (rqstp->rq_next_page < rqstp->rq_res_stream.page_ptr + 1)
++		rqstp->rq_next_page = rqstp->rq_res_stream.page_ptr + 1;
+ 	trace_svc_xdr_sendto(rqstp->rq_xid, xb);
+ 	trace_svc_stats_latency(rqstp);
+ 

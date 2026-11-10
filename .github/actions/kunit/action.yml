@@ -1,0 +1,112 @@
+name: NFS KUnit
+description: >-
+  Run the NFS/SunRPC KUnit suites under User Mode Linux, via
+  scripts/kunit/run-nfs-kunit.sh: kunit.py builds an ARCH=um kernel and runs
+  it as an ordinary process. Expects the repository to be checked out. Used
+  by kunit.yml and coverage.yml.
+
+inputs:
+  linux_ref:
+    description: 'Kernel ref or commit for fetch-sources.sh.'
+    required: true
+  linux_url:
+    description: >-
+      Kernel remote for fetch-sources.sh. Empty uses its own default, the
+      stable tree. Needed for refs that live nowhere else, such as the NFSD
+      queues in cel/linux.git.
+    default: ''
+  patches:
+    description: 'Space-separated files in patches/ to apply to the kernel, in order.'
+    default: ''
+  kconfig_add:
+    description: 'One kunit.py --kconfig_add option, e.g. CONFIG_UBSAN=n.'
+    default: ''
+  coverage:
+    description: "'true' to build with gcov and collect coverage."
+    default: 'false'
+  filter_glob:
+    default: '*'
+  extra_args:
+    default: ''
+  artifact:
+    description: 'Name of the uploaded results artifact.'
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # run-nfs-kunit.sh builds xfstests' ltp/fsx static from it, for the ports
+    # that run fsx inside the test kernel (xfs_run_prog() in
+    # kunit/xfstests/nfs_fixture.c). Without it those ports fail.
+    - name: Fetch the xfstests submodule
+      shell: bash
+      run: git submodule update --init xfstests
+
+    # KUnit has no dependencies of its own; these are the kernel's, and lcov
+    # for coverage.
+    - name: Install dependencies
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          build-essential bc bison flex libelf-dev libssl-dev lcov
+
+    # A full clone, roughly 1.7 GB, re-fetched on every run.
+    - name: Fetch the kernel tree
+      shell: bash
+      env:
+        LINUX_REF: ${{ inputs.linux_ref }}
+        URL: ${{ inputs.linux_url }}
+      run: |
+        # A linux_ref that resolved to empty would otherwise fall through to
+        # fetch-sources.sh's pinned default and silently test the wrong tree.
+        [ -n "$LINUX_REF" ] || { echo "linux_ref is empty" >&2; exit 1; }
+        [ -z "$URL" ] || export LINUX_URL="$URL"
+        bash scripts/fetch-sources.sh linux
+
+    - name: Apply patches
+      if: inputs.patches != ''
+      shell: bash
+      env:
+        PATCHES: ${{ inputs.patches }}
+      run: |
+        for p in $PATCHES; do
+          git -C linux apply --check "${GITHUB_WORKSPACE}/patches/${p}"
+          git -C linux apply "${GITHUB_WORKSPACE}/patches/${p}"
+          echo "applied ${p}"
+        done
+
+    # --json needs the `=` form: its value is optional (nargs='?'), so
+    # `--json path` leaves --json empty and path is taken as the positional
+    # filter_glob instead, which silently runs zero tests.
+    - name: Run the KUnit suites
+      shell: bash
+      env:
+        COVERAGE: ${{ inputs.coverage == 'true' && '1' || '0' }}
+        KCONFIG_ADD: ${{ inputs.kconfig_add }}
+        FILTER_GLOB: ${{ inputs.filter_glob }}
+        EXTRA_ARGS: ${{ inputs.extra_args }}
+      run: |
+        set -o pipefail
+        args=(--json="${GITHUB_WORKSPACE}/kunit-results.json")
+        [ -z "$KCONFIG_ADD" ] || args+=(--kconfig_add "$KCONFIG_ADD")
+        bash scripts/kunit/run-nfs-kunit.sh "${args[@]}" "$FILTER_GLOB" \
+          $EXTRA_ARGS 2>&1 | tee kunit.log
+
+    - name: Summarise
+      if: always()
+      shell: bash
+      run: |
+        grep -E '^\[.*\] (Testing complete|Failures:)' kunit.log \
+          >> "$GITHUB_STEP_SUMMARY" || true
+
+    - name: Upload results
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.artifact }}
+        path: |
+          kunit.log
+          kunit-results.json
+          coverage/coverage.info
+        if-no-files-found: warn

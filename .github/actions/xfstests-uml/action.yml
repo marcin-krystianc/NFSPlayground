@@ -1,0 +1,166 @@
+name: xfstests in UML
+description: >-
+  Build a UML kernel from linux_ref and run upstream xfstests against its own
+  knfsd and NFS client, via scripts/00-run-xfstests-in-uml.sh. Expects the
+  repository to be checked out. Used by xfstests-uml.yml and coverage.yml;
+  the callers own the matrices.
+
+inputs:
+  linux_ref:
+    description: 'Kernel ref or commit for fetch-sources.sh.'
+    required: true
+  linux_url:
+    description: >-
+      Kernel remote for fetch-sources.sh. Empty uses its own default, the
+      stable tree. Needed for refs that live nowhere else, such as the NFSD
+      queues in cel/linux.git.
+    default: ''
+  nfs_vers:
+    description: "NFS version to mount: 3, 4.0, 4.1 or 4.2."
+    required: true
+  nfs_opts:
+    description: "Extra mount options, such as nconnect=4. Empty for none."
+    default: ''
+  nfs_sec:
+    description: "Mount sec= flavour, such as krb5i. Empty for sys."
+    default: ''
+  nfs_delegations:
+    description: "'on' or 'off', for nfsd's delegation setting."
+    default: 'on'
+  exclude_file:
+    description: >-
+      A second xfstests exclude file for this configuration only, on top of
+      scripts/xfstests-exclude. Empty for none.
+    default: ''
+  patches:
+    description: >-
+      Space-separated files in patches/ to apply to the kernel, in order.
+      Candidate fixes that belong to one configuration, and per-linux_ref
+      backports, both come through here.
+    default: ''
+  coverage:
+    description: "'true' to build with gcov and collect coverage."
+    default: 'false'
+  trace_events:
+    description: 'Kernel trace events recorded in the guest (uml-run/trace.txt).'
+    default: ''
+  check_args:
+    default: '-g quick'
+  artifact:
+    description: 'Name of the uploaded results artifact.'
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Fetch the xfstests submodule
+      shell: bash
+      run: git submodule update --init xfstests
+
+    # The kernel build, xfstests' own build and runtime, the NFS server
+    # userspace the guest runs from the host, the KDC for the krb5 variants,
+    # and lcov for coverage.
+    - name: Install dependencies
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+          build-essential bc bison flex libelf-dev libssl-dev \
+          nfs-kernel-server nfs-common \
+          autoconf automake libtool-bin pkg-config gettext \
+          uuid-dev libattr1-dev libacl1-dev libaio-dev libgdbm-dev \
+          xfslibs-dev xfsprogs e2fsprogs attr acl quota \
+          gawk psmisc procps python3 uuid-runtime fio dbench dump \
+          libcap-dev liburing-dev lcov \
+          krb5-kdc krb5-admin-server krb5-user
+
+    - name: Fetch the kernel tree
+      shell: bash
+      env:
+        LINUX_REF: ${{ inputs.linux_ref }}
+        URL: ${{ inputs.linux_url }}
+      run: |
+        # A linux_ref that resolved to empty would otherwise fall through to
+        # fetch-sources.sh's pinned default and silently test the wrong tree.
+        [ -n "$LINUX_REF" ] || { echo "linux_ref is empty" >&2; exit 1; }
+        [ -z "$URL" ] || export LINUX_URL="$URL"
+        bash scripts/fetch-sources.sh linux
+
+    # A no-op when patches is empty, which is every configuration that tests
+    # the tree as it stands.
+    - name: Apply patches
+      shell: bash
+      env:
+        PATCHES: ${{ inputs.patches }}
+      run: |
+        for p in $PATCHES; do
+          f="${GITHUB_WORKSPACE}/patches/${p}"
+          [ -f "$f" ] || { echo "no such patch: patches/${p}" >&2; exit 1; }
+          git -C linux apply --check "$f"
+          git -C linux apply "$f"
+          echo "applied ${p}"
+        done
+
+    # With coverage, the runner collects it before exiting with check's
+    # status, so a run with failing tests still produces a tracefile.
+    - name: Run xfstests in UML
+      shell: bash
+      env:
+        CHECK_ARGS: ${{ inputs.check_args }}
+        NFS_VERS: ${{ inputs.nfs_vers }}
+        NFS_MOUNT_OPTS: ${{ inputs.nfs_opts }}
+        NFS_SEC: ${{ inputs.nfs_sec }}
+        NFS_DELEGATIONS: ${{ inputs.nfs_delegations == 'on' && '1' || '0' }}
+        COVERAGE: ${{ inputs.coverage == 'true' && '1' || '0' }}
+        TRACE_EVENTS: ${{ inputs.trace_events }}
+        EXCLUDE_EXTRA: ${{ inputs.exclude_file }}
+      run: |
+        set -o pipefail
+        [ -z "$EXCLUDE_EXTRA" ] || export EXCLUDE_FILE_EXTRA="${GITHUB_WORKSPACE}/${EXCLUDE_EXTRA}"
+        bash scripts/00-run-xfstests-in-uml.sh $CHECK_ARGS 2>&1 | tee xfstests.log
+
+    - name: Summarise
+      if: always()
+      shell: bash
+      run: |
+        {
+          echo '```'
+          sed -n '/^==> under test/,/^$/p' xfstests.log 2>/dev/null
+          grep -E '^(Failures|Failed|Passed)' xfstests.log 2>/dev/null ||
+            echo "no result trailer -- the run did not finish"
+          echo '```'
+        } >> "$GITHUB_STEP_SUMMARY"
+
+    # The diff and .full tail of each failure, so the job log alone is enough
+    # to see what failed.
+    - name: Show failure details
+      if: always()
+      shell: bash
+      run: |
+        shopt -s nullglob
+        for f in xfstests/results/*/*.out.bad; do
+          t=${f#xfstests/results/}; t=${t%.out.bad}
+          echo "::group::${t} diff"
+          diff -u "xfstests/tests/${t}.out" "$f" || true
+          echo "::endgroup::"
+          if [ -f "xfstests/results/${t}.full" ]; then
+            echo "::group::${t}.full (last 200 lines)"
+            tail -n 200 "xfstests/results/${t}.full"
+            echo "::endgroup::"
+          fi
+        done
+
+    - name: Upload results
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.artifact }}
+        path: |
+          xfstests.log
+          xfstests/results/
+          uml-run/dmesg.txt
+          uml-run/trace.txt
+          coverage/xfstests-uml/coverage.info
+          coverage/xfstests-uml/lcov.log
+          linux/.xfstests-uml/build.log
+        if-no-files-found: warn

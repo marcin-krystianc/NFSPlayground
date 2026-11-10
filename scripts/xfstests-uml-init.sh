@@ -102,6 +102,72 @@ touch /var/lib/nfs/etab /var/lib/nfs/rmtab
 mount -t rpc_pipefs sunrpc /var/lib/nfs/rpc_pipefs
 mount -t nfsd nfsd /proc/fs/nfsd
 rpcbind -w
+
+# Kerberos, for NFS_SEC=krb5/krb5i/krb5p: a KDC for realm UML.TEST, one
+# host name (uml.test) for client and server, and nfs/uml.test in a keytab
+# that rpc.gssd uses as root's machine credential and rpc.svcgssd as the
+# server's. KRB5_CONFIG and KRB5_KDC_PROFILE point at files under /run, so
+# the host's /etc/krb5.conf is not used. Kerberos NFSv4 sends user names,
+# so rpc.idmapd and nfsidmap need the domain, and the machine principal is
+# mapped to root. The test users get tickets in /tmp/krb5cc_<uid>, where
+# rpc.gssd looks for them; any other uid has no credentials.
+if [ -n "$NFS_SEC" ]; then
+    k=/run/krb5
+    mkdir -p "$k"
+    hostname uml.test
+    { cat /etc/hosts; echo "127.0.0.1 uml.test"; } > /run/hosts
+    mount --bind /run/hosts /etc/hosts
+    export KRB5_CONFIG="${k}/krb5.conf" KRB5_KDC_PROFILE="${k}/kdc.conf"
+    export KRB5_KTNAME="FILE:${k}/krb5.keytab"
+    printf '%s\n' \
+        '[libdefaults]' \
+        '    default_realm = UML.TEST' \
+        "    default_keytab_name = FILE:${k}/krb5.keytab" \
+        '    dns_lookup_kdc = false' \
+        '    dns_lookup_realm = false' \
+        '    rdns = false' \
+        '[realms]' \
+        '    UML.TEST = {' \
+        '        kdc = uml.test' \
+        '    }' \
+        '[domain_realm]' \
+        '    uml.test = UML.TEST' > "$KRB5_CONFIG"
+    printf '%s\n' \
+        '[realms]' \
+        '    UML.TEST = {' \
+        "        database_name = ${k}/principal" \
+        "        key_stash_file = ${k}/stash" \
+        '    }' > "$KRB5_KDC_PROFILE"
+    kdb5_util create -s -r UML.TEST -P "$(head -c 24 /dev/urandom | base64)" >/dev/null
+    for p in nfs/uml.test "${qa_users[@]}"; do
+        kadmin.local -q "addprinc -randkey ${p}" >/dev/null
+    done
+    kadmin.local -q "ktadd -k ${k}/krb5.keytab nfs/uml.test" >/dev/null
+    krb5kdc
+    printf '%s\n' \
+        '[General]' \
+        'Domain = uml.test' \
+        'Local-Realms = UML.TEST' \
+        '[Mapping]' \
+        'Nobody-User = nobody' \
+        "Nobody-Group = $(getent group nogroup >/dev/null && echo nogroup || echo nobody)" \
+        '[Translation]' \
+        'Method = nsswitch' \
+        'GSS-Methods = static,nsswitch' \
+        '[Static]' \
+        'nfs/uml.test@UML.TEST = root' > /run/idmapd.conf
+    mount --bind /run/idmapd.conf /etc/idmapd.conf
+    for u in "${qa_users[@]}"; do
+        kadmin.local -q "ktadd -k ${k}/${u}.keytab ${u}" >/dev/null
+        cc="/tmp/krb5cc_$(id -u "$u")"
+        KRB5CCNAME="FILE:${cc}" kinit -k -t "${k}/${u}.keytab" "$u"
+        chown "$u" "$cc"
+    done
+    rpc.idmapd -p /var/lib/nfs/rpc_pipefs
+    rpc.svcgssd
+    # rpc.gssd reads /etc/krb5.keytab unless told otherwise.
+    rpc.gssd -p /var/lib/nfs/rpc_pipefs -k "${k}/krb5.keytab"
+fi
 # NFSv3 locking needs statd on both ends of lockd; mount.nfs would try to
 # start it through systemd, which the guest does not run.
 case "$NFS_VERS" in
@@ -113,15 +179,16 @@ esac
 # refuses without client tracking and the guest runs no nfsdcld. The lease
 # time is left at its default, so test timing is unchanged.
 echo 10 > /proc/fs/nfsd/nfsv4gracetime
-exportfs -i -o ro,sync,no_subtree_check,no_root_squash,fsid=0 "127.0.0.1:${base}"
-exportfs -i -o rw,sync,no_subtree_check,no_root_squash,fsid=1 "127.0.0.1:${base}/test"
-exportfs -i -o rw,sync,no_subtree_check,no_root_squash,fsid=2 "127.0.0.1:${base}/scratch"
+sec="${NFS_SEC:+,sec=${NFS_SEC}}"
+exportfs -i -o "ro,sync,no_subtree_check,no_root_squash,fsid=0${sec}" "127.0.0.1:${base}"
+exportfs -i -o "rw,sync,no_subtree_check,no_root_squash,fsid=1${sec}" "127.0.0.1:${base}/test"
+exportfs -i -o "rw,sync,no_subtree_check,no_root_squash,fsid=2${sec}" "127.0.0.1:${base}/scratch"
 rpc.mountd
 rpc.nfsd 8
 exportfs -v
 
 mkdir -p /mnt/nfs-test-env/test /mnt/nfs-test-env/scratch
-mount -t nfs -o "$NFS_OPTS" "127.0.0.1:${NFS_ROOT}/test" /mnt/nfs-test-env/test
+mount -t nfs -o "$NFS_OPTS" "${NFS_SERVER}:${NFS_ROOT}/test" /mnt/nfs-test-env/test
 # The options the kernel settled on, which is what the run log should show.
 echo "nfs mount: $(awk '$2 == "/mnt/nfs-test-env/test" { print $4 }' /proc/mounts)"
 umount /mnt/nfs-test-env/test

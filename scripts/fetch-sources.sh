@@ -29,7 +29,11 @@ SRC_DIR="${SRC_DIR:-${REPO_ROOT}}"
 # fetch_linux() re-fetches and re-checks-out LINUX_REF on every run, even
 # against an already-cloned ./linux, so switching it does not require
 # `rm -rf ./linux` first.
-LINUX_URL="https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git"
+# LINUX_URL is overridable, for refs that live in no other tree: the NFSD
+# queues (nfsd-testing, nfsd-next, nfsd-fixes) exist only in cel/linux.git,
+# and their commits are not upstream, so neither a ref nor a bare SHA finds
+# them in the tree below.
+LINUX_URL="${LINUX_URL:-https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git}"
 LINUX_REF_PINNED="v6.12.57"
 LINUX_REF="${LINUX_REF:-$LINUX_REF_PINNED}"
 LINUX_SHA="8a243ecde1f6447b8e237f2c1c67c0bb67d16d67"
@@ -71,8 +75,13 @@ fetch_linux() {
         git init --quiet "$dir"
         git -C "$dir" remote add origin "$LINUX_URL"
     fi
+    # ./linux may be left from a run against a different LINUX_URL, and the
+    # clone above is skipped then, so re-point origin every run. Otherwise a
+    # changed URL silently builds whatever the old remote still serves, and
+    # both trees here have a "master".
+    git -C "$dir" remote set-url origin "$LINUX_URL"
 
-    log "checking out linux ${LINUX_REF}"
+    log "checking out linux ${LINUX_REF} from ${LINUX_URL}"
     git -C "$dir" fetch --quiet --depth 1 origin "$LINUX_REF"
     git -C "$dir" checkout --quiet FETCH_HEAD
 
