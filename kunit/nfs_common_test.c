@@ -16,6 +16,7 @@
 #include <kunit/test.h>
 
 #include <linux/errno.h>
+#include <uapi/linux/nfs.h>
 #include <linux/nfs_common.h>
 #include <linux/nfs4.h>
 
