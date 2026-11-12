@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       filter_glob:
-        description: 'kunit.py filter_glob (suite.case globs, e.g. "xfstests/generic/0*"). Leave empty to run every suite.'
+        description: 'kunit.py filter_glob (suite.case globs, e.g. "sunrpc-*"). Leave empty to run every suite.'
         required: false
         default: ''
       extra_args:
@@ -70,9 +70,8 @@ jobs:
           artifact: kunit-results-${{ matrix.linux_ref }}
 
   # v6.12.57 is the upstream base of VAST NFS 4.5.8 (vastnfs-4.5.8/scripts/BASE).
-  # It gets the backported UML livelock fix, so the full suite completes, and
-  # the NFS 'eof page pollution' fix, without which generic/363 fails (see
-  # the patch headers). CONFIG_UBSAN=n: with UBSAN on, v6.12.57 under UML
+  # It gets the backported UML livelock fix, so the full suite completes (see
+  # the patch header). CONFIG_UBSAN=n: with UBSAN on, v6.12.57 under UML
   # reports two misaligned accesses in kernel/exit.c:774, unrelated to
   # kunit/, which kunit.py pins on whichever test was running ("The UBSAN
   # artefact" in docs/kunit-nfs-reference.md).
@@ -86,7 +85,7 @@ jobs:
       - uses: ./.github/actions/kunit
         with:
           linux_ref: v6.12.57
-          patches: um-thread-info-in-task-v6.12.57.patch nfs-eof-page-pollution-v6.12.57.patch
+          patches: um-thread-info-in-task-v6.12.57.patch
           kconfig_add: CONFIG_UBSAN=n
           filter_glob: ${{ inputs.filter_glob || '*' }}
           extra_args: ${{ inputs.extra_args }}

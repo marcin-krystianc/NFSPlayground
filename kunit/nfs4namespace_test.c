@@ -18,8 +18,8 @@
  * RCU-protected transport and switch -- there is no seam short of a real
  * xprt), and try_location()/nfs_follow_referral()/nfs_do_refmount()/
  * nfs4_submount() drive actual LOOKUP/GETFH/FS_LOCATIONS RPCs against a
- * server. None of that is reachable from a unit test the way the xfstests
- * ports reach it over the real loopback mount; testing it here would mean
+ * server. None of that is reachable from a unit test the way xfstests
+ * reaches it over a real mount; testing it here would mean
  * faking enough of net/sunrpc to no longer be testing this file. docs/
  * kunit-nfs.md's "few dozen pure decision functions underneath [RPC
  * calls]" framing for nfs4proc.c applies here too.
