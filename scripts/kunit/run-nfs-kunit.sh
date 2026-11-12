@@ -370,7 +370,12 @@ if [ "$COVERAGE" = "1" ]; then
     # mm/ is dropped instead.
     lcov -t nfs-kunit -o "${REPO_ROOT}/coverage/coverage.info" -c -d "${BUILD_DIR}" \
         --ignore-errors mismatch,negative,inconsistent
-    genhtml -o "${REPO_ROOT}/coverage/html" "${REPO_ROOT}/coverage/coverage.info"
+    # genhtml re-checks the tracefile and does not inherit lcov's
+    # --ignore-errors. lcov 2.4 stops it with ERROR_INCONSISTENT_DATA
+    # ("function 'rpc_init_wait_queue' is not hit but line 265 is",
+    # net/sunrpc/sched.c, CI 2026-11-12).
+    genhtml -o "${REPO_ROOT}/coverage/html" "${REPO_ROOT}/coverage/coverage.info" \
+        --ignore-errors inconsistent
     log "coverage report: ${REPO_ROOT}/coverage/html/index.html"
 
     exit "$rc"
