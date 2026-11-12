@@ -86,7 +86,7 @@ jobs:
       - uses: ./.github/actions/kunit
         with:
           linux_ref: v6.12.57
-          patches: um-thread-info-in-task-v6.12.57.patch
+          patches: um-thread-info-in-task-v6.12.57.patch overflow-kunit-define-flex-v6.12.57.patch
           kconfig_add: CONFIG_UBSAN=n
           filter_glob: ${{ inputs.filter_glob || '*' }}
           extra_args: ${{ inputs.extra_args }}
