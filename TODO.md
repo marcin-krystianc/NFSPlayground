@@ -168,7 +168,7 @@ v6.12.57 leg.
 ### 12. The lcov `negative` suppression is unexercised
 
 `scripts/00-run-xfstests-in-uml.sh:251` and
-`scripts/kunit/run-nfs-kunit.sh:506` now pass
+`scripts/kunit/run-nfs-kunit.sh:365` now pass
 `--ignore-errors mismatch,negative`, after `lcov` aborted on
 `Unexpected negative count '-1' for mm/page-writeback.c:2979` and left a
 0-byte tracefile. Run 37480407479 had all eight tracefiles at full size and
@@ -194,13 +194,9 @@ that.
 
 ## Backports carried, not for upstream
 
-Both apply only to the `v6.12.57` leg, which the matrix no longer runs; see
+It applies only to the `v6.12.57` leg, which the matrix no longer runs; see
 item 11.
 
-- `patches/nfs-eof-page-pollution-v6.12.57.patch`: backport of
-  `b1817b18ff20`, `b2036bb65114` and `d5811e6297f3`, without which
-  generic/363 fails. Not a straight cherry-pick; the header says what
-  diverged.
 - `patches/um-thread-info-in-task-v6.12.57.patch`: backport of
   `2f681ba4b352` ("um: move thread info into task"), for the host-signal
   livelock described in `docs/kunit-nfs-reference.md`. Also not a straight

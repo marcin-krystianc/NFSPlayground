@@ -7,8 +7,8 @@ rather than two tracefiles, and genhtml's differential mode produces an
 HTML tree, not a PR-comment-sized summary.
 
 Scoped to /fs/ (this repo's actual test target) and filtered to changes of
-at least NOISE_FLOOR_PP: most of the tracefile's coverage comes from the
-xfstests loopback suite doing real TCP/RPC I/O plus upstream
+at least NOISE_FLOOR_PP: most of the tracefile's coverage comes from
+UML xfstests doing real TCP/RPC I/O plus upstream
 CONFIG_KUNIT_ALL_TESTS suites outside /fs entirely, and their branch
 coverage jitters between runs with wall-clock timing and (for some
 upstream suites) randomized inputs -- none of which this repo's own tests

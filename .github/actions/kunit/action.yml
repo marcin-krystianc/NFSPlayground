@@ -35,13 +35,6 @@ inputs:
 runs:
   using: composite
   steps:
-    # run-nfs-kunit.sh builds xfstests' ltp/fsx static from it, for the ports
-    # that run fsx inside the test kernel (xfs_run_prog() in
-    # kunit/xfstests/nfs_fixture.c). Without it those ports fail.
-    - name: Fetch the xfstests submodule
-      shell: bash
-      run: git submodule update --init xfstests
-
     # KUnit has no dependencies of its own; these are the kernel's, and lcov
     # for coverage.
     - name: Install dependencies

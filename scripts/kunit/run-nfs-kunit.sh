@@ -64,8 +64,7 @@ if [ "$COVERAGE" = "1" ]; then
 fi
 
 # Each entry is "stem:subdir:Kconfig symbol:Kconfig depends:description".
-# Adding a unit suite means dropping the .c in kunit/ and adding a line here;
-# the xfstests ports below are discovered from the directory instead.
+# Adding a unit suite means dropping the .c in kunit/ and adding a line here.
 TESTS=(
     "addr_test:net/sunrpc:SUNRPC_ADDR_KUNIT_TEST:SUNRPC:SunRPC address conversion"
     "timer_test:net/sunrpc:SUNRPC_TIMER_KUNIT_TEST:SUNRPC:SunRPC RTT estimator"
@@ -78,18 +77,6 @@ TESTS=(
     "nfs4namespace_test:fs/nfs:NFS_V4_NAMESPACE_KUNIT_TEST:NFS_V4:NFSv4 namespace pathname handling"
     "pagelist_test:fs/nfs:NFS_PAGELIST_KUNIT_TEST:NFS_FS:NFS page request coalescing"
     "nfs4proc_test:fs/nfs:NFS_V4_PROC_KUNIT_TEST:NFS_V4:NFSv4 protocol decision logic")
-
-# The xfstests ports all share one Kconfig symbol and the loopback NFS
-# fixture object, so they are discovered rather than listed: dropping a .c
-# in kunit/xfstests/generic/ is the whole of adding one. nfs_fixture goes
-# first -- it defines no suite, it is the shared deployment the generic/*
-# suites mount through.
-XFSTESTS_ENTRY=":fs:NFS_XFSTESTS_KUNIT_TEST:NFSD:xfstests ports over a loopback NFS mount"
-TESTS+=("xfstests/nfs_fixture${XFSTESTS_ENTRY}")
-for src in "${REPO_ROOT}"/kunit/xfstests/generic/*.c; do
-    [ -e "$src" ] || continue
-    TESTS+=("xfstests/generic/$(basename "$src" .c)${XFSTESTS_ENTRY}")
-done
 
 # kunit.py is given --kunitconfig=net/sunrpc/.kunitconfig explicitly (below),
 # so its own stock-config fallback (tools/testing/kunit/configs/default.config,
@@ -107,20 +94,12 @@ done
 # as of some point after v6.12.57, so this is now the only place any of
 # this -- KUNIT itself included -- is requested.
 #
-# NFS_V4 is needed by the session slot table suite. NFS_V4_2/NFSD/TMPFS
-# serve the generic/001 suite, which stands up knfsd inside the UML kernel
-# and mounts it back over loopback; the export lives on tmpfs because
-# ramfs has no export_operations.
+# NFS_V4 is needed by the session slot table suite. NFS_V4_2 by the
+# nfs4proc suite's READ_PLUS cases.
 kunit_opts=(CONFIG_KUNIT=y CONFIG_KUNIT_ALL_TESTS=y
             CONFIG_NET=y CONFIG_INET=y CONFIG_FILE_LOCKING=y
             CONFIG_MULTIUSER=y CONFIG_NFS_FS=y CONFIG_SUNRPC=y
-            CONFIG_IPV6=y CONFIG_NFS_V4=y
-            CONFIG_NFS_V4_2=y CONFIG_NFSD=y CONFIG_NFSD_V4=y CONFIG_TMPFS=y
-            CONFIG_TMPFS_XATTR=y)
-
-# hostfs is how the test kernel reaches the userspace programs built below
-# (xfs_run_prog() in kunit/xfstests/nfs_fixture.c).
-kunit_opts+=(CONFIG_HOSTFS=y)
+            CONFIG_IPV6=y CONFIG_NFS_V4=y CONFIG_NFS_V4_2=y)
 
 # arch/um/Kconfig.debug's GCOV symbol (not the generic CONFIG_GCOV_KERNEL
 # from Documentation/dev-tools/gcov.rst) depends on CONFIG_DEBUG_INFO; both
@@ -249,30 +228,7 @@ UNSTATIC=(
     "fs/nfs/nfs4proc.c:void:nfs4_init_boot_verifier"
     "fs/nfs/nfs4proc.c:void:do_renew_lease"
     "fs/nfs/nfs4proc.c:void:renew_lease"
-    "fs/nfsd/export.c:int:expkey_parse"
-    "fs/nfsd/export.c:int:svc_export_parse"
-    "net/sunrpc/svcauth_unix.c:int:ip_map_parse"
-    # Public via fs/nfsd/state.h through v6.12.57; became file-private on
-    # current mainline. Listed unconditionally: on a tree where it is still
-    # public the substitution below simply finds nothing static to drop.
-    "fs/nfsd/nfs4state.c:void:nfsd4_end_grace"
 )
-
-# mknod(2)'s syscall body, which the xfstests fixture calls the same way it
-# calls the other fs/namei.c bodies. Conditional, unlike the rest: it is
-# static on v6.12.57, and on current mainline it is renamed
-# filename_mknodat() and already public in fs/internal.h, where there is
-# nothing to un-static and appending an EXPORT_SYMBOL_IF_KUNIT() for a name
-# that file no longer has would not compile.
-if grep -qE '^static .*\bdo_mknodat\(' "${LINUX_DIR}/fs/namei.c"; then
-    UNSTATIC+=("fs/namei.c:int:do_mknodat")
-    # Declare it where mainline declares its successor (filename_mknodat),
-    # so dropping the `static` does not leave namei.c with a definition and
-    # no prototype: -Wmissing-prototypes is on for fs/.
-    grep -q '\bdo_mknodat\b' "${LINUX_DIR}/fs/internal.h" ||
-        printf '\nint do_mknodat(int dfd, struct filename *name, umode_t mode, unsigned int dev);\n' \
-            >> "${LINUX_DIR}/fs/internal.h"
-fi
 
 for entry in "${UNSTATIC[@]}"; do
     IFS=: read -r relpath rettype func <<< "$entry"
@@ -324,73 +280,27 @@ quote_module_import_ns=0
 grep -q '__stringify(ns)' "${LINUX_DIR}/include/linux/module.h" ||
     quote_module_import_ns=1
 
-# fs/namei.c's do_*() syscall bodies were renamed filename_*() upstream
-# after v6.12.57 -- same file, same signatures, still declared in
-# fs/internal.h (which the fixture already includes), just under the new
-# name. The xfstests fixture calls six of them under the old names; each
-# is checked against the actual tree and renamed in the copy only if
-# needed, so a tree with a partial migration is still handled correctly.
-NAMEI_RENAMES=(
-    do_mkdirat:filename_mkdirat
-    do_rmdir:filename_rmdir
-    do_unlinkat:filename_unlinkat
-    do_renameat2:filename_renameat2
-    do_linkat:filename_linkat
-    do_symlinkat:filename_symlinkat
-    do_mknodat:filename_mknodat
-)
-namei_sed_args=()
-for pair in "${NAMEI_RENAMES[@]}"; do
-    old="${pair%%:*}"
-    new="${pair#*:}"
-    grep -qw "$old" "${LINUX_DIR}/fs/namei.c" ||
-        namei_sed_args+=(-e "s/\\b${old}\\b/${new}/g")
-done
-
 for entry in "${TESTS[@]}"; do
     IFS=: read -r stem subdir symbol depends description <<< "$entry"
     dir="${LINUX_DIR}/${subdir}"
 
     [ -d "$dir" ] || die "${dir} not found in the kernel tree"
 
-    # A stem with slashes mirrors a source-tree layout under kunit/ (e.g.
-    # xfstests/generic/001). The kernel-side copy flattens it: kbuild would
-    # need a Makefile in every subdirectory otherwise.
-    flat="${stem//\//_}"
-    log "installing ${subdir}/${flat}.c"
-    cp "${REPO_ROOT}/kunit/${stem}.c" "${dir}/${flat}.c"
+    log "installing ${subdir}/${stem}.c"
+    cp "${REPO_ROOT}/kunit/${stem}.c" "${dir}/${stem}.c"
     if [ "$quote_module_import_ns" = "1" ]; then
         sed -i \
             's/^MODULE_IMPORT_NS(EXPORTED_FOR_KUNIT_TESTING);$/MODULE_IMPORT_NS("EXPORTED_FOR_KUNIT_TESTING");/' \
-            "${dir}/${flat}.c"
+            "${dir}/${stem}.c"
     fi
-    if [ "$stem" = "xfstests/nfs_fixture" ] && [ ${#namei_sed_args[@]} -gt 0 ]; then
-        sed -i "${namei_sed_args[@]}" "${dir}/${flat}.c"
-    fi
-    # KUnit runs each test case's body in its own fresh kthread, which does
-    # not share suite_init()'s fs_struct/root -- see xfstests_nfs_case_init()
-    # in nfs_fixture.c and "The per-test-case thread" in docs/kunit-nfs-reference.md.
-    # Every xfstests port (everything but nfs_fixture itself, which defines
-    # no suite) needs its kunit_suite wired to rebind before each case.
-    case "$stem" in
-    xfstests/nfs_fixture) ;;
-    xfstests/*)
-        grep -q '\.init\s*=' "${dir}/${flat}.c" ||
-            sed -i \
-                's/^\(\s*\)\.test_cases\(\s*\)=/\1.init\2= xfstests_nfs_case_init,\n\1.test_cases\2=/' \
-                "${dir}/${flat}.c"
-        ;;
-    esac
     if [ -f "${REPO_ROOT}/kunit/${stem}.h" ]; then
-        cp "${REPO_ROOT}/kunit/${stem}.h" "${dir}/${flat}.h"
+        cp "${REPO_ROOT}/kunit/${stem}.h" "${dir}/${stem}.h"
     fi
 
     # Mirrors net/sunrpc/auth_gss/Makefile:17, the pre-existing KUnit test.
-    # Keyed on the object name, not the symbol: the xfstests ports share
-    # one symbol across many objects.
-    if ! grep -q "${flat}.o" "${dir}/Makefile"; then
+    if ! grep -q "${stem}.o" "${dir}/Makefile"; then
         log "wiring Makefile for $symbol"
-        printf '\nobj-$(CONFIG_%s) += %s.o\n' "$symbol" "$flat" \
+        printf '\nobj-$(CONFIG_%s) += %s.o\n' "$symbol" "$stem" \
             >> "${dir}/Makefile"
     fi
 
@@ -428,64 +338,13 @@ for opt in "${kunit_opts[@]}"; do
     fi
 done
 
-# Userspace programs the xfstests ports run inside the test kernel with
-# xfs_run_prog(): upstream's own ltp/fsx from the xfstests submodule. The
-# test kernel has no libc, so it is linked static, and it is compiled
-# directly rather than through xfstests' configure, which needs xfsprogs
-# headers. What configure would provide is two files: a config.h naming
-# the standard headers src/global.h may include, and headers that
-# xfstests' generated include/ pulls in and fsx.c uses without including
-# (getopt_long, roundup/MIN, assert). No XFS, AIO or io_uring: the ports
-# that use fsx pass none of the options that need them. The directory is
-# handed to the kernel as a module parameter of the fixture.
-HOSTBIN_DIR="${LINUX_DIR}/.kunit-hostbin"
-XFSTESTS_DIR="${REPO_ROOT}/xfstests"
-kunit_run_args=()
-if [ -f "${XFSTESTS_DIR}/ltp/fsx.c" ]; then
-    mkdir -p "$HOSTBIN_DIR"
-    if ! [ "${HOSTBIN_DIR}/fsx" -nt "${XFSTESTS_DIR}/ltp/fsx.c" ]; then
-        log "building static fsx into ${HOSTBIN_DIR}"
-        for h in SYS_TYPES_H SYS_STAT_H SYS_STATVFS_H SYS_TIME_H \
-                 SYS_IOCTL_H SYS_WAIT_H MALLOC_H DIRENT_H STDLIB_H \
-                 UNISTD_H ERRNO_H STRING_H SYS_FCNTL_H TIME_H; do
-            echo "#define HAVE_${h} 1"
-        done > "${HOSTBIN_DIR}/config.h"
-        # FALLOC_FL_WRITE_ZEROES is newer than some distributions' uapi
-        # headers; the value is include/uapi/linux/falloc.h's. A kernel
-        # that lacks the mode rejects it, and fsx then skips that op.
-        cat > "${HOSTBIN_DIR}/fsx-compat.h" <<'EOF_COMPAT'
-#include <getopt.h>
-#include <sys/param.h>
-#include <assert.h>
-#include <linux/falloc.h>
-#ifndef FALLOC_FL_WRITE_ZEROES
-#define FALLOC_FL_WRITE_ZEROES 0x80
-#endif
-EOF_COMPAT
-        gcc -static -O2 -g -D_GNU_SOURCE -DFALLOCATE -DHAVE_COPY_FILE_RANGE \
-            -include "${HOSTBIN_DIR}/fsx-compat.h" \
-            -I"${HOSTBIN_DIR}" -I"${XFSTESTS_DIR}/src" -I"${XFSTESTS_DIR}/include" \
-            "${XFSTESTS_DIR}/ltp/fsx.c" -o "${HOSTBIN_DIR}/fsx" ||
-            die "building static fsx failed"
-    fi
-    kunit_run_args+=(--kernel_args="xfstests_nfs_fixture.hostbin=${HOSTBIN_DIR}")
-else
-    log "xfstests submodule not checked out: the ports that run fsx will fail"
-fi
-
-# kunit.py's --timeout bounds the whole run, not one test, and defaults to
-# 300 s. The ports that run upstream's fsx (generic/127 alone is six
-# concurrent 100000-operation runs) take a full run past that. Given before
-# "$@", so a --timeout on the command line still wins.
-kunit_run_args+=(--timeout=1200)
-
 log "running kunit.py"
 cd "$LINUX_DIR"
 
 if [ "$COVERAGE" = "1" ]; then
     rc=0
     ./tools/testing/kunit/kunit.py run \
-        --kunitconfig=net/sunrpc/.kunitconfig "${kunit_run_args[@]}" "$@" || rc=$?
+        --kunitconfig=net/sunrpc/.kunitconfig "$@" || rc=$?
 
     log "collecting coverage from ${BUILD_DIR}"
     mkdir -p "${REPO_ROOT}/coverage"
@@ -511,4 +370,4 @@ if [ "$COVERAGE" = "1" ]; then
 fi
 
 exec ./tools/testing/kunit/kunit.py run \
-    --kunitconfig=net/sunrpc/.kunitconfig "${kunit_run_args[@]}" "$@"
+    --kunitconfig=net/sunrpc/.kunitconfig "$@"

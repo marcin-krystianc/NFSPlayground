@@ -4,23 +4,19 @@ In-kernel tests for the Linux NFS client, run under User Mode Linux with
 `kunit.py`. No VM, no kernel install, no separate server machine: UML
 builds an `ARCH=um` kernel and runs it as an ordinary process.
 
-Two kinds of test live here:
-
-- **Unit suites** (`kunit/*.c`) — call NFS client and SunRPC functions
-  directly and assert on what they return. No mount, no network.
-- **xfstests ports** (`kunit/xfstests/`) — real filesystem tests run
-  against a real NFSv4.2 mount, served by knfsd inside the same UML
-  kernel, over loopback.
+The unit suites (`kunit/*.c`) call NFS client and SunRPC functions
+directly and assert on what they return. No mount, no network. End-to-end
+filesystem tests are upstream xfstests run against a UML kernel
+(`scripts/00-run-xfstests-in-uml.sh`).
 
 ## Status
 
 **This is a proof of concept, not a test suite anyone should rely on yet.**
-It shows that both approaches work and are worth continuing. It does not
+It shows that the approach works and is worth continuing. It does not
 show that the NFS client is well tested.
 
 | | Covered | Out of |
 |---|---|---|
-| xfstests `generic/*` cases ported | 145 | 798 upstream |
 | `net/sunrpc` files with unit tests | 3 | 27 |
 | `fs/nfs` files with unit tests | 6 | 56 |
 
@@ -35,20 +31,10 @@ NFS client is safe. Treat a failure as informative and a pass as weak.
 
 Known gaps worth naming:
 
-- **Crash consistency is not covered at all.** The fixture runs client and
-  server in one kernel over tmpfs, so there is no way to drop writes and
-  replay.
-- **Nothing is exercised end to end over anything but loopback TCP
-  NFSv4.2.** No pNFS, no RDMA, no `RPCSEC_GSS`/Kerberos mount. The pNFS
-  and Kerberos coverage that exists is pure logic: layout-range arithmetic
-  here, plus upstream's own `gss_krb5_test.c`, which the runner enables via
+- **Nothing here exercises a mount.** The pNFS and Kerberos coverage
+  that exists is pure logic: layout-range arithmetic here, plus upstream's
+  own `gss_krb5_test.c`, which the runner enables via
   `CONFIG_KUNIT_ALL_TESTS=y` but which is not this repo's work.
-- The ported xfstests cases are the ones that are reachable, not a
-  selection by value. The other 678 are accounted for one by one in
-  [xfstests-ports-not-done.md](xfstests-ports-not-done.md): most ask for
-  something NFS does not have (reflink, quota, fsverity, a block device,
-  a filesystem of a chosen size), and the rest name what this fixture
-  cannot do.
 
 ## Running
 
@@ -60,7 +46,7 @@ scripts/kunit/run-nfs-kunit.sh
 Extra arguments pass through to `kunit.py`, so a narrower run is:
 
 ```sh
-scripts/kunit/run-nfs-kunit.sh "xfstests/generic/0*"
+scripts/kunit/run-nfs-kunit.sh "sunrpc-*"
 scripts/kunit/run-nfs-kunit.sh --raw_output
 ```
 
@@ -83,9 +69,7 @@ into the build dir, unlike the debugfs-based `CONFIG_GCOV_KERNEL` path in
 architectures use.
 
 The report covers every file the run touched, not just `kunit/`: the
-unit suites reach into `fs/nfs`, `fs/nfs_common` and `net/sunrpc`, and the
-xfstests ports additionally exercise `fs/nfsd`, `fs/namei.c` and the VFS
-paths underneath the loopback mount.
+unit suites reach into `fs/nfs`, `fs/nfs_common` and `net/sunrpc`.
 
 Getting a real report out of this needed two workarounds for UML-specific
 gcov/lcov bugs, both applied automatically by `run-nfs-kunit.sh` under
@@ -100,9 +84,7 @@ root causes.
 - `kunit` — a matrix over `v6.12.57`, `v6.18.52`, `v7.2.6` and `master`,
   unpatched. The `v6.12.57` leg can hit the livelock above.
 - `kunit-v6-12-57-patched` — `v6.12.57` with the UML fix applied, running
-  the full suite to completion, and with the NFS 'eof page pollution' fix
-  (`patches/nfs-eof-page-pollution-v6.12.57.patch`) applied. The unpatched
-  `v6.12.57` leg can fail generic/363 without it.
+  the full suite to completion.
 
 Coverage is in `.github/workflows/coverage.yml`, which merges this suite's
 coverage with that of upstream xfstests run in a UML guest
@@ -139,6 +121,6 @@ keeps the original line breaks.
 
 [kunit-nfs-reference.md](kunit-nfs-reference.md) has the implementation
 notes: how the fixtures are built, which seams make each area reachable,
-what the runner does to the kernel tree, the livelock root cause and
-backport, and the findings from individual ports. That file is the one to
+what the runner does to the kernel tree, and the livelock root cause and
+backport. That file is the one to
 read before changing a test; this one is the orientation.

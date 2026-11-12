@@ -8,16 +8,13 @@ Two largely independent strands live here.
 
 ## 1. In-kernel tests for the NFS client
 
-KUnit suites that run under User Mode Linux: no VM, no kernel install, no
-separate server machine. Two kinds:
+KUnit unit suites that run under User Mode Linux: no VM, no kernel install,
+no separate server machine. They call NFS client and SunRPC functions
+directly, with no mount and no network. End-to-end filesystem tests are
+upstream xfstests run against a UML kernel
+(`scripts/00-run-xfstests-in-uml.sh`).
 
-- **Unit suites** call NFS client and SunRPC functions directly — no mount,
-  no network.
-- **xfstests ports** run real filesystem tests against a real NFSv4.2 mount,
-  served by knfsd inside the same UML kernel over loopback.
-
-**This part is a proof of concept.** It demonstrates that both approaches
-work; it is not coverage of the NFS client, and a green run is weak
+**This part is a proof of concept.** It is not coverage of the NFS client, and a green run is weak
 evidence. [The numbers and the named gaps](docs/kunit-nfs.md#status) are in
 the docs.
 
@@ -26,8 +23,6 @@ the docs.
 - [docs/kunit-nfs-reference.md](docs/kunit-nfs-reference.md) — implementation
   notes: fixture mechanics, which seams make each area reachable, the
   constraints on what can be tested this way. Read before changing a test.
-- [docs/xfstests-ports-not-done.md](docs/xfstests-ports-not-done.md) — the
-  `generic/*` cases that are **not** ported, each with the reason.
 
 ```sh
 scripts/fetch-sources.sh linux       # once
@@ -110,9 +105,8 @@ Bugs found here that are still unfixed are tracked in [TODO.md](TODO.md).
   patch yet.
 - [docs/xfstests-vs-pynfs.md](docs/xfstests-vs-pynfs.md) — what each suite
   actually tests, and where they differ.
-- `patches/` — two kinds. Backports for the `v6.12.57` KUnit job: the UML
-  host-signal livelock fix needed for a full run, and the NFS client's 'eof
-  page pollution' fix, without which generic/363 fails. Plus the two knfsd
+- `patches/` — two kinds. A backport for the `v6.12.57` KUnit job: the UML
+  host-signal livelock fix needed for a full run. Plus the two knfsd
   fixes above, which `coverage.yml` applies through `COVERAGE_PATCHES`
   because it builds mainline, where neither has landed. `xfstests-uml.yml`
   builds `nfsd-testing` and needs no patches.
