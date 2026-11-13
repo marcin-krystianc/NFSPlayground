@@ -37,7 +37,7 @@ env:
 jobs:
   xfstests-uml:
     name: xfstests (UML, ${{ matrix.name }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # -g quick took 73-77 minutes per leg. Below the 6-hour limit so a slow
     # leg still uploads its results.
     timeout-minutes: 350
