@@ -12,8 +12,7 @@ inputs:
   linux_url:
     description: >-
       Kernel remote for fetch-sources.sh. Empty uses its own default, the
-      stable tree. Needed for refs that live nowhere else, such as the NFSD
-      queues in cel/linux.git.
+      GitHub copy of the NFSD tree (chucklever/linux).
     default: ''
   nfs_vers:
     description: "NFS version to mount: 3, 4.0, 4.1 or 4.2."
@@ -74,17 +73,78 @@ runs:
           libcap-dev liburing-dev lcov \
           krb5-kdc krb5-admin-server krb5-user
 
+    # Caches are immutable, so every new commit is saved under its own key
+    # and restore-keys picks the newest one. The fetch then downloads only
+    # what the cache lacks: 88 objects to go from nfsd-testing to nfsd-next,
+    # against about 300 MB for a fresh shallow clone.
+    # ponytail: old commits stay in the cached .git (HEAD's reflog keeps
+    # them), so it grows by each fetched delta. If it gets large, expire the
+    # reflog and git gc before the save.
+    - name: Restore the kernel git cache
+      id: linux-cache
+      uses: actions/cache/restore@v4
+      with:
+        path: linux/.git
+        key: linux-git-${{ inputs.linux_ref }}
+        restore-keys: linux-git-
+
     - name: Fetch the kernel tree
+      id: fetch
       shell: bash
       env:
         LINUX_REF: ${{ inputs.linux_ref }}
         URL: ${{ inputs.linux_url }}
       run: |
+        # The cache holds .git only. Check its commit out first: when the ref
+        # has not moved, fetch-sources.sh's checkout is a no-op and would
+        # leave the tree empty.
+        [ ! -d linux/.git ] || git -C linux reset -q --hard
         # A linux_ref that resolved to empty would otherwise fall through to
         # fetch-sources.sh's pinned default and silently test the wrong tree.
         [ -n "$LINUX_REF" ] || { echo "linux_ref is empty" >&2; exit 1; }
         [ -z "$URL" ] || export LINUX_URL="$URL"
         bash scripts/fetch-sources.sh linux
+        echo "sha=$(git -C linux rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+    # Before patches and the build, so the cache is the pristine clone.
+    - name: Save the kernel git cache
+      if: steps.linux-cache.outputs.cache-matched-key != format('linux-git-{0}', steps.fetch.outputs.sha)
+      uses: actions/cache/save@v4
+      with:
+        path: linux/.git
+        key: linux-git-${{ steps.fetch.outputs.sha }}
+
+    # The guest's root is the host's over hostfs, so these are the binaries
+    # xfstests runs. Diagnostic only: nothing here fails the job.
+    - name: Show tooling
+      shell: bash
+      run: |
+        sec() { echo "::group::$1"; }
+        end() { echo "::endgroup::"; }
+        sec "os"; cat /etc/os-release; uname -a; nproc; free -h; df -h /; end
+        sec "image"; echo "ImageOS=${ImageOS:-} ImageVersion=${ImageVersion:-}"; end
+        sec "tool paths and versions"
+        for t in bash sh su sudo chown chmod chgrp ln ls cp mv rm touch stat \
+                 id mkdir dd sed awk grep find xargs sort diff cmp tar \
+                 xfs_io mkfs.xfs mkfs.ext4 getfacl setfacl getfattr setfattr \
+                 fio mount.nfs \
+                 gcc make bison flex git lcov gcov python3 perl; do
+          p=$(command -v "$t") || { echo "--- $t: not found"; continue; }
+          echo "--- $t: $p -> $(readlink -f "$p")"
+          { "$t" --version 2>&1 || "$t" -V 2>&1; } </dev/null | head -n 2 || true
+        done
+        end
+        sec "coreutils packages"
+        dpkg -S "$(readlink -f "$(command -v chown)")" 2>&1 || true
+        dpkg -l | grep -Ei 'coreutils|uutils|rust-coreutils|diffutils|findutils' || true
+        update-alternatives --get-selections 2>/dev/null | grep -Ei 'chown|ls|coreutils' || true
+        end
+        sec "key package versions"
+        dpkg-query -W -f='${Package} ${Version}\n' coreutils xfsprogs e2fsprogs \
+          acl attr nfs-kernel-server nfs-common util-linux login passwd \
+          libc6 gcc make lcov krb5-kdc fio 2>&1 || true
+        end
+        sec "all installed packages"; dpkg-query -W -f='${Package} ${Version}\n'; end
 
     # A no-op when patches is empty, which is every configuration that tests
     # the tree as it stands.
