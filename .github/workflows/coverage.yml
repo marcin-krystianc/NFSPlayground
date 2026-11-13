@@ -35,7 +35,7 @@ env:
 
 jobs:
   select-sha:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       sha: ${{ steps.resolve.outputs.sha }}
     steps:
@@ -55,7 +55,7 @@ jobs:
   kunit:
     name: coverage kunit
     needs: select-sha
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # A CONFIG_GCOV-instrumented build compiles slower than a plain one.
     timeout-minutes: 45
     steps:
@@ -76,7 +76,7 @@ jobs:
   xfstests:
     name: coverage xfstests (${{ matrix.name }})
     needs: select-sha
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # -g quick took 73-77 minutes per run without gcov; gcov's cost is not
     # measured yet.
     timeout-minutes: 350
@@ -128,7 +128,7 @@ jobs:
     name: coverage (merged)
     needs: [select-sha, kunit, xfstests]
     if: always() && needs.select-sha.result == 'success'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - uses: actions/checkout@v4
@@ -202,7 +202,9 @@ jobs:
           done
           echo "missing=${missing}" >> "$GITHUB_OUTPUT"
           [ ${#args[@]} -gt 0 ] || { echo "::error::no tracefiles at all"; exit 1; }
-          rc=(--ignore-errors mismatch --rc derive_function_end_line=0)
+          # inconsistent: lcov 2.4 raises "function is not hit but line is"
+          # on the kunit tracefile (net/sunrpc/sched.c, 2026-11-12).
+          rc=(--ignore-errors mismatch,inconsistent --rc derive_function_end_line=0)
           lcov -q "${args[@]}" -o coverage/coverage.info "${rc[@]}"
           genhtml -q --show-details -o coverage/html coverage/coverage.info "${rc[@]}"
 
@@ -256,7 +258,7 @@ jobs:
       github.event_name == 'push' && github.ref == 'refs/heads/master' &&
       needs.kunit.result == 'success' && needs.xfstests.result == 'success' &&
       needs.merge.result == 'success'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       pages: write
       id-token: write
@@ -294,7 +296,7 @@ jobs:
     name: Coverage diff vs master
     needs: merge
     if: always() && (needs.merge.result == 'success' || needs.merge.result == 'failure')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       actions: read
       pull-requests: write

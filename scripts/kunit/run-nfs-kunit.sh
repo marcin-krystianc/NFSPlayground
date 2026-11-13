@@ -352,6 +352,13 @@ if [ "$COVERAGE" = "1" ]; then
     # macros (e.g. __do_sys_socketcall in net/socket.c) across gcc/lcov
     # version combinations; a hard error otherwise, confirmed on CI.
     #
+    # inconsistent: the same check under lcov 2.4. SYSCALL_DEFINEx puts
+    # __se_sys_* (ends on the macro line) and __do_sys_* (ends at the body's
+    # closing brace) on one start line, and define_function() keys by start
+    # line. lcov 2.0 raises that as ERROR_MISMATCH, 2.4 as
+    # ERROR_INCONSISTENT_DATA. Seen on ubuntu-26.04 (lcov 2.4-3) at
+    # block/ioprio.c:65, __se_sys_ioprio_set, 2026-11-12.
+    #
     # negative: a negative hit count, which lcov 2.x makes a hard error, so
     # the whole collection aborts and the tracefile is left empty. geninfo
     # attributes it to gcc PR 68080 (gcov counters are not thread-safe) and
@@ -362,8 +369,13 @@ if [ "$COVERAGE" = "1" ]; then
     # on legs that already take 50 to 100 minutes, so the one bad counter in
     # mm/ is dropped instead.
     lcov -t nfs-kunit -o "${REPO_ROOT}/coverage/coverage.info" -c -d "${BUILD_DIR}" \
-        --ignore-errors mismatch,negative
-    genhtml -o "${REPO_ROOT}/coverage/html" "${REPO_ROOT}/coverage/coverage.info"
+        --ignore-errors mismatch,negative,inconsistent
+    # genhtml re-checks the tracefile and does not inherit lcov's
+    # --ignore-errors. lcov 2.4 stops it with ERROR_INCONSISTENT_DATA
+    # ("function 'rpc_init_wait_queue' is not hit but line 265 is",
+    # net/sunrpc/sched.c, CI 2026-11-12).
+    genhtml -o "${REPO_ROOT}/coverage/html" "${REPO_ROOT}/coverage/coverage.info" \
+        --ignore-errors inconsistent
     log "coverage report: ${REPO_ROOT}/coverage/html/index.html"
 
     exit "$rc"
