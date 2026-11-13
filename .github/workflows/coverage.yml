@@ -1,6 +1,6 @@
 name: NFS coverage
 
-# Coverage of upstream master merged from KUnit (.github/actions/kunit) and
+# Coverage of NFSD nfsd-testing merged from KUnit (.github/actions/kunit) and
 # UML xfstests (.github/actions/xfstests-uml, one job per entry in the
 # xfstests job's matrix). lcov merges line by line, so every job
 # builds the one commit select-sha resolves. The jobs are described in
@@ -22,16 +22,16 @@ permissions:
 
 # The tree this workflow covers. Unlike xfstests-uml.yml, the matrix entries
 # here cannot override it: lcov merges line by line, so every job has to
-# build the one commit select-sha resolves. Change these to cover a different
-# branch, for example one of the NFSD queues in cel/linux.git.
+# build the one commit select-sha resolves. nfsd-testing exists only in the
+# NFSD tree (cel/linux.git on git.kernel.org); the URL is its GitHub copy,
+# chucklever/linux, as in xfstests-uml.yml.
 env:
-  DEFAULT_LINUX_URL: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git
-  DEFAULT_LINUX_REF: master
+  DEFAULT_LINUX_URL: https://github.com/chucklever/linux.git
+  DEFAULT_LINUX_REF: nfsd-testing
   # Applied to every job here and to the merge job's render tree, never to
   # one configuration only (A patch shifts line numbers in the files it touches)
   COVERAGE_PATCHES: >-
     svc-send-account-reply-pages.patch
-    0001-SUNRPC-reset-the-svc-decode-stream-after-unwrapping-.patch
 
 jobs:
   select-sha:

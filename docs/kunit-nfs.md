@@ -91,9 +91,10 @@ Coverage is in `.github/workflows/coverage.yml`, which merges this suite's
 coverage with that of upstream xfstests run in a UML guest
 (`scripts/00-run-xfstests-in-uml.sh`):
 
-- `select-sha` — resolves `master` to one commit. Every other job builds
-  that commit, since lcov merges line by line and two jobs fetching
-  `master` separately can get different ones.
+- `select-sha` — resolves `nfsd-testing` from the NFSD tree (its GitHub
+  copy, chucklever/linux) to one commit. Every other job builds that
+  commit, since lcov merges line by line and two jobs fetching
+  `nfsd-testing` separately can get different ones.
 - `kunit` — this suite with `COVERAGE=1`, unfiltered.
 - `xfstests` — xfstests `-g quick` with `COVERAGE=1`, once with knfsd
   delegations off and once on.
