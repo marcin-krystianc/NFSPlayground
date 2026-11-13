@@ -81,8 +81,9 @@ root causes.
 
 `.github/workflows/kunit.yml` runs:
 
-- `kunit` — a matrix over `v6.12.57`, `v6.18.52`, `v7.2.6` and `master`,
-  unpatched. The `v6.12.57` leg can hit the livelock above.
+- `kunit` — a matrix over `v6.18.52`, `v7.2.6` and `master` from the stable
+  tree, and `nfsd-testing` from the NFSD tree, unpatched. Scheduled runs
+  build only `master` and `nfsd-testing`.
 - `kunit-v6-12-57-patched` — `v6.12.57` with the UML fix applied, running
   the full suite to completion.
 
