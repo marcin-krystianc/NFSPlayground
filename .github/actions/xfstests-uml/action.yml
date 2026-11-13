@@ -86,6 +86,38 @@ runs:
         [ -z "$URL" ] || export LINUX_URL="$URL"
         bash scripts/fetch-sources.sh linux
 
+    # The guest's root is the host's over hostfs, so these are the binaries
+    # xfstests runs. Diagnostic only: nothing here fails the job.
+    - name: Show tooling
+      shell: bash
+      run: |
+        sec() { echo "::group::$1"; }
+        end() { echo "::endgroup::"; }
+        sec "os"; cat /etc/os-release; uname -a; nproc; free -h; df -h /; end
+        sec "image"; echo "ImageOS=${ImageOS:-} ImageVersion=${ImageVersion:-}"; end
+        sec "tool paths and versions"
+        for t in bash sh su sudo chown chmod chgrp ln ls cp mv rm touch stat \
+                 id mkdir dd sed awk grep find xargs sort diff cmp tar \
+                 xfs_io mkfs.xfs mkfs.ext4 getfacl setfacl getfattr setfattr \
+                 fio mount.nfs \
+                 gcc make bison flex git lcov gcov python3 perl; do
+          p=$(command -v "$t") || { echo "--- $t: not found"; continue; }
+          echo "--- $t: $p -> $(readlink -f "$p")"
+          { "$t" --version 2>&1 || "$t" -V 2>&1; } </dev/null | head -n 2 || true
+        done
+        end
+        sec "coreutils packages"
+        dpkg -S "$(readlink -f "$(command -v chown)")" 2>&1 || true
+        dpkg -l | grep -Ei 'coreutils|uutils|rust-coreutils|diffutils|findutils' || true
+        update-alternatives --get-selections 2>/dev/null | grep -Ei 'chown|ls|coreutils' || true
+        end
+        sec "key package versions"
+        dpkg-query -W -f='${Package} ${Version}\n' coreutils xfsprogs e2fsprogs \
+          acl attr nfs-kernel-server nfs-common util-linux login passwd \
+          libc6 gcc make lcov krb5-kdc fio 2>&1 || true
+        end
+        sec "all installed packages"; dpkg-query -W -f='${Package} ${Version}\n'; end
+
     # A no-op when patches is empty, which is every configuration that tests
     # the tree as it stands.
     - name: Apply patches
