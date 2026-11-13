@@ -1,6 +1,7 @@
 [submodule "xfstests"]
 	path = xfstests
-	url = https://git.kernel.org/pub/scm/fs/xfs/xfstests-dev.git
+	# Mirror of the upstream repository, https://git.kernel.org/pub/scm/fs/xfs/xfstests-dev.git
+	url = https://github.com/kdave/xfstests.git
 [submodule "nfs-utils"]
 	path = nfs-utils
 	url = https://github.com/linux-nfs/nfs-utils.git
