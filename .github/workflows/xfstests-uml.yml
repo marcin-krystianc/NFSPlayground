@@ -27,11 +27,11 @@ permissions:
 
 # The tree every matrix entry builds unless it overrides them. nfsd-testing
 # is where submissions land and soak, so it is the line this repo's candidate
-# fixes are aimed at. It exists only in the NFSD tree, and that tree carries
-# no stable point-release tags, so kunit.yml and fetch-sources.sh keep the
-# stable tree. An entry sets "ref" or "url" to build something else.
+# fixes are aimed at. It exists only in the NFSD tree (cel/linux.git on
+# git.kernel.org); the URL is its GitHub copy, chucklever/linux. An entry sets
+# "ref" or "url" to build something else.
 env:
-  DEFAULT_LINUX_URL: https://git.kernel.org/pub/scm/linux/kernel/git/cel/linux.git
+  DEFAULT_LINUX_URL: https://github.com/chucklever/linux.git
   DEFAULT_LINUX_REF: nfsd-testing
 
 jobs:
@@ -79,20 +79,14 @@ jobs:
             vers: '4.2'
             sec: krb5p
           # A control for generic/761, which fails on the krb5i leg above
-          # and on no other leg. Two things changed together when it went
-          # from intermittent to failing every run: this patch stopped being
-          # applied, and nfsd-testing gained five delegation commits
-          # (3af417ce0f30 and the four before it), one of which changes when
-          # a delegation is granted. nfsd-next carries neither those commits
-          # nor 10cbdb3691a6, so this leg isolates the patch. If 761 passes
-          # here while it keeps failing on krb5i, the patch is doing the work
-          # and the upstream placement in svcauth_gss_wrap_integ() is not
-          # enough. 761 failed 2 of 7 runs with the patch applied, so one
-          # green run proves nothing; this needs a few.
-          - name: krb5i-nfsd-next-patched
+          # and on no other leg. It is the krb5i leg plus this patch. If 761
+          # passes here while it keeps failing on krb5i, the patch is doing
+          # the work and the upstream placement in svcauth_gss_wrap_integ()
+          # (10cbdb3691a6) is not enough. 761 failed 2 of 7 runs with the
+          # patch applied, so one green run proves nothing; this needs a few.
+          - name: krb5i-patched
             vers: '4.2'
             sec: krb5i
-            ref: nfsd-next
             patches: svc-send-account-reply-pages.patch
     steps:
       - uses: actions/checkout@v4
@@ -106,6 +100,6 @@ jobs:
           nfs_delegations: ${{ matrix.delegations || 'on' }}
           exclude_file: ${{ matrix.exclude_file }}
           patches: ${{ matrix.patches }}
-          check_args: ${{ inputs.check_args || '-g quick' }}
+          check_args: ${{ inputs.check_args || 'generic/193' }}
           trace_events: ${{ inputs.trace_events || 'nfs4:nfs4_set_delegation nfs4:nfs4_setattr nfs4:nfs4_delegreturn nfs4:nfs4_delegreturn_exit nfs4:nfs4_cb_getattr nfs4:nfs4_cb_recall nfs:nfs_setattr_enter nfsd:nfsd_deleg_write nfsd:nfsd_deleg_read nfsd:nfsd_deleg_return nfsd:nfsd_vfs_setattr nfsd:nfsd_cb_getattr_done nfsd:nfsd_cb_recall_done' }}
           artifact: xfstests-uml-results-${{ matrix.name }}

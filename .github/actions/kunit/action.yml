@@ -12,8 +12,7 @@ inputs:
   linux_url:
     description: >-
       Kernel remote for fetch-sources.sh. Empty uses its own default, the
-      stable tree. Needed for refs that live nowhere else, such as the NFSD
-      queues in cel/linux.git.
+      GitHub copy of the NFSD tree (chucklever/linux).
     default: ''
   patches:
     description: 'Space-separated files in patches/ to apply to the kernel, in order.'
