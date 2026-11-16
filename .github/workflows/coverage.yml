@@ -32,7 +32,6 @@ env:
   # one configuration only (A patch shifts line numbers in the files it touches)
   COVERAGE_PATCHES: >-
     svc-send-account-reply-pages.patch
-    0001-SUNRPC-reset-the-svc-decode-stream-after-unwrapping-.patch
   # The same list as xfstests-uml.yml's XFSTESTS_PATCHES. Kept separate,
   # like the matrices, so changing one workflow does not change the other.
   XFSTESTS_PATCHES: >-
