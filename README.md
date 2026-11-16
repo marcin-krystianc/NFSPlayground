@@ -110,6 +110,10 @@ Bugs found here that are still unfixed are tracked in [TODO.md](TODO.md).
   fixes above, which `coverage.yml` applies through `COVERAGE_PATCHES`
   because it builds mainline, where neither has landed. `xfstests-uml.yml`
   builds `nfsd-testing` and needs no patches.
+- `patches/xfstests/` — fixes to the xfstests submodule, applied on every
+  leg of `xfstests-uml.yml` and `coverage.yml` through `XFSTESTS_PATCHES`.
+  `0001-common-reflink-reap-_compare_range-readers.patch` fixes a race that
+  made generic/118 fail over NFS with `Directory not empty`.
 - `scripts/` — xfstests runners (GitHub CI, a VM plus Docker servers, a
   container) and `fetch-sources.sh`.
 

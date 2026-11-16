@@ -1,0 +1,66 @@
+From: Marcin Krystianc <marcin.krystianc@gmail.com>
+Subject: [PATCH] common/reflink: reap _compare_range readers before returning
+
+_compare_range() feeds cmp -s from two process substitutions running
+_read_range, an xfs_io pread piped through cut. When the ranges differ,
+cmp exits at the first differing byte. bash does not wait for process
+substitutions, so _compare_range returns while an xfs_io can still hold
+its file open.
+
+On NFS, a caller that removes the file at that moment gets a
+silly-rename instead of an unlink, and the .nfsXXXX entry makes rmdir
+of the parent fail with ENOTEMPTY. generic/118 hits this in its
+_cleanup, right after its last _compare_range, which is an intentional
+mismatch:
+
+    rm: cannot remove '/mnt/nfs-test-env/test/test-118': Directory not empty
+
+The trace of a failing run shows the sequence: the unlink of file1 is
+sent as a RENAME to .nfs0000000000c0020100000001, the RMDIR returns
+-ENOTEMPTY, and 10 ms later the xfs_io exits and the client deletes the
+.nfs file. It failed 1 in 28 iterations of generic/118 over NFSv4.2
+with sec=krb5i.
+
+Open the substitutions on named descriptors, keep their pids, and after
+cmp close the read ends, so a reader blocked on a full pipe gets
+SIGPIPE, then wait for both. On return no reader has a file open. The
+return value is still cmp's.
+
+---
+ common/reflink | 18 ++++++++++++++++--
+ 1 file changed, 16 insertions(+), 2 deletions(-)
+
+--- a/common/reflink
++++ b/common/reflink
+@@ -200,15 +200,29 @@
+ }
+ 
+ # Compare ranges of two files
++#
++# cmp stops at the first difference, and bash does not wait for process
++# substitutions, so a reader could still hold its file open after this
++# returns.  On NFS, a caller that then removes the file gets a silly-renamed
++# .nfsXXXX entry instead, and rmdir of the parent fails with ENOTEMPTY.
++# Close the read ends so blocked readers get SIGPIPE, then reap them.
+ _compare_range() {
+ 	file1="$1"
+ 	offset1="$2"
+ 	file2="$3"
+ 	offset2="$4"
+ 	len="$5"
++	local fd1 fd2 pid1 pid2 ret
+ 
+-	cmp -s <(_read_range "$file1" "$offset1" "$len") \
+-	       <(_read_range "$file2" "$offset2" "$len")
++	exec {fd1}< <(_read_range "$file1" "$offset1" "$len"); pid1=$!
++	exec {fd2}< <(_read_range "$file2" "$offset2" "$len"); pid2=$!
++
++	cmp -s /dev/fd/$fd1 /dev/fd/$fd2
++	ret=$?
++
++	exec {fd1}<&- {fd2}<&-
++	wait $pid1 $pid2
++	return $ret
+ }
+ 
+ # Prints the md5 checksum of a hexdump of a part of a given file
