@@ -76,22 +76,55 @@ jobs:
           - name: nconnect-4
             vers: '4.2'
             opts: nconnect=4
-          - name: krb5i
+          # generic/761 fails at random under krb5i in two ways: an EIO on
+          # read-back, which svc-send-account-reply-pages.patch fixes, and
+          # "io thread failed" in the O_DIRECT write loop, which nothing
+          # fixes (TODO.md item 6). One run per side tells the two apart
+          # by luck only, so each side runs five identical copies. The
+          # signal is the read-back EIO: on krb5i-N but never on
+          # krb5i-patched-N. The upstream placement in
+          # svcauth_gss_wrap_integ() (10cbdb3691a6) is what krb5i-N tests.
+          # ponytail: copies are listed by hand. A "copy" dimension would
+          # multiply every entry above, not only these. Drop back to one of
+          # each once the comparison is done.
+          - name: krb5i-1
             vers: '4.2'
             sec: krb5i
-          - name: krb5p
+          - name: krb5i-2
             vers: '4.2'
-            sec: krb5p
-          # A control for generic/761, which fails on the krb5i leg above
-          # and on no other leg. It is the krb5i leg plus this patch. If 761
-          # passes here while it keeps failing on krb5i, the patch is doing
-          # the work and the upstream placement in svcauth_gss_wrap_integ()
-          # (10cbdb3691a6) is not enough. 761 failed 2 of 7 runs with the
-          # patch applied, so one green run proves nothing; this needs a few.
-          - name: krb5i-patched
+            sec: krb5i
+          - name: krb5i-3
+            vers: '4.2'
+            sec: krb5i
+          - name: krb5i-4
+            vers: '4.2'
+            sec: krb5i
+          - name: krb5i-5
+            vers: '4.2'
+            sec: krb5i
+          - name: krb5i-patched-1
             vers: '4.2'
             sec: krb5i
             patches: svc-send-account-reply-pages.patch
+          - name: krb5i-patched-2
+            vers: '4.2'
+            sec: krb5i
+            patches: svc-send-account-reply-pages.patch
+          - name: krb5i-patched-3
+            vers: '4.2'
+            sec: krb5i
+            patches: svc-send-account-reply-pages.patch
+          - name: krb5i-patched-4
+            vers: '4.2'
+            sec: krb5i
+            patches: svc-send-account-reply-pages.patch
+          - name: krb5i-patched-5
+            vers: '4.2'
+            sec: krb5i
+            patches: svc-send-account-reply-pages.patch
+          - name: krb5p
+            vers: '4.2'
+            sec: krb5p
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/xfstests-uml
