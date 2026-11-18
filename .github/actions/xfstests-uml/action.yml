@@ -37,6 +37,11 @@ inputs:
       Candidate fixes that belong to one configuration, and per-linux_ref
       backports, both come through here.
     default: ''
+  xfstests_patches:
+    description: >-
+      Space-separated files in patches/xfstests/ to apply to the xfstests
+      submodule, in order.
+    default: ''
   coverage:
     description: "'true' to build with gcov and collect coverage."
     default: 'false'
@@ -159,6 +164,21 @@ runs:
           git -C linux apply --check "$f"
           git -C linux apply "$f"
           echo "applied ${p}"
+        done
+
+    # Fixes to xfstests itself, for races and assumptions that break over
+    # NFS. A no-op when xfstests_patches is empty.
+    - name: Apply xfstests patches
+      shell: bash
+      env:
+        PATCHES: ${{ inputs.xfstests_patches }}
+      run: |
+        for p in $PATCHES; do
+          f="${GITHUB_WORKSPACE}/patches/xfstests/${p}"
+          [ -f "$f" ] || { echo "no such patch: patches/xfstests/${p}" >&2; exit 1; }
+          git -C xfstests apply --check "$f"
+          git -C xfstests apply "$f"
+          echo "applied xfstests/${p}"
         done
 
     # With coverage, the runner collects it before exiting with check's

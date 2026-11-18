@@ -1,0 +1,78 @@
+From: Marcin Krystianc <marcin.krystianc@gmail.com>
+Subject: [PATCH] SUNRPC: resend a request whose reply asked for a retry
+
+When rpc_decode_header() gets a reply it treats as possibly garbled
+(GARBAGE_ARGS, SYSTEM_ERR, an unparsable reply, or MSG_DENIED with
+AUTH_BADCRED or AUTH_BADVERF), it decrements tk_garb_retry and sets
+tk_action to call_encode, expecting the request to be encoded and sent
+again. call_decode() then calls xprt_conditional_disconnect() when the
+client has cl_discrtry set.
+
+call_encode() encodes only when rpc_task_need_encode() says so. For a
+task that was already sent with RPC_TASK_NO_RETRANS_TIMEOUT set, as
+every NFSv4 task is, that requires xprt_request_need_retransmit(),
+i.e. a connection that has already dropped. The disconnect is only
+queued on xprtiod, so call_encode() usually runs first. The task then
+skips the encode and the transmit, goes on to call_decode() with
+rq_reply_bytes_recvd still set, and decodes the same rejected reply
+again. Two more passes use up tk_garb_retry and the RPC fails, with
+-EACCES for AUTH_BADCRED, without the request being sent a second
+time.
+
+knfsd answers a request whose RPCSEC_GSS integrity checksum does not
+verify with AUTH_BADCRED (SVC_GARBAGE in svc_process_common()). With
+sec=krb5i, xfstests generic/761 changes an O_DIRECT write buffer while
+the write is in flight, so some WRITEs reach the server with a
+checksum that does not match the data. A resend computes a new
+checksum and succeeds; a skipped one makes write() fail with EACCES.
+
+Treat a reply still held in rq_rcv_buf at call_encode() as a finished
+transmission that needs a resend. rpc_xdr_encode() clears
+rq_reply_bytes_recvd, so this only changes the paths that come back to
+call_encode() after a reply was received.
+
+Measured with generic/761 run 20 times over NFSv4.2 and sec=krb5i,
+knfsd and the client in one UML kernel: 17 of 20 runs failed before
+this change. The trace of each failure shows one rpc_xdr_sendto, one
+server rpcgss_svc_mic GSS_S_BAD_SIG, two rpc__bad_creds and then
+rpc_call_rpcerror with -13. In the WRITEs that recovered,
+xprt_disconnect_done came before the retry and the request was sent
+again. With this change all 20 runs passed: 353 WRITEs got a bad MIC,
+each was rejected once and sent again, and no RPC failed with -13.
+
+---
+Open points before sending:
+
+- No Fixes: tag. The commit that made rpc_task_need_encode() skip
+  already-sent NO_RETRANS_TIMEOUT tasks has not been identified.
+- call_status() also moves to call_encode() on transport errors. If a
+  reply completes while the task is being woken with such an error,
+  this change resends instead of decoding that reply. Before, it was
+  decoded. Not observed; it needs a review.
+
+diff --git a/net/sunrpc/clnt.c b/net/sunrpc/clnt.c
+index 2f076b4bfd54..7907e08862f0 100644
+--- a/net/sunrpc/clnt.c
++++ b/net/sunrpc/clnt.c
+@@ -2014,12 +2014,21 @@ call_allocate(struct rpc_task *task)
+ 	rpc_call_rpcerror(task, -ERESTARTSYS);
+ }
+
++/*
++ * A received reply that is still in rq_rcv_buf here was rejected by
++ * rpc_decode_header() with a request to retry (GARBAGE_ARGS, an
++ * unparsable reply, or a bad credential or verifier). The server has
++ * finished with this transmission, so the request must be encoded and
++ * sent again even when RPC_TASK_NO_RETRANS_TIMEOUT would otherwise
++ * keep waiting for a reply to the old one.
++ */
+ static int
+ rpc_task_need_encode(struct rpc_task *task)
+ {
+ 	return test_bit(RPC_TASK_NEED_XMIT, &task->tk_runstate) == 0 &&
+ 		(!(task->tk_flags & RPC_TASK_SENT) ||
+ 		 !(task->tk_flags & RPC_TASK_NO_RETRANS_TIMEOUT) ||
++		 READ_ONCE(task->tk_rqstp->rq_reply_bytes_recvd) != 0 ||
+ 		 xprt_request_need_retransmit(task));
+ }
+ 

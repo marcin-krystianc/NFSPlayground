@@ -7,18 +7,8 @@ on:
   push:
     branches: [master]
   pull_request:
-  workflow_dispatch:
-    inputs:
-      filter_glob:
-        description: 'kunit.py filter_glob (suite.case globs, e.g. "sunrpc-*"). Leave empty to run every suite.'
-        required: false
-        default: ''
-      extra_args:
-        description: 'Extra kunit.py arguments (e.g. --raw_output)'
-        required: false
-        default: ''
   # Checks in on upstream mainline moving, independent of any push or PR to
-  # this repo -- push/pull_request/workflow_dispatch only re-run the matrix
+  # this repo -- push/pull_request only re-run the matrix
   # when *this* repo changes, so without this trigger a stale `master` could
   # go unnoticed indefinitely. select-matrix below narrows this trigger to
   # the master leg only, since re-running the pinned tags every 6 hours
@@ -39,8 +29,8 @@ env:
 jobs:
   # linux_ref is the one thing that differs between "cron" and everything
   # else: a schedule run only cares whether the moving refs (master and
-  # nfsd-testing) still pass, but a push,
-  # PR or manual dispatch should still see the full matrix. Computed in its
+  # nfsd-testing) still pass, but a push or
+  # PR should still see the full matrix. Computed in its
   # own job because a matrix: value can't reference github.event_name
   # directly.
   select-matrix:
@@ -74,8 +64,6 @@ jobs:
         with:
           linux_ref: ${{ matrix.linux_ref }}
           linux_url: ${{ matrix.linux_ref == 'nfsd-testing' && env.NFSD_URL || env.STABLE_URL }}
-          filter_glob: ${{ inputs.filter_glob || '*' }}
-          extra_args: ${{ inputs.extra_args }}
           artifact: kunit-results-${{ matrix.linux_ref }}
 
   # v6.12.57 is the upstream base of VAST NFS 4.5.8 (vastnfs-4.5.8/scripts/BASE).
@@ -98,6 +86,4 @@ jobs:
           linux_url: ${{ env.STABLE_URL }}
           patches: um-thread-info-in-task-v6.12.57.patch overflow-kunit-define-flex-v6.12.57.patch
           kconfig_add: CONFIG_UBSAN=n
-          filter_glob: ${{ inputs.filter_glob || '*' }}
-          extra_args: ${{ inputs.extra_args }}
           artifact: kunit-results-v6.12.57-patched
