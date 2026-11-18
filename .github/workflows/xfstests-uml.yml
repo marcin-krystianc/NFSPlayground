@@ -12,15 +12,6 @@ on:
   push:
     branches: [master]
   pull_request:
-  workflow_dispatch:
-    inputs:
-      check_args:
-        description: 'Arguments for xfstests check.'
-        required: false
-        default: '-g quick'
-      trace_events:
-        description: 'Kernel trace events recorded in the guest (uml-run/trace.txt). Empty uses the default list below.'
-        required: false
 
 permissions:
   contents: read
@@ -105,6 +96,6 @@ jobs:
           exclude_file: ${{ matrix.exclude_file }}
           patches: ${{ matrix.patches }}
           xfstests_patches: ${{ env.XFSTESTS_PATCHES }}
-          check_args: ${{ inputs.check_args || '-g quick' }}
-          trace_events: ${{ inputs.trace_events || 'nfs4:nfs4_set_delegation nfs4:nfs4_setattr nfs4:nfs4_delegreturn nfs4:nfs4_delegreturn_exit nfs4:nfs4_cb_getattr nfs4:nfs4_cb_recall nfs:nfs_setattr_enter nfsd:nfsd_deleg_write nfsd:nfsd_deleg_read nfsd:nfsd_deleg_return nfsd:nfsd_vfs_setattr nfsd:nfsd_cb_getattr_done nfsd:nfsd_cb_recall_done' }}
+          check_args: '-g quick'
+          trace_events: 'nfs4:nfs4_set_delegation nfs4:nfs4_setattr nfs4:nfs4_delegreturn nfs4:nfs4_delegreturn_exit nfs4:nfs4_cb_getattr nfs4:nfs4_cb_recall nfs:nfs_setattr_enter nfsd:nfsd_deleg_write nfsd:nfsd_deleg_read nfsd:nfsd_deleg_return nfsd:nfsd_vfs_setattr nfsd:nfsd_cb_getattr_done nfsd:nfsd_cb_recall_done'
           artifact: xfstests-uml-results-${{ matrix.name }}
