@@ -92,13 +92,15 @@ currently covered either.
 ### 6. generic/761 under krb5i
 
 The test deliberately rewrites an O_DIRECT buffer during writeback, so the
-integrity checksum computed over the *request* cannot match what the server
-verifies. Inherent to the test under `sec=krb5i` rather than a kernel bug.
-Not observed under krb5p.
+integrity checksum computed over the *request* can fail to match what the
+server verifies. A client that resends the request recovers from that. The
+current client sometimes does not resend, and that is a client bug with a
+candidate fix, `patches/sunrpc-resend-after-rejected-reply.patch`. Not
+observed under krb5p.
 
 It has two distinct failure modes under krb5i, and only one of them is item
 1's bug. Comparing the two legs of CI run 37292153575, which differ only by
-the fix:
+item 1's fix:
 
 - Unpatched (job 111704817318) failed on the `cat` that reads the file back:
   `cat: /mnt/nfs-test-env/scratch/foobar: Input/output error`, plus
@@ -108,17 +110,61 @@ the fix:
   O_DIRECT write loop instead: `io thread failed`, no dmesg complaint. That
   is `xfstests/src/dio-writeback-race.c:129-131`, where a `write()` of
   `blocksize` returned short or -1. The helper does not print errno, so the
-  log cannot say which. This is the request-side mode, and nothing fixes it.
+  log cannot say which. This is the request-side mode. Item 1's patch does
+  not fix it.
 
 `docs/krb5i-reply-page-reuse.md:123-129` already recorded the second mode:
 `-g quick` krb5i went from 16 failures to 2 with the patch, and 761 was one
 of the two that remained.
 
-The write mode is intermittent, as a deliberate data race run 256 times
-would be. The patched krb5i leg passed 761 in runs 37436016204, 37480407624,
-37608031266 and 37621082137, then failed it in 37670049296. Do not read
-either outcome as a signal about item 1 or item 2. See item 13 for the
-coverage decision this forces.
+On nfsd-testing the write mode is no longer rare. CI run 44103441017
+(`00270637d0d9`, 2026-11-17) ran five krb5i and five krb5i-patched legs:
+761 failed with `io thread failed` in 7 of the 9 that finished, on both
+sides, and none showed the read-back EIO. Run 44287876751 (`bc82014d199f`)
+ran `-i 20 generic/761` alone under krb5i: 20 of 20 failed. So it does not
+need the earlier `-g quick` tests.
+
+Cause, from that run's trace and the source at `bc82014d199f`:
+
+- The server rejects a WRITE whose MIC does not verify:
+  `svcauth_gss_unwrap_integ()` logs `rpcgss_svc_mic GSS_S_BAD_SIG` and
+  returns `SVC_GARBAGE`, which `svc_process_common()` answers as
+  MSG_DENIED / `AUTH_BADCRED`.
+- `rpc_decode_header()` treats `AUTH_BADCRED` as a garbled request: it
+  decrements `tk_garb_retry` (2 per task) and sets `tk_action =
+  call_encode`. `call_decode()` queues a disconnect, because NFSv4 sets
+  `NFS_CS_DISCRTRY`.
+- NFSv4 also sets `NFS_CS_NO_RETRANS_TIMEOUT`. For an already-sent task with
+  that flag, `rpc_task_need_encode()` returns false unless the connection
+  has already dropped. The queued disconnect usually has not run yet, so the
+  task skips the encode and the send, and decodes the same stored reply
+  again. The third pass fails the RPC with -EACCES, and `write()` fails.
+
+The trace shows exactly that. Each failing WRITE has one `rpc_xdr_sendto`,
+one server `rpcgss_svc_mic`, two client `rpc__bad_creds`, then
+`rpc_call_rpcerror tk_status=-13`, with `xprt_disconnect_done` only after
+the error. WRITEs that recovered had `xprt_disconnect_done` before the retry
+and were sent again.
+
+Reproduced on the test VM (`~/repro761`, a worktree at `bc82014d199f`):
+17 of 20 runs failed without the patch, 20 of 20 passed with it. The
+patched run had 353 bad-MIC WRITEs, each rejected once and resent, and no
+-13.
+
+Before sending the patch:
+
+- No `Fixes:` tag yet. Find the commit that made `rpc_task_need_encode()`
+  skip already-sent `RPC_TASK_NO_RETRANS_TIMEOUT` tasks.
+- `call_status()` also returns to `call_encode()` on transport errors. If a
+  reply completes while the task is woken with such an error, the patch
+  resends instead of decoding that reply. Not observed; needs review.
+- Both the unpatched and the patched VM runs have two `rpc_call_rpcerror
+  tk_status=-5` per iteration on a second RPC client (`@00000002`). Not
+  identified, and the patch does not change them.
+
+The `krb5i-patched-N` legs of `.github/workflows/xfstests-uml.yml` carry it,
+after item 1's patch. The `krb5i-N` legs and `krb5i-761-x20` do not. See
+item 13 for the coverage decision.
 
 ## Known upstream, not ours to fix
 

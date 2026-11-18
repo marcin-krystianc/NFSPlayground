@@ -76,14 +76,14 @@ jobs:
           - name: nconnect-4
             vers: '4.2'
             opts: nconnect=4
-          # generic/761 fails at random under krb5i in two ways: an EIO on
-          # read-back, which svc-send-account-reply-pages.patch fixes, and
-          # "io thread failed" in the O_DIRECT write loop, which nothing
-          # fixes (TODO.md item 6). One run per side tells the two apart
-          # by luck only, so each side runs five identical copies. The
-          # signal is the read-back EIO: on krb5i-N but never on
-          # krb5i-patched-N. The upstream placement in
-          # svcauth_gss_wrap_integ() (10cbdb3691a6) is what krb5i-N tests.
+          # generic/761 fails under krb5i in two ways: an EIO on read-back,
+          # which svc-send-account-reply-pages.patch fixes, and "io thread
+          # failed" in the O_DIRECT write loop, which
+          # sunrpc-resend-after-rejected-reply.patch fixes (TODO.md item 6).
+          # krb5i-patched-N carries both. Each side runs five identical
+          # copies, since one run per side tells them apart by luck only.
+          # The upstream placement in svcauth_gss_wrap_integ()
+          # (10cbdb3691a6) is what krb5i-N tests.
           # ponytail: copies are listed by hand. A "copy" dimension would
           # multiply every entry above, not only these. Drop back to one of
           # each once the comparison is done.
@@ -105,23 +105,23 @@ jobs:
           - name: krb5i-patched-1
             vers: '4.2'
             sec: krb5i
-            patches: svc-send-account-reply-pages.patch
+            patches: svc-send-account-reply-pages.patch sunrpc-resend-after-rejected-reply.patch
           - name: krb5i-patched-2
             vers: '4.2'
             sec: krb5i
-            patches: svc-send-account-reply-pages.patch
+            patches: svc-send-account-reply-pages.patch sunrpc-resend-after-rejected-reply.patch
           - name: krb5i-patched-3
             vers: '4.2'
             sec: krb5i
-            patches: svc-send-account-reply-pages.patch
+            patches: svc-send-account-reply-pages.patch sunrpc-resend-after-rejected-reply.patch
           - name: krb5i-patched-4
             vers: '4.2'
             sec: krb5i
-            patches: svc-send-account-reply-pages.patch
+            patches: svc-send-account-reply-pages.patch sunrpc-resend-after-rejected-reply.patch
           - name: krb5i-patched-5
             vers: '4.2'
             sec: krb5i
-            patches: svc-send-account-reply-pages.patch
+            patches: svc-send-account-reply-pages.patch sunrpc-resend-after-rejected-reply.patch
           # generic/761 alone, 20 times, to see whether the "io thread
           # failed" mode needs the earlier -g quick tests. The krb5i legs
           # above cover it in sequence. Drop once TODO.md item 6 is settled.
