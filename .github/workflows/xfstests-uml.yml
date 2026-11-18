@@ -122,6 +122,13 @@ jobs:
             vers: '4.2'
             sec: krb5i
             patches: svc-send-account-reply-pages.patch
+          # generic/761 alone, 20 times, to see whether the "io thread
+          # failed" mode needs the earlier -g quick tests. The krb5i legs
+          # above cover it in sequence. Drop once TODO.md item 6 is settled.
+          - name: krb5i-761-x20
+            vers: '4.2'
+            sec: krb5i
+            check_args: '-i 20 generic/761'
           - name: krb5p
             vers: '4.2'
             sec: krb5p
@@ -138,6 +145,9 @@ jobs:
           exclude_file: ${{ matrix.exclude_file }}
           patches: ${{ matrix.patches }}
           xfstests_patches: ${{ env.XFSTESTS_PATCHES }}
-          check_args: ${{ inputs.check_args || '-g quick' }}
-          trace_events: ${{ inputs.trace_events || 'nfs4:nfs4_set_delegation nfs4:nfs4_setattr nfs4:nfs4_delegreturn nfs4:nfs4_delegreturn_exit nfs4:nfs4_cb_getattr nfs4:nfs4_cb_recall nfs:nfs_setattr_enter nfsd:nfsd_deleg_write nfsd:nfsd_deleg_read nfsd:nfsd_deleg_return nfsd:nfsd_vfs_setattr nfsd:nfsd_cb_getattr_done nfsd:nfsd_cb_recall_done' }}
+          check_args: ${{ matrix.check_args || inputs.check_args || '-g quick' }}
+          # The rpcgss/sunrpc events fire only on a failed MIC or a failed
+          # RPC, to tell whether generic/761's "io thread failed" under krb5i
+          # is a request MIC mismatch (TODO.md item 6).
+          trace_events: ${{ inputs.trace_events || 'nfs4:nfs4_set_delegation nfs4:nfs4_setattr nfs4:nfs4_delegreturn nfs4:nfs4_delegreturn_exit nfs4:nfs4_cb_getattr nfs4:nfs4_cb_recall nfs:nfs_setattr_enter nfsd:nfsd_deleg_write nfsd:nfsd_deleg_read nfsd:nfsd_deleg_return nfsd:nfsd_vfs_setattr nfsd:nfsd_cb_getattr_done nfsd:nfsd_cb_recall_done rpcgss:rpcgss_svc_mic rpcgss:rpcgss_svc_unwrap_failed sunrpc:rpc__bad_creds sunrpc:rpc__garbage_args sunrpc:rpc_call_rpcerror' }}
           artifact: xfstests-uml-results-${{ matrix.name }}
