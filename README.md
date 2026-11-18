@@ -109,7 +109,9 @@ Bugs found here that are still unfixed are tracked in [TODO.md](TODO.md).
   host-signal livelock fix needed for a full run. Plus the two knfsd
   fixes above, which `coverage.yml` applies through `COVERAGE_PATCHES`
   because it builds mainline, where neither has landed. `xfstests-uml.yml`
-  builds `nfsd-testing` and needs no patches.
+  builds `nfsd-testing`; only its `krb5i-patched` leg applies patches: the
+  reply-page fix and `sunrpc-resend-after-rejected-reply.patch`, a client
+  fix for generic/761 under `sec=krb5i` (TODO.md item 6).
 - `patches/xfstests/` — fixes to the xfstests submodule, applied on every
   leg of `xfstests-uml.yml` and `coverage.yml` through `XFSTESTS_PATCHES`.
   `0001-common-reflink-reap-_compare_range-readers.patch` fixes a race that

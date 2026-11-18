@@ -162,9 +162,12 @@ Before sending the patch:
   tk_status=-5` per iteration on a second RPC client (`@00000002`). Not
   identified, and the patch does not change them.
 
-The `krb5i-patched-N` legs of `.github/workflows/xfstests-uml.yml` carry it,
-after item 1's patch. The `krb5i-N` legs and `krb5i-761-x20` do not. See
-item 13 for the coverage decision.
+CI run 44308912009 applied the patch alone to `-i 20 generic/761` under
+krb5i: 20 of 20 passed, with 579 bad-MIC WRITEs each rejected once and
+resent, and no -13.
+
+The `krb5i-patched` leg of `.github/workflows/xfstests-uml.yml` carries it,
+after item 1's patch. The `krb5i` leg does not. See item 13.
 
 ## Known upstream, not ours to fix
 
@@ -225,9 +228,11 @@ tracefile.
 
 ### 13. generic/761 will keep flipping the krb5i leg red
 
-Item 6's write mode has no fix and no exclude entry. There is no krb5i
-exclude file at all, so `-g quick` runs 761 on that leg every time and it
-fails at random: once in the last five runs. Either create
+Item 6's write mode has a candidate fix, carried only by `krb5i-patched`,
+and no exclude entry. There is no krb5i exclude file at all, so `-g quick`
+runs 761 on the unpatched `krb5i` leg every time, and on `nfsd-testing` it
+fails most runs: in run 44103441017 it failed on 7 of the 9 krb5i legs that
+finished, none of which had item 6's patch. Either create
 `scripts/xfstests-exclude-krb5i`, wire it into the `krb5i` variant's
 `exclude_file` in each workflow's matrix, and list 761 with item
 6's mechanism as the reason, or leave the leg to flake and know why when it

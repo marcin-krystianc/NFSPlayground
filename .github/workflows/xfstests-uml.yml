@@ -76,63 +76,22 @@ jobs:
           - name: nconnect-4
             vers: '4.2'
             opts: nconnect=4
-          # generic/761 fails under krb5i in two ways: an EIO on read-back,
-          # which svc-send-account-reply-pages.patch fixes, and "io thread
-          # failed" in the O_DIRECT write loop, which
-          # sunrpc-resend-after-rejected-reply.patch fixes (TODO.md item 6).
-          # krb5i-patched-N carries both. Each side runs five identical
-          # copies, since one run per side tells them apart by luck only.
-          # The upstream placement in svcauth_gss_wrap_integ()
-          # (10cbdb3691a6) is what krb5i-N tests.
-          # ponytail: copies are listed by hand. A "copy" dimension would
-          # multiply every entry above, not only these. Drop back to one of
-          # each once the comparison is done.
-          - name: krb5i-1
+          - name: krb5i
             vers: '4.2'
             sec: krb5i
-          - name: krb5i-2
-            vers: '4.2'
-            sec: krb5i
-          - name: krb5i-3
-            vers: '4.2'
-            sec: krb5i
-          - name: krb5i-4
-            vers: '4.2'
-            sec: krb5i
-          - name: krb5i-5
-            vers: '4.2'
-            sec: krb5i
-          - name: krb5i-patched-1
-            vers: '4.2'
-            sec: krb5i
-            patches: svc-send-account-reply-pages.patch sunrpc-resend-after-rejected-reply.patch
-          - name: krb5i-patched-2
-            vers: '4.2'
-            sec: krb5i
-            patches: svc-send-account-reply-pages.patch sunrpc-resend-after-rejected-reply.patch
-          - name: krb5i-patched-3
-            vers: '4.2'
-            sec: krb5i
-            patches: svc-send-account-reply-pages.patch sunrpc-resend-after-rejected-reply.patch
-          - name: krb5i-patched-4
-            vers: '4.2'
-            sec: krb5i
-            patches: svc-send-account-reply-pages.patch sunrpc-resend-after-rejected-reply.patch
-          - name: krb5i-patched-5
-            vers: '4.2'
-            sec: krb5i
-            patches: svc-send-account-reply-pages.patch sunrpc-resend-after-rejected-reply.patch
-          # generic/761 alone, 20 times, with the resend fix. Unpatched it
-          # failed 20 of 20 in run 44287876751. Drop once TODO.md item 6 is
-          # settled.
-          - name: krb5i-761-x20
-            vers: '4.2'
-            sec: krb5i
-            check_args: '-i 20 generic/761'
-            patches: sunrpc-resend-after-rejected-reply.patch
           - name: krb5p
             vers: '4.2'
             sec: krb5p
+          # The krb5i leg plus the two candidate fixes for generic/761 under
+          # krb5i (TODO.md items 1 and 6): an EIO on read-back, which
+          # svc-send-account-reply-pages.patch fixes, and "io thread failed"
+          # in the O_DIRECT write loop, which
+          # sunrpc-resend-after-rejected-reply.patch fixes. Expected to pass
+          # 761 while the krb5i leg keeps failing it.
+          - name: krb5i-patched
+            vers: '4.2'
+            sec: krb5i
+            patches: svc-send-account-reply-pages.patch sunrpc-resend-after-rejected-reply.patch
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/xfstests-uml
@@ -146,9 +105,6 @@ jobs:
           exclude_file: ${{ matrix.exclude_file }}
           patches: ${{ matrix.patches }}
           xfstests_patches: ${{ env.XFSTESTS_PATCHES }}
-          check_args: ${{ matrix.check_args || inputs.check_args || '-g quick' }}
-          # The rpcgss/sunrpc events fire only on a failed MIC or a failed
-          # RPC, to tell whether generic/761's "io thread failed" under krb5i
-          # is a request MIC mismatch (TODO.md item 6).
-          trace_events: ${{ inputs.trace_events || 'nfs4:nfs4_set_delegation nfs4:nfs4_setattr nfs4:nfs4_delegreturn nfs4:nfs4_delegreturn_exit nfs4:nfs4_cb_getattr nfs4:nfs4_cb_recall nfs:nfs_setattr_enter nfsd:nfsd_deleg_write nfsd:nfsd_deleg_read nfsd:nfsd_deleg_return nfsd:nfsd_vfs_setattr nfsd:nfsd_cb_getattr_done nfsd:nfsd_cb_recall_done rpcgss:rpcgss_svc_mic rpcgss:rpcgss_svc_unwrap_failed sunrpc:rpc__bad_creds sunrpc:rpc__garbage_args sunrpc:rpc_call_rpcerror' }}
+          check_args: ${{ inputs.check_args || '-g quick' }}
+          trace_events: ${{ inputs.trace_events || 'nfs4:nfs4_set_delegation nfs4:nfs4_setattr nfs4:nfs4_delegreturn nfs4:nfs4_delegreturn_exit nfs4:nfs4_cb_getattr nfs4:nfs4_cb_recall nfs:nfs_setattr_enter nfsd:nfsd_deleg_write nfsd:nfsd_deleg_read nfsd:nfsd_deleg_return nfsd:nfsd_vfs_setattr nfsd:nfsd_cb_getattr_done nfsd:nfsd_cb_recall_done' }}
           artifact: xfstests-uml-results-${{ matrix.name }}
