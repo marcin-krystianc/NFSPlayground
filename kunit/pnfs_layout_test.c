@@ -25,6 +25,7 @@
 #include <linux/nfs.h>
 #include <linux/nfs4.h>
 #include <linux/nfs_fs.h>
+#include <linux/version.h>
 
 #include "nfs4_fs.h"
 #include "internal.h"
@@ -501,7 +502,8 @@ static void sanity_case(struct kunit *test)
  * pnfs_within_mdsthreshold(): should this I/O go straight to the MDS
  * instead of pNFS, based on file size and/or historical I/O size hints
  * from OPEN. Both a size test and an I/O-size test can be set at once,
- * in which case both must agree; with only one set, that one decides.
+ * in which case the I/O stays on the MDS until both thresholds are met
+ * (RFC 8881 section 5.12.6); with only one set, that one decides.
  */
 
 static struct inode *mdsthreshold_inode_new(struct kunit *test, loff_t size)
@@ -578,24 +580,48 @@ static void small_file_write_falls_back_below_the_size_threshold(struct kunit *t
 }
 
 /*
- * With both the size and I/O-size bits set, the two tests must agree
- * before falling back to the MDS -- one alone, below its threshold, is
- * not enough.
+ * Before eab627dcd18a ("NFSv4.1: retain MDS I/O until both thresholds
+ * are met"), with both bits set, pnfs_within_mdsthreshold() combined
+ * them with "size && io", so one unmet threshold alone sent the I/O to
+ * pNFS. That commit made it "size || io", citing RFC 8881 section
+ * 5.12.6, and carries a Fixes: tag calling the old form a bug. The old
+ * answer is not worth asserting, so the case below skips on a kernel
+ * that predates the change.
+ *
+ * LINUX_VERSION_CODE, not a feature probe: the function is static and
+ * the change is one operator, so nothing is left to detect. Confirmed
+ * absent from v7.2.6 and present in master and nfsd-testing at
+ * 7.4.0-rc3; 7.4.0 sorts every ref in the CI matrix onto the correct
+ * side. A stable backport of the fix would make this case fail on that
+ * stable ref rather than skip, which flags the cutoff for updating.
  */
-static void both_bits_set_requires_both_to_agree(struct kunit *test)
+static bool kernel_predates_the_mdsthreshold_fix(void)
+{
+	return LINUX_VERSION_CODE < KERNEL_VERSION(7, 4, 0);
+}
+
+/*
+ * With both the size and I/O-size bits set, one unmet threshold is
+ * enough to keep the I/O on the MDS: a small file stays there even
+ * though read_io is already above its threshold.
+ */
+static void one_unmet_threshold_keeps_io_on_the_mds(struct kunit *test)
 {
 	struct nfs_open_context *ctx;
 	struct inode *small_file = mdsthreshold_inode_new(test, 100);
 
-	/* Small file (falls back), but read_io already above its threshold. */
+	if (kernel_predates_the_mdsthreshold_fix())
+		kunit_skip(test, "pre-7.4 pnfs_within_mdsthreshold() requires both thresholds unmet, see comment");
+
+	/* Small file (size unmet), but read_io already above its threshold. */
 	ctx = mdsthreshold_ctx_new(test, THRESHOLD_RD | THRESHOLD_RD_IO,
 				   4096, 0, 1000, 0);
 	NFS_I(small_file)->read_io = 1u << 20;
 
-	KUNIT_EXPECT_FALSE_MSG(test,
-			       pnfs_within_mdsthreshold(ctx, small_file,
-							IOMODE_READ),
-			       "one disagreeing bit still fell back to the MDS");
+	KUNIT_EXPECT_TRUE_MSG(test,
+			      pnfs_within_mdsthreshold(ctx, small_file,
+						       IOMODE_READ),
+			      "one unmet threshold did not keep the I/O on the MDS");
 }
 
 static void both_bits_set_and_agreeing_falls_back(struct kunit *test)
@@ -707,7 +733,7 @@ static struct kunit_case pnfs_mdsthreshold_cases[] = {
 	KUNIT_CASE(small_file_read_falls_back_below_the_size_threshold),
 	KUNIT_CASE(large_file_read_stays_on_pnfs_above_the_size_threshold),
 	KUNIT_CASE(small_file_write_falls_back_below_the_size_threshold),
-	KUNIT_CASE(both_bits_set_requires_both_to_agree),
+	KUNIT_CASE(one_unmet_threshold_keeps_io_on_the_mds),
 	KUNIT_CASE(both_bits_set_and_agreeing_falls_back),
 	{}
 };
