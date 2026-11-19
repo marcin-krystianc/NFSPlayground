@@ -45,7 +45,7 @@ jobs:
       # A field an entry leaves out is empty, so each entry states only what
       # differs, and "url" and "ref" fall back to the env defaults above. The
       # candidate fixes in patches/ belong to the configuration each one
-      # concerns, so krb5i and krb5p name theirs; every other entry tests the
+      # concerns, so krb5i and v3 name theirs; every other entry tests the
       # tree as it stands.
       #
       # "name" must be unique, since it is the artifact name. An entry that
@@ -62,8 +62,11 @@ jobs:
             vers: '4.1'
           - name: v4.0
             vers: '4.0'
+          # The fix for the SETACL regression described below and in
+          # docs/nfsd-v3-acl-setacl-regression.md.
           - name: v3
             vers: '3'
+            patches: nfsd-acl-accept-empty-access-acl.patch
           - name: nconnect-4
             vers: '4.2'
             opts: nconnect=4
@@ -80,7 +83,8 @@ jobs:
           # two run only those tests, at the nearest commits on either side
           # that build: the 45 commits between them call nfsd_read_io_mode()
           # before 83b0ca4b18ab defines it. 414c1ecd3876 should pass and
-          # 83b0ca4b18ab fail.
+          # 83b0ca4b18ab fail. Neither applies the fix, which would hide
+          # the failure they exist to show.
           - name: v3-acl-414c1ecd3876
             vers: '3'
             ref: 414c1ecd387610a47699d9234d95871616c7814c

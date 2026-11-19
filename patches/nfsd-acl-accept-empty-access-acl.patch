@@ -1,0 +1,75 @@
+From: Marcin Krystianc <marcin.krystianc@gmail.com>
+Subject: [PATCH] NFSD: Accept an empty access ACL in NFS_ACL SETACL
+
+The xdrgen SETACL decoders reject a request that sets NA_ACL with an
+access ACL of zero entries, and nfsd3_proc_setacl() answers
+ACL3ERR_INVAL. The Linux NFSv3 client sends exactly that request when
+it creates a directory under a default ACL whose inherited access ACL
+is equivalent to the new mode: posix_acl_create() returns a NULL
+access ACL with a non-NULL default ACL, and __nfs3_proc_setacls()
+sends mask NFS_ACL|NFS_DFACL with aclcnt 0. mkdir(2) then fails with
+EINVAL although the server has created the directory. xfstests
+generic/319 and generic/697 fail over NFSv3.
+
+The decoders these replace, nfs3svc_decode_setaclargs() and
+nfsaclsvc_decode_setaclargs(), used nfs_stream_decode_acl(), which
+decodes zero entries as a NULL ACL. The SETACL procedures passed it to
+set_posix_acl(), which removes the access ACL. Do the same: drop the
+zero-count check, so an empty access list publishes NULL as an empty
+default list already does.
+
+Fixes: da5bc1fc901f ("NFSD: Implement NFS-ACL v3 ACL encoding and decoding with xdrgen")
+Fixes: 321d5bf51504 ("NFSD: Implement NFS-ACL v2 ACL encoding and decoding with xdrgen")
+---
+The v3 check is reached from 8041c563f7f6 ("NFSD: Use xdrgen XDR
+functions for the NFS-ACL v3 SETACL procedure"), when SETACL starts
+using the new decoder.
+
+Tested on nfsd-testing 8489270d1cb9, knfsd and the NFS client in one
+UML kernel over loopback, NFSv3 sec=sys, xfstests -g acl: 13 of 15
+pass without this patch (generic/319, generic/697 fail), 15 of 15 with
+it. The NFS_ACLv2 change is not exercised: the Linux client sends no
+NFS_ACLv2 SETACL.
+
+diff --git a/fs/nfsd/nfs2acl.c b/fs/nfsd/nfs2acl.c
+index 8b6e3d717217..ed41fc6dbcff 100644
+--- a/fs/nfsd/nfs2acl.c
++++ b/fs/nfsd/nfs2acl.c
+@@ -612,11 +612,11 @@ bool nfs_acl2_secattr_decode_begin(struct xdrgen_aggregate_cursor *c)
+ 			argp->invalid = true;
+ 			return true;
+ 		}
+-		if (!dfacl && !c->count) {
+-			argp->invalid = true;
+-			return true;
+-		}
+-		/* An empty default list publishes NULL: default ACL removal. */
++		/*
++		 * An empty list publishes NULL, which set_posix_acl() takes
++		 * as removal: of the default ACL, or of the access ACL,
++		 * leaving only the mode bits.
++		 */
+ 		if (c->count) {
+ 			*pacl = posix_acl_alloc(c->count, GFP_KERNEL);
+ 			if (!*pacl)
+diff --git a/fs/nfsd/nfs3acl.c b/fs/nfsd/nfs3acl.c
+index b426b3e64df8..50e5aee8b49b 100644
+--- a/fs/nfsd/nfs3acl.c
++++ b/fs/nfsd/nfs3acl.c
+@@ -480,11 +480,11 @@ bool nfs_acl3_secattr_decode_begin(struct xdrgen_aggregate_cursor *c)
+ 			argp->invalid = true;
+ 			return true;
+ 		}
+-		if (!dfacl && !c->count) {
+-			argp->invalid = true;
+-			return true;
+-		}
+-		/* An empty default list publishes NULL: default ACL removal. */
++		/*
++		 * An empty list publishes NULL, which set_posix_acl() takes
++		 * as removal: of the default ACL, or of the access ACL,
++		 * leaving only the mode bits.
++		 */
+ 		if (c->count) {
+ 			*pacl = posix_acl_alloc(c->count, GFP_KERNEL);
+ 			if (!*pacl)
