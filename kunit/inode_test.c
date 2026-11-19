@@ -123,6 +123,16 @@ static struct nfs_inode_fixture *nfs_inode_fixture(struct kunit *test,
 	f->server.change_attr_type = type;
 	f->sb.s_fs_info = &f->server;
 
+	/*
+	 * nfs_fill_super()'s NFSv4 values. current_time() ends in
+	 * timestamp_truncate(), which WARNs on a zero s_time_gran and clamps
+	 * tv_sec to [s_time_min, s_time_max] -- [0, 0] on a zeroed
+	 * super_block, so every "now" would read as second 0.
+	 */
+	f->sb.s_time_gran = 1;
+	f->sb.s_time_min = S64_MIN;
+	f->sb.s_time_max = S64_MAX;
+
 	f->nfsi.vfs_inode.i_sb = &f->sb;
 	f->nfsi.vfs_inode.i_mapping = &f->mapping;
 	spin_lock_init(&f->nfsi.vfs_inode.i_lock);
@@ -1751,8 +1761,15 @@ static void set_timestamps_applies_explicit_atime(struct kunit *test)
 
 	f->nfsi.cache_validity = NFS_INO_INVALID_ATIME;
 
+	/*
+	 * The VFS sets ATTR_ATIME alongside ATTR_ATIME_SET for an explicit
+	 * utimes() value. Since 2ffcf17d26da ("NFS: honor UTIME_NOW atime
+	 * with explicit mtime") nfs_set_timestamps_to_ts() tests ATTR_ATIME;
+	 * older kernels test ATTR_ATIME_SET. Setting both is what the VFS
+	 * really passes and satisfies either.
+	 */
 	memset(&attr, 0, sizeof(attr));
-	attr.ia_valid = ATTR_ATIME_SET;
+	attr.ia_valid = ATTR_ATIME | ATTR_ATIME_SET;
 	attr.ia_atime = (struct timespec64){ .tv_sec = 7000, .tv_nsec = 0 };
 
 	nfs_set_timestamps_to_ts(inode, &attr);

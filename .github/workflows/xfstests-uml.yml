@@ -70,19 +70,11 @@ jobs:
           - name: krb5i
             vers: '4.2'
             sec: krb5i
+            patches: svc-send-account-reply-pages.patch sunrpc-resend-after-rejected-reply.patch
           - name: krb5p
             vers: '4.2'
             sec: krb5p
-          # The krb5i leg plus the two candidate fixes for generic/761 under
-          # krb5i (TODO.md items 1 and 6): an EIO on read-back, which
-          # svc-send-account-reply-pages.patch fixes, and "io thread failed"
-          # in the O_DIRECT write loop, which
-          # sunrpc-resend-after-rejected-reply.patch fixes. Expected to pass
-          # 761 while the krb5i leg keeps failing it.
-          - name: krb5i-patched
-            vers: '4.2'
-            sec: krb5i
-            patches: svc-send-account-reply-pages.patch sunrpc-resend-after-rejected-reply.patch
+
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/xfstests-uml
