@@ -195,17 +195,6 @@ bug, or exclude it with a link to the upstream report once one exists.
 `scripts/xfstests-exclude` allows "a genuine bug with a link to where it is
 tracked", which now fits. This is a coverage decision.
 
-### 10. generic/486 is still excluded for krb5p
-
-`scripts/xfstests-exclude-krb5p` excludes it, and the comment still says
-"These legs deliberately run the tree as released, so the patch is not
-applied here. xfstests-uml.yml's krb5p-fix jobs run 486 with and without
-it". Both statements are now false: the `krb5p` variant applies
-`svcauth-gss-unwrap-priv-krb5p.patch`, and the `xfstests-uml-patch` job has
-been removed. As it stands the leg applies the fix and then skips the only
-test that exercises it. Dropping the entry would test the fix, and can also
-turn the leg red if the fix is incomplete.
-
 ### 11. Dead v6.12.57 patch conditional
 
 `.github/workflows/xfstests-uml.yml` still passes
