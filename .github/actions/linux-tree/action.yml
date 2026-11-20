@@ -1,0 +1,83 @@
+name: Kernel tree
+description: >-
+  Check out linux_ref into ./linux with scripts/fetch-sources.sh, through a
+  cache of linux/.git that every kernel fetch in CI shares. Used by the kunit
+  and xfstests-uml actions and by coverage.yml's merge job. Expects the
+  repository to be checked out.
+
+inputs:
+  linux_ref:
+    description: 'Kernel ref or commit for fetch-sources.sh.'
+    required: true
+  linux_url:
+    description: >-
+      Kernel remote for fetch-sources.sh. Empty uses its own default, the
+      GitHub copy of the NFSD tree (chucklever/linux).
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    # Caches are immutable, so every new commit is saved under its own key
+    # and restore-keys picks the newest one. The fetch then downloads only
+    # what the cache lacks: 88 objects to go from nfsd-testing to nfsd-next,
+    # against about 300 MB for a fresh shallow clone.
+    - name: Restore the kernel git cache
+      id: linux-cache
+      uses: actions/cache/restore@v4
+      with:
+        path: linux/.git
+        key: linux-git-${{ inputs.linux_ref }}
+        restore-keys: linux-git-
+
+    - name: Fetch the kernel tree
+      id: fetch
+      shell: bash
+      env:
+        LINUX_REF: ${{ inputs.linux_ref }}
+        URL: ${{ inputs.linux_url }}
+      run: |
+        # The cache holds .git only. Check its commit out first: when the ref
+        # has not moved, fetch-sources.sh's checkout is a no-op and would
+        # leave the tree empty.
+        [ ! -d linux/.git ] || git -C linux reset -q --hard
+        # A linux_ref that resolved to empty would otherwise fall through to
+        # fetch-sources.sh's pinned default and silently test the wrong tree.
+        [ -n "$LINUX_REF" ] || { echo "linux_ref is empty" >&2; exit 1; }
+        [ -z "$URL" ] || export LINUX_URL="$URL"
+        bash scripts/fetch-sources.sh linux
+        echo "sha=$(git -C linux rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+    # Only when this commit is not cached yet, like the save below. The
+    # kernels CI builds come from two remotes, the NFSD tree and the stable
+    # tree, and restore-keys hands any job whichever cache is newest. So each
+    # saved cache carries the tips of both, in named refs that gc keeps, and
+    # the next job of either kind fetches only a delta. gc then drops what
+    # no ref reaches: earlier HEADs, which the reflog alone was keeping.
+    # A failed tip fetch only makes the cache smaller, so it warns.
+    - name: Add both remotes' tips and gc
+      if: steps.linux-cache.outputs.cache-matched-key != format('linux-git-{0}', steps.fetch.outputs.sha)
+      shell: bash
+      env:
+        NFSD_URL: https://github.com/chucklever/linux.git
+        STABLE_URL: https://github.com/gregkh/linux.git
+      run: |
+        g() { git -C linux "$@"; }
+        tip() {
+          g remote set-url "$1" "$2" 2>/dev/null || g remote add "$1" "$2"
+          g fetch --quiet --depth 1 "$1" "+refs/heads/$3:refs/remotes/$1/$3" ||
+            echo "::warning::could not fetch $3 from $2; the cache will lack it"
+        }
+        tip nfsd "$NFSD_URL" nfsd-testing
+        tip stable "$STABLE_URL" master
+        g reflog expire --expire=now --all
+        g gc --quiet --prune=now
+        du -sh linux/.git
+
+    # Before patches and the build, so the cache is the pristine clone.
+    - name: Save the kernel git cache
+      if: steps.linux-cache.outputs.cache-matched-key != format('linux-git-{0}', steps.fetch.outputs.sha)
+      uses: actions/cache/save@v4
+      with:
+        path: linux/.git
+        key: linux-git-${{ steps.fetch.outputs.sha }}
