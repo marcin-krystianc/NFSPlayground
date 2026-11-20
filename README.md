@@ -100,18 +100,26 @@ Bugs found here that are still unfixed are tracked in [TODO.md](TODO.md).
 - [docs/krb5i-reply-page-reuse.md](docs/krb5i-reply-page-reuse.md) — NFS reads
   over `sec=krb5i` failing with `EIO`, a knfsd reply-page accounting bug.
   Patch in `patches/`.
+- [docs/nfsd-v3-acl-setacl-regression.md](docs/nfsd-v3-acl-setacl-regression.md)
+  — `mkdir` over NFSv3 failing with `EINVAL` under a default ACL, a knfsd
+  regression in `nfsd-testing` from the NFS_ACL xdrgen series. It is why
+  generic/319 and generic/697 fail on the `v3` leg. Patch in `patches/`.
 - [docs/nfs-read-ebusy.md](docs/nfs-read-ebusy.md) — a buffered `read()` on
   NFS returning `EBUSY`, which is why generic/095 flakes. Client bug, no
   patch yet.
 - [docs/xfstests-vs-pynfs.md](docs/xfstests-vs-pynfs.md) — what each suite
   actually tests, and where they differ.
 - `patches/` — two kinds. A backport for the `v6.12.57` KUnit job: the UML
-  host-signal livelock fix needed for a full run. Plus the two knfsd
-  fixes above, which `coverage.yml` applies through `COVERAGE_PATCHES`
-  because it builds mainline, where neither has landed. `xfstests-uml.yml`
-  builds `nfsd-testing`; only its `krb5i-patched` leg applies patches: the
-  reply-page fix and `sunrpc-resend-after-rejected-reply.patch`, a client
-  fix for generic/761 under `sec=krb5i` (TODO.md item 6).
+  host-signal livelock fix needed for a full run. Plus candidate fixes,
+  applied to the `nfsd-testing` builds:
+  - `coverage.yml` applies `svc-send-account-reply-pages.patch` and
+    `nfsd-acl-accept-empty-access-acl.patch` to every job, through
+    `COVERAGE_PATCHES`.
+  - In `xfstests-uml.yml`, the `krb5i` leg applies the reply-page fix and
+    `sunrpc-resend-after-rejected-reply.patch`, a client fix for
+    generic/761 under `sec=krb5i` (TODO.md item 6). The `v3` leg applies
+    `nfsd-acl-accept-empty-access-acl.patch`, the fix for the SETACL
+    regression above.
 - `patches/xfstests/` — fixes to the xfstests submodule, applied on every
   leg of `xfstests-uml.yml` and `coverage.yml` through `XFSTESTS_PATCHES`.
   `0001-common-reflink-reap-_compare_range-readers.patch` fixes a race that
