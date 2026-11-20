@@ -141,10 +141,10 @@ jobs:
       # Pristine, at the path the suites built in: genhtml renders from it and
       # coverage-filter.py asks its git which files are tracked.
       - name: Fetch the kernel tree
-        env:
-          LINUX_REF: ${{ needs.select-sha.outputs.sha }}
-          LINUX_URL: ${{ env.DEFAULT_LINUX_URL }}
-        run: bash scripts/fetch-sources.sh linux
+        uses: ./.github/actions/linux-tree
+        with:
+          linux_ref: ${{ needs.select-sha.outputs.sha }}
+          linux_url: ${{ env.DEFAULT_LINUX_URL }}
 
       # The same patches the suites built, so genhtml renders a source whose
       # line numbers match their tracefiles. A no-op when COVERAGE_PATCHES is
