@@ -23,7 +23,7 @@ permissions:
 # does not carry stable tags. nfsd-testing exists only in the NFSD tree
 # (cel/linux.git on git.kernel.org); NFSD_URL is its GitHub copy.
 env:
-  STABLE_URL: https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git
+  STABLE_URL: https://github.com/gregkh/linux.git # https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git
   NFSD_URL: https://github.com/chucklever/linux.git
 
 jobs:
