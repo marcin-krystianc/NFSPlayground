@@ -56,8 +56,9 @@ without VAST hardware, and how it behaves under failure.
 ## Fixes these tests found
 
 knfsd bugs first seen here as xfstests failures, and where the fix landed.
-Both fixes are in Chuck Lever's `nfsd-testing` branch and have not reached
-mainline yet, so `coverage.yml` still applies both to the tree it builds.
+The first two fixes are in Chuck Lever's `nfsd-testing` branch and have not
+reached mainline yet, so `coverage.yml` still applies both to the tree it
+builds.
 
 - **RPCSEC_GSS privacy left the decode stream stale.** After `gss_unwrap()`
   shortens the head iovec by the GSS token header and the confounder,
@@ -90,6 +91,15 @@ mainline yet, so `coverage.yml` still applies both to the tree it builds.
   `d7de37d6d7cc` where the analysis here blamed `5df5dd03a8f7`. It resyncs
   in `svcauth_gss_wrap_integ()` rather than in `svc_send()`, which is where
   `patches/svc-send-account-reply-pages.patch` does it.
+
+- **NFS_ACL SETACL rejected an empty access ACL.** The xdrgen SETACL
+  decoders in `nfsd-testing` answer `ACL3ERR_INVAL` to a request that sets
+  `NA_ACL` with zero entries. The Linux NFSv3 client sends that request
+  when it creates a directory under a default ACL whose inherited access
+  ACL is equivalent to the mode, so `mkdir` fails with `EINVAL`. Found with
+  `generic/319` and `generic/697` on the `v3` leg; the analysis is in
+  [docs/nfsd-v3-acl-setacl-regression.md](docs/nfsd-v3-acl-setacl-regression.md).
+  Fix: [series 1220861](https://patchwork.kernel.org/series/1220861/).
 
 Bugs found here that are still unfixed are tracked in [TODO.md](TODO.md).
 
