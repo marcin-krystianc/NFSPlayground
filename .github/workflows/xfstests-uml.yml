@@ -68,7 +68,7 @@ jobs:
           # docs/nfsd-v3-acl-setacl-regression.md.
           - name: v3
             vers: '3'
-            nfsd_testing_patches: nfsd-acl-accept-empty-access-acl.patch
+            # nfsd_testing_patches: nfsd-acl-accept-empty-access-acl.patch
           - name: nconnect-4
             vers: '4.2'
             opts: nconnect=4
