@@ -28,8 +28,7 @@ functions for the NFS-ACL v3 SETACL procedure") and 2a9b0e5195be
 
 Tested with xfstests -g acl over NFSv3 in UML on nfsd-testing
 8489270d1cb9: generic/319 and generic/697 fail without the patch and
-pass with it. The NFS_ACLv2 change is untested; the Linux client does
-not send NFS_ACLv2 SETACL.
+pass with it. The NFS_ACLv2 change is untested.
 
 diff --git a/fs/nfsd/nfs2acl.c b/fs/nfsd/nfs2acl.c
 index 8b6e3d717217..ed41fc6dbcff 100644
