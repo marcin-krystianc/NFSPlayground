@@ -11,7 +11,7 @@ on:
   # this repo -- push/pull_request only re-run the matrix
   # when *this* repo changes, so without this trigger a stale `master` could
   # go unnoticed indefinitely. select-matrix below narrows this trigger to
-  # the master leg only, since re-running the pinned tags every 6 hours
+  # the moving refs only, since re-running the pinned tags every 6 hours
   # would not tell us anything new.
   schedule:
     - cron: '0 */6 * * *'
@@ -20,7 +20,7 @@ permissions:
   contents: read
 
 # Tags (v6.18.52 etc.) and master come from the stable tree: the NFSD tree
-# does not carry stable tags. nfsd-testing exists only in the NFSD tree
+# does not carry stable tags. nfsd-testing and nfsd-next exist only in the NFSD tree
 # (cel/linux.git on git.kernel.org); NFSD_URL is its GitHub copy.
 env:
   STABLE_URL: https://github.com/gregkh/linux.git # https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git
@@ -28,8 +28,8 @@ env:
 
 jobs:
   # linux_ref is the one thing that differs between "cron" and everything
-  # else: a schedule run only cares whether the moving refs (master and
-  # nfsd-testing) still pass, but a push or
+  # else: a schedule run only cares whether the moving refs (master,
+  # nfsd-testing and nfsd-next) still pass, but a push or
   # PR should still see the full matrix. Computed in its
   # own job because a matrix: value can't reference github.event_name
   # directly.
@@ -41,9 +41,9 @@ jobs:
       - id: select
         run: |
           if [ "${{ github.event_name }}" = "schedule" ]; then
-            echo 'linux_refs=["master","nfsd-testing"]' >> "$GITHUB_OUTPUT"
+            echo 'linux_refs=["master","nfsd-testing","nfsd-next"]' >> "$GITHUB_OUTPUT"
           else
-            echo 'linux_refs=["v6.18.52","v7.2.6","master","nfsd-testing"]' >> "$GITHUB_OUTPUT"
+            echo 'linux_refs=["v6.18.52","v7.2.6","master","nfsd-testing","nfsd-next"]' >> "$GITHUB_OUTPUT"
           fi
 
   # UBSAN is left on (the .kunitconfig default). master can fail before any
@@ -63,7 +63,7 @@ jobs:
       - uses: ./.github/actions/kunit
         with:
           linux_ref: ${{ matrix.linux_ref }}
-          linux_url: ${{ matrix.linux_ref == 'nfsd-testing' && env.NFSD_URL || env.STABLE_URL }}
+          linux_url: ${{ startsWith(matrix.linux_ref, 'nfsd-') && env.NFSD_URL || env.STABLE_URL }}
           artifact: kunit-results-${{ matrix.linux_ref }}
 
   # v6.12.57 is the upstream base of VAST NFS 4.5.8 (vastnfs-4.5.8/scripts/BASE).

@@ -110,8 +110,7 @@ Bugs found here that are still unfixed are tracked in [TODO.md](TODO.md).
 - [docs/xfstests-vs-pynfs.md](docs/xfstests-vs-pynfs.md) — what each suite
   actually tests, and where they differ.
 - `patches/` — two kinds. A backport for the `v6.12.57` KUnit job: the UML
-  host-signal livelock fix needed for a full run. Plus candidate fixes,
-  applied to the `nfsd-testing` builds:
+  host-signal livelock fix needed for a full run. Plus candidate fixes:
   - `coverage.yml` applies `svc-send-account-reply-pages.patch` and
     `nfsd-acl-accept-empty-access-acl.patch` to every job, through
     `COVERAGE_PATCHES`.
@@ -119,7 +118,9 @@ Bugs found here that are still unfixed are tracked in [TODO.md](TODO.md).
     `sunrpc-resend-after-rejected-reply.patch`, a client fix for
     generic/761 under `sec=krb5i` (TODO.md item 6). The `v3` leg applies
     `nfsd-acl-accept-empty-access-acl.patch`, the fix for the SETACL
-    regression above.
+    regression above, on `nfsd-testing` only. `master` and `nfsd-next` lack
+    the xdrgen SETACL code it changes. The krb5i patches apply on all
+    three refs (`master`, `nfsd-testing`, `nfsd-next`).
 - `patches/xfstests/` — fixes to the xfstests submodule, applied on every
   leg of `xfstests-uml.yml` and `coverage.yml` through `XFSTESTS_PATCHES`.
   `0001-common-reflink-reap-_compare_range-readers.patch` fixes a race that

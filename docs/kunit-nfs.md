@@ -82,8 +82,8 @@ root causes.
 `.github/workflows/kunit.yml` runs:
 
 - `kunit` — a matrix over `v6.18.52`, `v7.2.6` and `master` from the stable
-  tree, and `nfsd-testing` from the NFSD tree, unpatched. Scheduled runs
-  build only `master` and `nfsd-testing`.
+  tree, and `nfsd-testing` and `nfsd-next` from the NFSD tree, unpatched.
+  Scheduled runs build only `master`, `nfsd-testing` and `nfsd-next`.
 - `kunit-v6-12-57-patched` — `v6.12.57` with the UML fix applied, running
   the full suite to completion.
 
