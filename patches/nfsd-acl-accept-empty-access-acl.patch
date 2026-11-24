@@ -1,30 +1,35 @@
 From: Marcin Krystianc <marcin.krystianc@gmail.com>
 Subject: [PATCH] NFSD: Accept an empty access ACL in NFS_ACL SETACL
 
-The xdrgen SETACL decoders reject an access ACL with zero entries, and
-the SETACL procedures return ACL3ERR_INVAL or ACL2ERR_INVAL.
+The xdrgen SETACL decoders reject a request that sets NA_ACL with an
+access ACL of zero entries, and the SETACL procedures return
+ACL3ERR_INVAL or ACL2ERR_INVAL.
 
 The Linux NFSv3 client sends such a request when it creates a directory
 under a default ACL and the inherited access ACL is equivalent to the
 mode. posix_acl_create() then returns a NULL access ACL and a non-NULL
-default ACL, and __nfs3_proc_setacls() sends both, with aclcnt 0.
-mkdir(2) fails with EINVAL, although the server has created the
-directory. xfstests generic/319 and generic/697 fail over NFSv3.
+default ACL, and __nfs3_proc_setacls() sends both, the access ACL with
+zero entries. mkdir(2) fails with EINVAL, although the server has
+created the directory. xfstests generic/319 and generic/697 fail over
+NFSv3.
 
 The old decoders used nfs_stream_decode_acl(), which decodes zero
-entries as a NULL ACL, and set_posix_acl() then removes the access ACL.
-Restore that behaviour: drop the zero-count check.
+entries as a NULL ACL. The SETACL procedures passed it to
+set_posix_acl(), which removes the access ACL. Restore that behaviour:
+drop the zero-count check.
 
 Fixes: ae1f4d75a973 ("NFSD: Implement NFS-ACL v3 ACL encoding and decoding with xdrgen")
 Fixes: 2125d74330f5 ("NFSD: Implement NFS-ACL v2 ACL encoding and decoding with xdrgen")
 Signed-off-by: Marcin Krystianc <marcin.krystianc@gmail.com>
 ---
-The check becomes reachable in 96ce1cc333bc ("NFSD: Use xdrgen XDR
-functions for the NFS-ACL v3 SETACL procedure").
+The checks become reachable in 96ce1cc333bc ("NFSD: Use xdrgen XDR
+functions for the NFS-ACL v3 SETACL procedure") and 2a9b0e5195be
+("NFSD: Use xdrgen XDR functions for the NFS-ACL v2 SETACL procedure").
 
 Tested with xfstests -g acl over NFSv3 in UML on nfsd-testing
 8489270d1cb9: generic/319 and generic/697 fail without the patch and
-pass with it. The NFS_ACLv2 change is untested;
+pass with it. The NFS_ACLv2 change is untested; the Linux client does
+not send NFS_ACLv2 SETACL.
 
 diff --git a/fs/nfsd/nfs2acl.c b/fs/nfsd/nfs2acl.c
 index 8b6e3d717217..ed41fc6dbcff 100644
