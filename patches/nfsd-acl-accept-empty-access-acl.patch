@@ -18,18 +18,19 @@ set_posix_acl(), which removes the access ACL. Do the same: drop the
 zero-count check, so an empty access list publishes NULL as an empty
 default list already does.
 
-Fixes: da5bc1fc901f ("NFSD: Implement NFS-ACL v3 ACL encoding and decoding with xdrgen")
-Fixes: 321d5bf51504 ("NFSD: Implement NFS-ACL v2 ACL encoding and decoding with xdrgen")
+Fixes: ae1f4d75a973 ("NFSD: Implement NFS-ACL v3 ACL encoding and decoding with xdrgen")
+Fixes: 2125d74330f5 ("NFSD: Implement NFS-ACL v2 ACL encoding and decoding with xdrgen")
+Signed-off-by: Marcin Krystianc <marcin.krystianc@gmail.com>
 ---
-The v3 check is reached from 8041c563f7f6 ("NFSD: Use xdrgen XDR
+The v3 check is reached from 96ce1cc333bc ("NFSD: Use xdrgen XDR
 functions for the NFS-ACL v3 SETACL procedure"), when SETACL starts
 using the new decoder.
 
 Tested on nfsd-testing 8489270d1cb9, knfsd and the NFS client in one
 UML kernel over loopback, NFSv3 sec=sys, xfstests -g acl: 13 of 15
 pass without this patch (generic/319, generic/697 fail), 15 of 15 with
-it. The NFS_ACLv2 change is not exercised: the Linux client sends no
-NFS_ACLv2 SETACL.
+it. Applies unchanged to nfsd-testing 194069b5ff38. The NFS_ACLv2
+change is not exercised: the Linux client sends no NFS_ACLv2 SETACL.
 
 diff --git a/fs/nfsd/nfs2acl.c b/fs/nfsd/nfs2acl.c
 index 8b6e3d717217..ed41fc6dbcff 100644

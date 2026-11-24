@@ -12,47 +12,49 @@ on:
   push:
     branches: [master]
   pull_request:
+  # Same cadence as kunit.yml. All three refs in the main matrix move, so a
+  # schedule run builds all of them; only the pinned-commit job is skipped.
+  schedule:
+    - cron: '0 */6 * * *'
 
 permissions:
   contents: read
 
-# The tree every matrix entry builds unless it overrides them. nfsd-testing
-# is where submissions land and soak, so it is the line this repo's candidate
-# fixes are aimed at. It exists only in the NFSD tree (cel/linux.git on
-# git.kernel.org); the URL is its GitHub copy, chucklever/linux. An entry sets
-# "ref" or "url" to build something else.
+# master comes from the stable tree. nfsd-testing and nfsd-next exist only in
+# the NFSD tree (cel/linux.git on git.kernel.org); NFSD_URL is its GitHub
+# copy. nfsd-testing is where submissions land and soak, so it is the line
+# this repo's candidate fixes are aimed at.
 env:
-  DEFAULT_LINUX_URL: https://github.com/chucklever/linux.git
-  DEFAULT_LINUX_REF: nfsd-testing
+  STABLE_URL: https://github.com/gregkh/linux.git # https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git
+  NFSD_URL: https://github.com/chucklever/linux.git
   # Applied to the xfstests submodule on every entry. Each fixes the tests,
   # not the kernel, so no configuration should run without it.
   XFSTESTS_PATCHES: >-
     0001-common-reflink-reap-_compare_range-readers.patch
+  TRACE_EVENTS: 'nfs4:nfs4_set_delegation nfs4:nfs4_setattr nfs4:nfs4_delegreturn nfs4:nfs4_delegreturn_exit nfs4:nfs4_cb_getattr nfs4:nfs4_cb_recall nfs:nfs_setattr_enter nfsd:nfsd_deleg_write nfsd:nfsd_deleg_read nfsd:nfsd_deleg_return nfsd:nfsd_vfs_setattr nfsd:nfsd_cb_getattr_done nfsd:nfsd_cb_recall_done'
 
 jobs:
   xfstests-uml:
-    name: xfstests (UML, ${{ matrix.name }})
+    name: xfstests (UML, ${{ matrix.linux_ref }}, ${{ matrix.cfg.name }})
     runs-on: ubuntu-24.04
     # -g quick took 73-77 minutes per leg. Below the 6-hour limit so a slow
     # leg still uploads its results.
     timeout-minutes: 350
     strategy:
       fail-fast: false
-      # include with no other matrix key gives one job per entry. A base
-      # dimension alongside it would instead merge every entry into that
-      # dimension's combinations, collapsing this to a single job.
+      # One job per linux_ref and cfg pair. A field a cfg leaves out is
+      # empty, so each cfg states only what differs. "name" must be unique,
+      # since it is part of the artifact name.
       #
-      # A field an entry leaves out is empty, so each entry states only what
-      # differs, and "url" and "ref" fall back to the env defaults above. The
-      # candidate fixes in patches/ belong to the configuration each one
-      # concerns, so krb5i and v3 name theirs; every other entry tests the
-      # tree as it stands.
-      #
-      # "name" must be unique, since it is the artifact name. An entry that
-      # overrides url or ref should say so in its name: that is what the job
-      # list shows.
+      # The candidate fixes in patches/ belong to the configuration each one
+      # concerns, so krb5i and v3 name theirs; every other cfg tests the tree
+      # as it stands. "patches" applies on every ref. "nfsd_testing_patches"
+      # applies on nfsd-testing only: nfsd-acl-accept-empty-access-acl.patch
+      # fixes the xdrgen SETACL decoder, which master and nfsd-next do not
+      # have, so it does not apply there.
       matrix:
-        include:
+        linux_ref: [master, nfsd-testing, nfsd-next]
+        cfg:
           - name: delegations-off
             vers: '4.2'
             delegations: 'off'
@@ -66,7 +68,7 @@ jobs:
           # docs/nfsd-v3-acl-setacl-regression.md.
           - name: v3
             vers: '3'
-            patches: nfsd-acl-accept-empty-access-acl.patch
+            nfsd_testing_patches: nfsd-acl-accept-empty-access-acl.patch
           - name: nconnect-4
             vers: '4.2'
             opts: nconnect=4
@@ -77,36 +79,19 @@ jobs:
           - name: krb5p
             vers: '4.2'
             sec: krb5p
-          # generic/319 and generic/697 fail over v3 on nfsd-testing with
-          # EINVAL from NFS_ACLv3 SETACL, since 8041c563f7f6 ("NFSD: Use
-          # xdrgen XDR functions for the NFS-ACL v3 SETACL procedure"). These
-          # two run only those tests, at the nearest commits on either side
-          # that build: the 45 commits between them call nfsd_read_io_mode()
-          # before 83b0ca4b18ab defines it. 414c1ecd3876 should pass and
-          # 83b0ca4b18ab fail. Neither applies the fix, which would hide
-          # the failure they exist to show.
-          - name: v3-acl-414c1ecd3876
-            vers: '3'
-            ref: 414c1ecd387610a47699d9234d95871616c7814c
-            check: generic/319 generic/697
-          - name: v3-acl-83b0ca4b18ab
-            vers: '3'
-            ref: 83b0ca4b18ab1cecfbe9169933e8663b885c95a2
-            check: generic/319 generic/697
 
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/xfstests-uml
         with:
-          linux_ref: ${{ matrix.ref || env.DEFAULT_LINUX_REF }}
-          linux_url: ${{ matrix.url || env.DEFAULT_LINUX_URL }}
-          nfs_vers: ${{ matrix.vers }}
-          nfs_opts: ${{ matrix.opts }}
-          nfs_sec: ${{ matrix.sec }}
-          nfs_delegations: ${{ matrix.delegations || 'on' }}
-          exclude_file: ${{ matrix.exclude_file }}
-          patches: ${{ matrix.patches }}
+          linux_ref: ${{ matrix.linux_ref }}
+          linux_url: ${{ startsWith(matrix.linux_ref, 'nfsd-') && env.NFSD_URL || env.STABLE_URL }}
+          nfs_vers: ${{ matrix.cfg.vers }}
+          nfs_opts: ${{ matrix.cfg.opts }}
+          nfs_sec: ${{ matrix.cfg.sec }}
+          nfs_delegations: ${{ matrix.cfg.delegations || 'on' }}
+          patches: ${{ matrix.cfg.patches }} ${{ matrix.linux_ref == 'nfsd-testing' && matrix.cfg.nfsd_testing_patches || '' }}
           xfstests_patches: ${{ env.XFSTESTS_PATCHES }}
-          check_args: ${{ matrix.check || '-g quick' }}
-          trace_events: 'nfs4:nfs4_set_delegation nfs4:nfs4_setattr nfs4:nfs4_delegreturn nfs4:nfs4_delegreturn_exit nfs4:nfs4_cb_getattr nfs4:nfs4_cb_recall nfs:nfs_setattr_enter nfsd:nfsd_deleg_write nfsd:nfsd_deleg_read nfsd:nfsd_deleg_return nfsd:nfsd_vfs_setattr nfsd:nfsd_cb_getattr_done nfsd:nfsd_cb_recall_done'
-          artifact: xfstests-uml-results-${{ matrix.name }}
+          check_args: '-g quick'
+          trace_events: ${{ env.TRACE_EVENTS }}
+          artifact: xfstests-uml-results-${{ matrix.linux_ref }}-${{ matrix.cfg.name }}
