@@ -83,16 +83,20 @@ jobs:
           # generic/761 alone, 20 times, with and without the client fix for
           # TODO.md item 2. Both carry the reply-page fix, so the
           # sunrpc patch is the only difference.
+          # The extra events show a bad MIC, the client's reaction, and
+          # whether the WRITE was sent again.
           - name: krb5i-761-x20
             vers: '4.2'
             sec: krb5i
             patches: svc-send-account-reply-pages.patch sunrpc-resend-after-rejected-reply.patch
             check_args: '-i 20 generic/761'
+            trace_events: rpcgss:rpcgss_svc_mic rpcgss:rpcgss_svc_unwrap_failed sunrpc:rpc__bad_creds sunrpc:rpc__garbage_args sunrpc:rpc_call_rpcerror sunrpc:rpc_xdr_sendto sunrpc:xprt_disconnect_done
           - name: krb5i-761-x20-unpatched
             vers: '4.2'
             sec: krb5i
             patches: svc-send-account-reply-pages.patch
             check_args: '-i 20 generic/761'
+            trace_events: rpcgss:rpcgss_svc_mic rpcgss:rpcgss_svc_unwrap_failed sunrpc:rpc__bad_creds sunrpc:rpc__garbage_args sunrpc:rpc_call_rpcerror sunrpc:rpc_xdr_sendto sunrpc:xprt_disconnect_done
 
     steps:
       - uses: actions/checkout@v4
@@ -107,5 +111,5 @@ jobs:
           patches: ${{ matrix.cfg.patches }} ${{ matrix.linux_ref == 'nfsd-testing' && matrix.cfg.nfsd_testing_patches || '' }}
           xfstests_patches: ${{ env.XFSTESTS_PATCHES }}
           check_args: ${{ matrix.cfg.check_args || '-g quick' }}
-          trace_events: ${{ env.TRACE_EVENTS }}
+          trace_events: ${{ env.TRACE_EVENTS }} ${{ matrix.cfg.trace_events }}
           artifact: xfstests-uml-results-${{ matrix.linux_ref }}-${{ matrix.cfg.name }}
