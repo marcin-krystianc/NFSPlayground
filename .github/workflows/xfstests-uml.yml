@@ -80,6 +80,19 @@ jobs:
           - name: krb5p
             vers: '4.2'
             sec: krb5p
+          # generic/761 alone, 20 times, with and without the client fix for
+          # TODO.md item 2. Both carry the reply-page fix, so the
+          # sunrpc patch is the only difference.
+          - name: krb5i-761-x20
+            vers: '4.2'
+            sec: krb5i
+            patches: svc-send-account-reply-pages.patch sunrpc-resend-after-rejected-reply.patch
+            check_args: '-i 20 generic/761'
+          - name: krb5i-761-x20-unpatched
+            vers: '4.2'
+            sec: krb5i
+            patches: svc-send-account-reply-pages.patch
+            check_args: '-i 20 generic/761'
 
     steps:
       - uses: actions/checkout@v4
@@ -93,6 +106,6 @@ jobs:
           nfs_delegations: ${{ matrix.cfg.delegations || 'on' }}
           patches: ${{ matrix.cfg.patches }} ${{ matrix.linux_ref == 'nfsd-testing' && matrix.cfg.nfsd_testing_patches || '' }}
           xfstests_patches: ${{ env.XFSTESTS_PATCHES }}
-          check_args: '-g quick'
+          check_args: ${{ matrix.cfg.check_args || '-g quick' }}
           trace_events: ${{ env.TRACE_EVENTS }}
           artifact: xfstests-uml-results-${{ matrix.linux_ref }}-${{ matrix.cfg.name }}
