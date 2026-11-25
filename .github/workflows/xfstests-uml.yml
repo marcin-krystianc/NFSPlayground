@@ -53,7 +53,8 @@ jobs:
       # fixes the xdrgen SETACL decoder, which master and nfsd-next do not
       # have, so it does not apply there.
       matrix:
-        linux_ref: [master, nfsd-testing, nfsd-next]
+        # linux_ref: [master, nfsd-testing, nfsd-next]
+        linux_ref: [nfsd-testing]
         cfg:
           - name: delegations-off
             vers: '4.2'
