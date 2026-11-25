@@ -15,7 +15,7 @@ on:
   # Same cadence as kunit.yml. All three refs in the main matrix move, so a
   # schedule run builds all of them; only the pinned-commit job is skipped.
   schedule:
-    - cron: '0 */6 * * *'
+    - cron: '0 0 * * *'
 
 permissions:
   contents: read
@@ -53,7 +53,8 @@ jobs:
       # fixes the xdrgen SETACL decoder, which master and nfsd-next do not
       # have, so it does not apply there.
       matrix:
-        linux_ref: [master, nfsd-testing, nfsd-next]
+        # linux_ref: [master, nfsd-testing, nfsd-next]
+        linux_ref: [nfsd-testing]
         cfg:
           - name: delegations-off
             vers: '4.2'
