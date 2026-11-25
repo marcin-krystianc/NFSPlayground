@@ -11,10 +11,10 @@ on:
   # this repo -- push/pull_request only re-run the matrix
   # when *this* repo changes, so without this trigger a stale `master` could
   # go unnoticed indefinitely. select-matrix below narrows this trigger to
-  # the moving refs only, since re-running the pinned tags every 6 hours
+  # the moving refs only, since re-running the pinned tags every day
   # would not tell us anything new.
   schedule:
-    - cron: '0 */6 * * *'
+    - cron: '0 0 * * *'
 
 permissions:
   contents: read

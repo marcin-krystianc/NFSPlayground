@@ -15,7 +15,7 @@ on:
   # Same cadence as kunit.yml. All three refs in the main matrix move, so a
   # schedule run builds all of them; only the pinned-commit job is skipped.
   schedule:
-    - cron: '0 */6 * * *'
+    - cron: '0 0 * * *'
 
 permissions:
   contents: read
