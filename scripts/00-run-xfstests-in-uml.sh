@@ -78,6 +78,9 @@ KCONFIG_ENABLE=(
     SWAP AIO IO_URING FHANDLE INOTIFY_USER FANOTIFY
 )
 [ -z "$TRACE_EVENTS" ] || KCONFIG_ENABLE+=(FTRACE ENABLE_DEFAULT_TRACERS EVENT_TRACING)
+# Extra Kconfig symbols, space-separated. For gdb:
+# KCONFIG_EXTRA="DEBUG_KERNEL DEBUG_INFO DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT"
+KCONFIG_ENABLE+=(${KCONFIG_EXTRA:-})
 # UML's own GCOV symbol (arch/um/Kconfig.debug), which needs debug info.
 [ "$COVERAGE" != 1 ] ||
     KCONFIG_ENABLE+=(DEBUG_KERNEL DEBUG_INFO DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT GCOV)
@@ -230,7 +233,8 @@ echo "  check args:   ${check_args[*]}"
 [ "$COVERAGE" != 1 ] || find "$BUILD_DIR" -name '*.gcda' -delete
 
 log "booting the guest"
-"${BUILD_DIR}/linux" \
+# UML_WRAPPER is a command prefix, for example "gdbserver :2345".
+${UML_WRAPPER:-} "${BUILD_DIR}/linux" \
     mem="$UML_MEM" \
     rootfstype=hostfs rootflags=/ rw \
     ubd0="${RUN_DIR}/test.img" ubd1="${RUN_DIR}/scratch.img" \

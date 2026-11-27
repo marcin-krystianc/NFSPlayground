@@ -1,0 +1,36 @@
+From: Marcin Krystianc <marcin.krystianc@gmail.com>
+Subject: [PATCH] SUNRPC: remove redundant tk_action updates in rpc_decode_header()
+
+rpc_decode_header() sets tk_action to call_encode before it returns
+-EAGAIN, on the out_garbage path and for AUTH_BADCRED or AUTH_BADVERF.
+Its only caller, call_decode(), sets tk_action to call_encode again in
+its -EAGAIN case, and nothing reads tk_action in between.
+
+The assignment in call_decode() was added by commit cea57789e408
+("SUNRPC: Clean up"). The one path that returned -EAGAIN with a
+different tk_action was given its own return value, -EKEYREJECTED, by
+commit 7987b694ade8 ("SUNRPC: Fix a use after free when a server
+rejects the RPCSEC_GSS credential"). Since then the two assignments in
+rpc_decode_header() have had no effect.
+
+No functional change.
+
+---
+--- a/net/sunrpc/clnt.c
++++ b/net/sunrpc/clnt.c
+@@ -2838,7 +2838,6 @@ out_garbage:
+ 	clnt->cl_stats->rpcgarbage++;
+ 	if (task->tk_garb_retry) {
+ 		task->tk_garb_retry--;
+-		task->tk_action = call_encode;
+ 		return -EAGAIN;
+ 	}
+ out_err:
+@@ -2904,7 +2903,6 @@ out_msg_denied:
+ 			break;
+ 		task->tk_garb_retry--;
+ 		trace_rpc__bad_creds(task);
+-		task->tk_action = call_encode;
+ 		return -EAGAIN;
+ 	case rpc_autherr_tooweak:
+ 		trace_rpc__auth_tooweak(task);

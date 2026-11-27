@@ -31,6 +31,11 @@ env:
   # not the kernel, so no configuration should run without it.
   XFSTESTS_PATCHES: >-
     0001-common-reflink-reap-_compare_range-readers.patch
+  # Applied to the kernel on every entry, before the entry's own patches.
+  # A cleanup with no functional change, carried so every configuration
+  # exercises it.
+  KERNEL_PATCHES: >-
+    sunrpc-decode-header-leave-call-encode-to-caller.patch
   TRACE_EVENTS: 'nfs4:nfs4_set_delegation nfs4:nfs4_setattr nfs4:nfs4_delegreturn nfs4:nfs4_delegreturn_exit nfs4:nfs4_cb_getattr nfs4:nfs4_cb_recall nfs:nfs_setattr_enter nfsd:nfsd_deleg_write nfsd:nfsd_deleg_read nfsd:nfsd_deleg_return nfsd:nfsd_vfs_setattr nfsd:nfsd_cb_getattr_done nfsd:nfsd_cb_recall_done'
 
 jobs:
@@ -48,10 +53,10 @@ jobs:
       #
       # The candidate fixes in patches/ belong to the configuration each one
       # concerns, so krb5i and v3 name theirs; every other cfg tests the tree
-      # as it stands. "patches" applies on every ref. "nfsd_testing_patches"
-      # applies on nfsd-testing only: nfsd-acl-accept-empty-access-acl.patch
-      # fixes the xdrgen SETACL decoder, which master and nfsd-next do not
-      # have, so it does not apply there.
+      # with KERNEL_PATCHES only. "patches" applies on every ref.
+      # "nfsd_testing_patches" applies on nfsd-testing only. No cfg uses it
+      # now: nfsd-acl-accept-empty-access-acl.patch is in nfsd-testing as
+      # f698e3281e38.
       matrix:
         # linux_ref: [master, nfsd-testing, nfsd-next]
         linux_ref: [nfsd-testing]
@@ -65,11 +70,8 @@ jobs:
             vers: '4.1'
           - name: v4.0
             vers: '4.0'
-          # The fix for the SETACL regression described below and in
-          # docs/nfsd-v3-acl-setacl-regression.md.
           - name: v3
             vers: '3'
-            nfsd_testing_patches: nfsd-acl-accept-empty-access-acl.patch
           - name: nconnect-4
             vers: '4.2'
             opts: nconnect=4
@@ -80,6 +82,23 @@ jobs:
           - name: krb5p
             vers: '4.2'
             sec: krb5p
+          # generic/761 alone, 20 times, with and without the client fix for
+          # TODO.md item 2. Both carry the reply-page fix, so the
+          # sunrpc patch is the only difference.
+          # The extra events show a bad MIC, the client's reaction, and
+          # whether the WRITE was sent again.
+          - name: krb5i-761-x20
+            vers: '4.2'
+            sec: krb5i
+            patches: svc-send-account-reply-pages.patch sunrpc-resend-after-rejected-reply.patch
+            check_args: '-i 20 generic/761'
+            trace_events: rpcgss:rpcgss_svc_mic rpcgss:rpcgss_svc_unwrap_failed sunrpc:rpc__bad_creds sunrpc:rpc__garbage_args sunrpc:rpc_call_rpcerror sunrpc:rpc_xdr_sendto sunrpc:xprt_disconnect_done
+          - name: krb5i-761-x20-unpatched
+            vers: '4.2'
+            sec: krb5i
+            patches: svc-send-account-reply-pages.patch
+            check_args: '-i 20 generic/761'
+            trace_events: rpcgss:rpcgss_svc_mic rpcgss:rpcgss_svc_unwrap_failed sunrpc:rpc__bad_creds sunrpc:rpc__garbage_args sunrpc:rpc_call_rpcerror sunrpc:rpc_xdr_sendto sunrpc:xprt_disconnect_done
 
     steps:
       - uses: actions/checkout@v4
@@ -91,8 +110,8 @@ jobs:
           nfs_opts: ${{ matrix.cfg.opts }}
           nfs_sec: ${{ matrix.cfg.sec }}
           nfs_delegations: ${{ matrix.cfg.delegations || 'on' }}
-          patches: ${{ matrix.cfg.patches }} ${{ matrix.linux_ref == 'nfsd-testing' && matrix.cfg.nfsd_testing_patches || '' }}
+          patches: ${{ env.KERNEL_PATCHES }} ${{ matrix.cfg.patches }} ${{ matrix.linux_ref == 'nfsd-testing' && matrix.cfg.nfsd_testing_patches || '' }}
           xfstests_patches: ${{ env.XFSTESTS_PATCHES }}
-          check_args: '-g quick'
-          trace_events: ${{ env.TRACE_EVENTS }}
+          check_args: ${{ matrix.cfg.check_args || '-g quick' }}
+          trace_events: ${{ env.TRACE_EVENTS }} ${{ matrix.cfg.trace_events }}
           artifact: xfstests-uml-results-${{ matrix.linux_ref }}-${{ matrix.cfg.name }}
