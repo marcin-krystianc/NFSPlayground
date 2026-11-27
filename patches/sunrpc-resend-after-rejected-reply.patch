@@ -33,10 +33,12 @@ the write is in flight, so some WRITEs reach the server with a
 checksum that does not match the data. A resend computes a new
 checksum and succeeds; a skipped one makes write() fail with EACCES.
 
-Treat a reply still held in rq_rcv_buf at call_encode() as a finished
-transmission that needs a resend. rpc_xdr_encode() clears
-rq_reply_bytes_recvd, so this only changes the paths that come back to
-call_encode() after a reply was received.
+Make xprt_request_need_retransmit() also return true when
+xprt_request_data_received() says a reply has been received. Its only
+caller is rpc_task_need_encode(), and call_encode() sees a received
+reply only after rpc_decode_header() rejected it. rpc_xdr_encode()
+clears rq_reply_bytes_recvd, so this only changes the paths that come
+back to call_encode() after a reply was received.
 
 Measured with generic/761 run 20 times over NFSv4.2 and sec=krb5i,
 knfsd and the client in one UML kernel: 17 of 20 runs failed before
@@ -52,6 +54,11 @@ Fixes: cc204d01262a ("SUNRPC: Dequeue the request from the receive queue while w
 ---
 Open points before sending:
 
+- The measurement above was taken with an earlier form of this change,
+  which tested rq_reply_bytes_recvd directly in
+  rpc_task_need_encode(). This form calls xprt_request_data_received()
+  from xprt_request_need_retransmit() instead, which also requires
+  RPC_TASK_NEED_RECV to be clear. It has not been built or run.
 - The Fixes: tag comes from reading the diffs of cc204d01262a and of
   762e4e67b356 ("SUNRPC: Refactor RPC call encoding"), which added the
   RPC_TASK_NO_RETRANS_TIMEOUT term to rpc_task_need_encode(). No
@@ -61,29 +68,25 @@ Open points before sending:
   this change resends instead of decoding that reply. Before, it was
   decoded. Not observed; it needs a review.
 
-diff --git a/net/sunrpc/clnt.c b/net/sunrpc/clnt.c
-index 2f076b4bfd54..7907e08862f0 100644
---- a/net/sunrpc/clnt.c
-+++ b/net/sunrpc/clnt.c
-@@ -2014,12 +2014,21 @@ call_allocate(struct rpc_task *task)
- 	rpc_call_rpcerror(task, -ERESTARTSYS);
- }
-
-+/*
-+ * A received reply that is still in rq_rcv_buf here was rejected by
-+ * rpc_decode_header() with a request to retry (GARBAGE_ARGS, an
-+ * unparsable reply, or a bad credential or verifier). The server has
-+ * finished with this transmission, so the request must be encoded and
-+ * sent again even when RPC_TASK_NO_RETRANS_TIMEOUT would otherwise
-+ * keep waiting for a reply to the old one.
-+ */
- static int
- rpc_task_need_encode(struct rpc_task *task)
+diff --git a/net/sunrpc/xprt.c b/net/sunrpc/xprt.c
+--- a/net/sunrpc/xprt.c
++++ b/net/sunrpc/xprt.c
+@@ -1567,12 +1567,16 @@ xprt_request_prepare(struct rpc_rqst *re
+  * xprt_request_need_retransmit - Test if a task needs retransmission
+  * @task: pointer to rpc_task
+  *
+- * Test for whether a connection breakage requires the task to retransmit
++ * Test for whether a connection breakage requires the task to retransmit,
++ * or whether a reply has been received. call_encode() sees a received
++ * reply only after rpc_decode_header() rejected it with a request to
++ * retry, so the request must be encoded and sent again.
+  */
+ bool
+ xprt_request_need_retransmit(struct rpc_task *task)
  {
- 	return test_bit(RPC_TASK_NEED_XMIT, &task->tk_runstate) == 0 &&
- 		(!(task->tk_flags & RPC_TASK_SENT) ||
- 		 !(task->tk_flags & RPC_TASK_NO_RETRANS_TIMEOUT) ||
-+		 READ_ONCE(task->tk_rqstp->rq_reply_bytes_recvd) != 0 ||
- 		 xprt_request_need_retransmit(task));
+-	return xprt_request_retransmit_after_disconnect(task);
++	return xprt_request_data_received(task) ||
++		xprt_request_retransmit_after_disconnect(task);
  }
  
+ /**
