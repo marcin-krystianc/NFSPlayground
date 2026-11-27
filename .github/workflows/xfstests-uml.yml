@@ -31,6 +31,11 @@ env:
   # not the kernel, so no configuration should run without it.
   XFSTESTS_PATCHES: >-
     0001-common-reflink-reap-_compare_range-readers.patch
+  # Applied to the kernel on every entry, before the entry's own patches.
+  # A cleanup with no functional change, carried so every configuration
+  # exercises it.
+  KERNEL_PATCHES: >-
+    sunrpc-decode-header-leave-call-encode-to-caller.patch
   TRACE_EVENTS: 'nfs4:nfs4_set_delegation nfs4:nfs4_setattr nfs4:nfs4_delegreturn nfs4:nfs4_delegreturn_exit nfs4:nfs4_cb_getattr nfs4:nfs4_cb_recall nfs:nfs_setattr_enter nfsd:nfsd_deleg_write nfsd:nfsd_deleg_read nfsd:nfsd_deleg_return nfsd:nfsd_vfs_setattr nfsd:nfsd_cb_getattr_done nfsd:nfsd_cb_recall_done'
 
 jobs:
@@ -48,8 +53,9 @@ jobs:
       #
       # The candidate fixes in patches/ belong to the configuration each one
       # concerns, so krb5i and v3 name theirs; every other cfg tests the tree
-      # as it stands. "patches" applies on every ref. "nfsd_testing_patches"
-      # applies on nfsd-testing only: nfsd-acl-accept-empty-access-acl.patch
+      # with KERNEL_PATCHES only. "patches" applies on every ref.
+      # "nfsd_testing_patches" applies on nfsd-testing only:
+      # nfsd-acl-accept-empty-access-acl.patch
       # fixes the xdrgen SETACL decoder, which master and nfsd-next do not
       # have, so it does not apply there.
       matrix:
@@ -108,7 +114,7 @@ jobs:
           nfs_opts: ${{ matrix.cfg.opts }}
           nfs_sec: ${{ matrix.cfg.sec }}
           nfs_delegations: ${{ matrix.cfg.delegations || 'on' }}
-          patches: ${{ matrix.cfg.patches }} ${{ matrix.linux_ref == 'nfsd-testing' && matrix.cfg.nfsd_testing_patches || '' }}
+          patches: ${{ env.KERNEL_PATCHES }} ${{ matrix.cfg.patches }} ${{ matrix.linux_ref == 'nfsd-testing' && matrix.cfg.nfsd_testing_patches || '' }}
           xfstests_patches: ${{ env.XFSTESTS_PATCHES }}
           check_args: ${{ matrix.cfg.check_args || '-g quick' }}
           trace_events: ${{ env.TRACE_EVENTS }} ${{ matrix.cfg.trace_events }}

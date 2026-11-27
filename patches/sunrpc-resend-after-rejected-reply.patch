@@ -19,6 +19,13 @@ again. Two more passes use up tk_garb_retry and the RPC fails, with
 -EACCES for AUTH_BADCRED, without the request being sent a second
 time.
 
+Until commit cc204d01262a ("SUNRPC: Dequeue the request from the
+receive queue while we're re-encoding"), the -EAGAIN case of
+call_decode() cleared rq_reply_bytes_recvd itself. That commit moved
+the clearing into rpc_xdr_encode(), which this path does not reach
+because rpc_task_need_encode() returns false. Since then the rejected
+reply is neither cleared nor replaced.
+
 knfsd answers a request whose RPCSEC_GSS integrity checksum does not
 verify with AUTH_BADCRED (SVC_GARBAGE in svc_process_common()). With
 sec=krb5i, xfstests generic/761 changes an O_DIRECT write buffer while
@@ -40,11 +47,15 @@ xprt_disconnect_done came before the retry and the request was sent
 again. With this change all 20 runs passed: 353 WRITEs got a bad MIC,
 each was rejected once and sent again, and no RPC failed with -13.
 
+Fixes: cc204d01262a ("SUNRPC: Dequeue the request from the receive queue while we're re-encoding")
+
 ---
 Open points before sending:
 
-- No Fixes: tag. The commit that made rpc_task_need_encode() skip
-  already-sent NO_RETRANS_TIMEOUT tasks has not been identified.
+- The Fixes: tag comes from reading the diffs of cc204d01262a and of
+  762e4e67b356 ("SUNRPC: Refactor RPC call encoding"), which added the
+  RPC_TASK_NO_RETRANS_TIMEOUT term to rpc_task_need_encode(). No
+  kernel before and after cc204d01262a was built or tested.
 - call_status() also moves to call_encode() on transport errors. If a
   reply completes while the task is being woken with such an error,
   this change resends instead of decoding that reply. Before, it was
