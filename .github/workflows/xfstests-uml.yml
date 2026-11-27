@@ -54,10 +54,9 @@ jobs:
       # The candidate fixes in patches/ belong to the configuration each one
       # concerns, so krb5i and v3 name theirs; every other cfg tests the tree
       # with KERNEL_PATCHES only. "patches" applies on every ref.
-      # "nfsd_testing_patches" applies on nfsd-testing only:
-      # nfsd-acl-accept-empty-access-acl.patch
-      # fixes the xdrgen SETACL decoder, which master and nfsd-next do not
-      # have, so it does not apply there.
+      # "nfsd_testing_patches" applies on nfsd-testing only. No cfg uses it
+      # now: nfsd-acl-accept-empty-access-acl.patch is in nfsd-testing as
+      # f698e3281e38.
       matrix:
         # linux_ref: [master, nfsd-testing, nfsd-next]
         linux_ref: [nfsd-testing]
@@ -71,11 +70,8 @@ jobs:
             vers: '4.1'
           - name: v4.0
             vers: '4.0'
-          # The fix for the SETACL regression described below and in
-          # docs/nfsd-v3-acl-setacl-regression.md.
           - name: v3
             vers: '3'
-            nfsd_testing_patches: nfsd-acl-accept-empty-access-acl.patch
           - name: nconnect-4
             vers: '4.2'
             opts: nconnect=4

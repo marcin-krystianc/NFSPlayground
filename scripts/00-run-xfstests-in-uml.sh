@@ -1,6 +1,3 @@
-# Extra Kconfig symbols, space-separated. For gdb:
-# KCONFIG_EXTRA="DEBUG_KERNEL DEBUG_INFO DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT"
-KCONFIG_ENABLE+=(${KCONFIG_EXTRA:-})
 #!/bin/bash
 # Run upstream xfstests against NFS inside a User Mode Linux kernel built from
 # ./linux. The NFS client and knfsd under test are that tree's, so any kernel
@@ -81,6 +78,9 @@ KCONFIG_ENABLE=(
     SWAP AIO IO_URING FHANDLE INOTIFY_USER FANOTIFY
 )
 [ -z "$TRACE_EVENTS" ] || KCONFIG_ENABLE+=(FTRACE ENABLE_DEFAULT_TRACERS EVENT_TRACING)
+# Extra Kconfig symbols, space-separated. For gdb:
+# KCONFIG_EXTRA="DEBUG_KERNEL DEBUG_INFO DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT"
+KCONFIG_ENABLE+=(${KCONFIG_EXTRA:-})
 # UML's own GCOV symbol (arch/um/Kconfig.debug), which needs debug info.
 [ "$COVERAGE" != 1 ] ||
     KCONFIG_ENABLE+=(DEBUG_KERNEL DEBUG_INFO DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT GCOV)
